@@ -25,7 +25,7 @@ FLAGS="--sysroot=$DEPS/sysroot $ARCH $OPT -std=gnu11 -Wall -Wextra -fPIC"
 INC="-I$C/src -I$OUT -I$HERE -I$MLT/libgamestream -I$BPD/ossl-inc -I$BPD/curl759/include"
 
 # engine objects (everything except the thin main.c)
-for src in cert_init engine_api video_esplus audio_opus esplus_player gs_client input_evdev; do
+for src in cert_init engine_api engine_ui video_esplus audio_opus esplus_player gs_client input_evdev; do
   "$GCC" $FLAGS $INC -c "$HERE/$src.c" -o "$OUT/$src.o"
 done
 
@@ -39,7 +39,7 @@ done
 "$GCC" --sysroot=$DEPS/sysroot $ARCH $LOPT -shared -Wl,-soname,libmlengine.so \
   -Wl,--hash-style=both \
   -o "$OUT/libmlengine.so" \
-  "$OUT"/cert_init.o "$OUT"/engine_api.o "$OUT"/video_esplus.o "$OUT"/audio_opus.o \
+  "$OUT"/cert_init.o "$OUT"/engine_api.o "$OUT"/engine_ui.o "$OUT"/video_esplus.o "$OUT"/audio_opus.o \
   "$OUT"/esplus_player.o "$OUT"/gs_client.o "$OUT"/input_evdev.o \
   "$DEPSBUILD"/obj/*.o "$DEPSBUILD"/gs/*.o "$DEPSBUILD/libmbedcrypto_tv.a" \
   -L"$TVL" -Wl,-rpath-link,"$TVL" -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs \
@@ -56,7 +56,9 @@ echo "       $(file "$OUT/mlclient" | cut -d, -f1-3)"
 
 # self-check 1: the ABI symbols are exported by the .so
 miss=""
-for s in ml_engine_start ml_engine_running ml_engine_wait ml_engine_stop; do
+for s in ml_engine_start ml_engine_running ml_engine_wait ml_engine_stop \
+         ml_engine_make_cert ml_engine_http_init ml_engine_open_url ml_engine_pair \
+         ml_engine_cancel_request ml_engine_start_session ml_engine_send_key ml_engine_free; do
   "$OBJD" -T "$OUT/libmlengine.so" | grep -q " $s\$" || miss="$miss $s"
 done
 [ -z "$miss" ] && echo "ABI exported: ml_engine_* OK" || { echo "MISSING ABI:$miss"; exit 1; }

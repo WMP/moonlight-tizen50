@@ -14,8 +14,23 @@
   <name>Moonlight</name>
   <tizen:profile name="tv"/>
   <feature name="http://tizen.org/feature/screen.size.all"/>
+  <!-- Privileges the moonlight-tizen UI uses (same set as its res/config.xml, all
+       public-level). Without productinfo, index.js line 4 throws a SecurityError and
+       the rest of index.js never runs. messageport: the host bridge. -->
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
-  <tizen:privilege name="http://tizen.org/privilege/messageport"/>
+  <tizen:privilege name="http://tizen.org/privilege/network.get"/>
+  <tizen:privilege name="http://tizen.org/privilege/fullscreen"/>
+  <tizen:privilege name="http://tizen.org/privilege/system"/>
+  <tizen:privilege name="http://tizen.org/privilege/application.info"/>
   <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/productinfo"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
+  <tizen:privilege name="http://tizen.org/privilege/filesystem.read"/>
+  <tizen:privilege name="http://tizen.org/privilege/filesystem.write"/>
   <tizen:privilege name="http://tizen.org/privilege/mediastorage"/>
+  <tizen:privilege name="http://tizen.org/privilege/unlimitedstorage"/>
+  <tizen:privilege name="http://tizen.org/privilege/ime"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.audio"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <tizen:privilege name="http://tizen.org/privilege/messageport"/>
 </widget>

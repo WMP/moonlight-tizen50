@@ -21,12 +21,20 @@ cp "$MLT/wasm/index.html" "$OUT/ui/index.html"
 cp -r "$MLT/wasm/platform" "$OUT/ui/platform"
 cp -r "$MLT/wasm/static" "$OUT/ui/static" 2>/dev/null || true
 [ -d "$MLT/wasm/res" ] && cp -r "$MLT/wasm/res" "$OUT/ui/res" || true
+# platform.js = TV remote-key handler (platformOnLoad/tvKey, used by index.js); not WASM.
+cp "$MLT/res/platform.js" "$OUT/ui/platform.js"
 cp "$HERE/ui/mlbridge.js" "$OUT/ui/platform/mlbridge.js"
 cp "$HERE/ui/config.xml" "$OUT/ui/config.xml"
 cp "$HERE/ui/icon.png" "$OUT/ui/icon.png" 2>/dev/null || true
-# Drop the Emscripten module loader and inject the message-port shim after messages.js.
-sed -i '/src="platform\.js"/d' "$OUT/ui/index.html"
+# Inject the message-port shim after messages.js (it replaces the WASM transport).
 sed -i 's#<script type="text/javascript" src="platform/messages.js"></script>#&\n  <script type="text/javascript" src="platform/mlbridge.js"></script>#' "$OUT/ui/index.html"
+# Build metadata placeholders in index.js (moonlight-tizen's own Dockerfile does the same).
+if [ "$BUILD_VARIANT" = debug ]; then BT=development; else BT=release; fi
+sed -i "s/__BUILD_TYPE__/$BT/g" "$OUT/ui/platform/index.js"
+if [ "$BT" = development ]; then
+  SHA=$(git -C "$MLT" rev-parse --short HEAD 2>/dev/null || true)
+  [ -n "$SHA" ] && sed -i "s/__BUILD_COMMIT__/$SHA/g" "$OUT/ui/platform/index.js"
+fi
 if [ "$BUILD_VARIANT" = debug ]; then
   # trace build: console -> host -> dlog (see ui/mltrace.js); first script in <head>
   cp "$HERE/ui/mltrace.js" "$OUT/ui/platform/mltrace.js"

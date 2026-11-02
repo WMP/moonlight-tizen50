@@ -13,10 +13,16 @@
  * the TV's /usr/lib.
  *
  * The host is a background service app: a second UI app would be closed when the
- * web UI comes to the foreground. STATUS: the UI command port is not implemented yet.
+ * web UI comes to the foreground. It serves the UI command port "moonlight" (see
+ * pkg/ui/PROTOCOL.md): commands from the web UI are run on the engine and answered
+ * on the UI port "moonlightui".
  */
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using Tizen.Applications;
 
@@ -37,10 +43,11 @@ namespace MoonlightHost
         private const int  RTLD_NOW    = 0x0002;
         // Tizen 4/5 libc does NOT export memfd_create, so create the anonymous fd by
         // raw syscall. ARM (32-bit) __NR_memfd_create = 385.
-        private const long SYS_memfd_create_arm = 385;
+        private const int  SYS_memfd_create_arm = 385;
 
         [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
-        private static extern int syscall_memfd(long number, string name, uint flags);
+        // number is C long = 32-bit on ARM; a C# long (64-bit) shifts name/flags into the wrong registers -> EINVAL.
+        private static extern int syscall_memfd(int number, string name, uint flags);
         [DllImport("libc", SetLastError = true)]  private static extern IntPtr write(int fd, IntPtr buf, UIntPtr count);
         [DllImport("libdl")]                       private static extern IntPtr dlopen(string filename, int flags);
         [DllImport("libdl")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
@@ -106,6 +113,33 @@ namespace MoonlightHost
         public static WaitDelegate    Wait;
         public static StopDelegate    Stop;
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int  MakeCertDelegate(out IntPtr certPem, out IntPtr keyPem);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public delegate int  HttpInitDelegate(string certPem, string keyPem, string uniqueId);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public delegate int  OpenUrlDelegate(string url, string ppk, out IntPtr data, out int len);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public delegate int  PairDelegate(int serverMajor, string address, int httpPort, string pin, out IntPtr serverCertPem);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void CancelRequestDelegate();
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public delegate int  StartSessionDelegate(string host, int width, int height, int fps, int bitrateKbps,
+                                                  string rikeyHex, int rikeyId, string appVersion,
+                                                  string gfeVersion, string rtspUrl,
+                                                  int serverCodecModeSupport, string videoCodec, int hdr,
+                                                  string audioConfig);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SendKeyDelegate(int keyCode, int keyAction, int modifiers);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void FreeDelegate(IntPtr p);
+
+        public static MakeCertDelegate      MakeCert;
+        public static HttpInitDelegate      HttpInit;
+        public static OpenUrlDelegate       OpenUrl;
+        public static PairDelegate          Pair;
+        public static CancelRequestDelegate CancelRequest;
+        public static StartSessionDelegate  StartSession;
+        public static SendKeyDelegate       SendKey;
+        public static FreeDelegate          Free;
+        public static volatile bool         Loaded;
+
         public static void Load(string soPath)
         {
             byte[] bytes = File.ReadAllBytes(soPath);
@@ -115,6 +149,198 @@ namespace MoonlightHost
             Running = MemLoader.GetDelegate<RunningDelegate>(h, "ml_engine_running");
             Wait    = MemLoader.GetDelegate<WaitDelegate>(h,    "ml_engine_wait");
             Stop    = MemLoader.GetDelegate<StopDelegate>(h,    "ml_engine_stop");
+            MakeCert      = MemLoader.GetDelegate<MakeCertDelegate>(h,      "ml_engine_make_cert");
+            HttpInit      = MemLoader.GetDelegate<HttpInitDelegate>(h,      "ml_engine_http_init");
+            OpenUrl       = MemLoader.GetDelegate<OpenUrlDelegate>(h,       "ml_engine_open_url");
+            Pair          = MemLoader.GetDelegate<PairDelegate>(h,          "ml_engine_pair");
+            CancelRequest = MemLoader.GetDelegate<CancelRequestDelegate>(h, "ml_engine_cancel_request");
+            StartSession  = MemLoader.GetDelegate<StartSessionDelegate>(h,  "ml_engine_start_session");
+            SendKey       = MemLoader.GetDelegate<SendKeyDelegate>(h,       "ml_engine_send_key");
+            Free          = MemLoader.GetDelegate<FreeDelegate>(h,          "ml_engine_free");
+            Loaded = true;
+        }
+    }
+
+    // UI command port "moonlight" (pkg/ui/PROTOCOL.md): runs commands, sends replies and events.
+    internal static class CommandPort
+    {
+        private const string DefaultApp  = "Moonlight5.ui";
+        private const string DefaultPort = "moonlightui";
+
+        private static Tizen.Applications.Messages.MessagePort s_port;  // kept for process life
+        private static System.Threading.Timer s_monitor;
+        private static readonly object s_httpLock = new object();  // libgamestream has one global cancel flag
+        private static volatile bool s_active;
+        private static string s_uiApp = DefaultApp;
+        private static string s_uiPort = DefaultPort;
+
+        public static void Start()
+        {
+            s_port = new Tizen.Applications.Messages.MessagePort("moonlight", false);
+            s_port.MessageReceived += OnMessage;
+            s_port.Listen();
+            s_monitor = new System.Threading.Timer(_ => Poll(), null, 500, 500);
+            Log.Trace("command port 'moonlight' listening");
+        }
+
+        private static void Poll()
+        {
+            try
+            {
+                if (s_active && Engine.Loaded && Engine.Running() == 0)
+                {
+                    s_active = false;
+                    SendEvent("streamTerminated: 0");
+                }
+            }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "monitor failed: " + ex.Message); }
+        }
+
+        private static string Item(Tizen.Applications.Bundle b, string k)
+            => b.Contains(k) ? b.GetItem<string>(k) : null;
+
+        private static void OnMessage(object sender, Tizen.Applications.Messages.MessageReceivedEventArgs e)
+        {
+            try
+            {
+                var b = e.Message;
+                string app = e.Remote?.AppId, port = e.Remote?.PortName;
+                if (!string.IsNullOrEmpty(app)) s_uiApp = app;
+                if (!string.IsNullOrEmpty(port)) s_uiPort = port;
+                string id = Item(b, "id");
+                string cmd = Item(b, "cmd");
+                if (id == null) { Tizen.Log.Error("MLHOST", "command without id ignored: " + cmd); return; }
+                Log.Trace("cmd " + cmd + " id=" + id);
+                string replyApp = s_uiApp, replyPort = s_uiPort;
+                Task.Run(() => Run(b, cmd ?? "", id, replyApp, replyPort));
+            }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "command receive failed: " + ex.Message); }
+        }
+
+        private static void Run(Tizen.Applications.Bundle b, string cmd, string id, string app, string port)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var reply = new Tizen.Applications.Bundle();
+            reply.AddItem("id", id);
+            string err;
+            try { err = Execute(b, cmd, reply); }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "cmd " + cmd + " failed: " + ex); err = "exception"; }
+            if (err != null)
+            {
+                reply = new Tizen.Applications.Bundle();   // drop partial results
+                reply.AddItem("id", id);
+                reply.AddItem("error", err);
+            }
+            Send(reply, app, port);
+            Log.Trace("reply " + id + (err == null ? " ok " : " err ") + sw.ElapsedMilliseconds + "ms");
+
+            if (cmd == "startStream")
+            {
+                if (err == null) { s_active = true; SendEvent("Connection Established"); }
+                else SendEvent("streamTerminated: -1");
+            }
+        }
+
+        private static void Send(Tizen.Applications.Bundle msg, string app, string port)
+        {
+            try { s_port.Send(msg, app, port); }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "send failed: " + ex.Message); }
+        }
+
+        private static void SendEvent(string ev)
+        {
+            var m = new Tizen.Applications.Bundle();
+            m.AddItem("event", ev);
+            Send(m, s_uiApp, s_uiPort);
+        }
+
+        private static string Take(IntPtr p)
+        {
+            if (p == IntPtr.Zero) return null;
+            string s = Marshal.PtrToStringAnsi(p);
+            Engine.Free(p);
+            return s;
+        }
+
+        private static string Rc(int rc) => rc == 0 ? null : rc.ToString();
+
+        // Returns null on success (result fields in r) or the error string. Never logs secrets.
+        private static string Execute(Tizen.Applications.Bundle b, string cmd, Tizen.Applications.Bundle r)
+        {
+            if (!Engine.Loaded) return "engine not loaded";
+            switch (cmd)
+            {
+                case "makeCert":
+                    lock (s_httpLock)
+                    {
+                        IntPtr c, k;
+                        int rc = Engine.MakeCert(out c, out k);
+                        string cert = Take(c), key = Take(k);
+                        if (rc != 0) return rc.ToString();
+                        r.AddItem("cert", cert ?? ""); r.AddItem("key", key ?? "");
+                        return null;
+                    }
+                case "httpInit":
+                    lock (s_httpLock)
+                        return Rc(Engine.HttpInit(Item(b, "cert"), Item(b, "key"), Item(b, "uniqueId")));
+                case "openUrl":
+                    lock (s_httpLock)
+                    {
+                        IntPtr p; int len;
+                        int rc = Engine.OpenUrl(Item(b, "url"), Item(b, "ppk"), out p, out len);
+                        byte[] data = new byte[0];
+                        if (p != IntPtr.Zero)
+                        {
+                            if (len > 0) { data = new byte[len]; Marshal.Copy(p, data, 0, len); }
+                            Engine.Free(p);
+                        }
+                        if (rc != 0) return rc.ToString();
+                        if (Item(b, "binary") == "true") r.AddItem("data", data);
+                        else r.AddItem("data", Encoding.UTF8.GetString(data));
+                        return null;
+                    }
+                case "pair":
+                    {
+                        int major, port;
+                        if (!int.TryParse(Item(b, "major"), out major) || !int.TryParse(Item(b, "port"), out port)) return "bad args";
+                        lock (s_httpLock)
+                        {
+                            IntPtr c;
+                            int rc = Engine.Pair(major, Item(b, "addr"), port, Item(b, "pin"), out c);
+                            string cert = Take(c);
+                            if (rc != 0) return rc.ToString();
+                            r.AddItem("serverCert", cert ?? "");
+                            return null;
+                        }
+                    }
+                case "cancelRequest": Engine.CancelRequest(); return null;
+                case "startStream":
+                    {
+                        int w, h, fps, br, rikeyid, codec;
+                        if (!int.TryParse(Item(b, "w"), out w) || !int.TryParse(Item(b, "h"), out h) ||
+                            !int.TryParse(Item(b, "fps"), out fps) || !int.TryParse(Item(b, "bitrate"), out br) ||
+                            !int.TryParse(Item(b, "rikeyid"), out rikeyid))
+                            return "bad args";
+                        if (!int.TryParse(Item(b, "codecMode"), out codec)) codec = 0;   // optional: engine defaults to H.264
+                        return Rc(Engine.StartSession(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
+                                                      Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
+                                                      codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
+                                                      Item(b, "audioConfig")));
+                    }
+                case "stopStream": Engine.Stop(); return null;
+                case "sendKeyboardEvent":
+                    {
+                        int key, action, mods;
+                        if (!int.TryParse(Item(b, "key"), out key) || !int.TryParse(Item(b, "action"), out action) ||
+                            !int.TryParse(Item(b, "mods"), out mods)) return "bad args";
+                        Engine.SendKey(key, action, mods);
+                        return null;
+                    }
+                case "toggleStats": return null;
+                case "stun": r.AddItem("result", ""); return null;
+                case "wakeOnLan": return "not supported";
+                default: return "unknown cmd " + cmd;
+            }
         }
     }
 
@@ -167,6 +393,9 @@ namespace MoonlightHost
             {
                 Tizen.Log.Error("MLHOST", "engine load failed: " + e);
             }
+            // Also after a failed load: every command then answers "engine not loaded".
+            try { CommandPort.Start(); }
+            catch (Exception e) { Tizen.Log.Error("MLHOST", "command port failed: " + e); }
         }
 
         protected override void OnTerminate()
