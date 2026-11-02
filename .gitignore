@@ -1,0 +1,9 @@
+/tizen-deps/
+/tv-libs/
+/out/
+pkg/out/
+pkg/dotnet-host/bin/
+pkg/dotnet-host/obj/
+pkg/dotnet-host/lib/
+*.tpk
+*.wgt

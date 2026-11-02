@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Tizen 4.0-5.5 host (the legacy Tizen 4/5 .tpk shape):
+      - TFM tizen40 runs on 4.0 through 5.5 (our TV is 5.0).
+      - The tizen40 TFM builds with the OLD Tizen.NET.Sdk delivered as a NuGet
+        package + a .NET SDK. It needs NO `dotnet workload install tizen` (that is
+        only for net6+/tizen7+). The Tizen CLI (from the vitalets base image) does
+        the .tpk packaging/signing.
+      - Tizen.NET.TV brings TVGLApplication, the lifecycle base for 4/5
+        (there is no GLWindow before API9). ExcludeAssets=Runtime: the TV already
+        has the assemblies; we ship only the reference.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>tizen40</TargetFramework>
+    <AssemblyName>MoonlightHost</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Tizen.NET" Version="4.0.*"><ExcludeAssets>Runtime</ExcludeAssets></PackageReference>
+    <PackageReference Include="Tizen.NET.Sdk" Version="1.1.*" />
+    <PackageReference Include="Tizen.NET.TV" Version="4.4.0.1341"><ExcludeAssets>Runtime</ExcludeAssets></PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Native engine shipped inside the tpk under res/lib/. NOT DllImport'd from
+         there (2018-2020 TVs block native code loaded from the app folder):
+         Program.cs reads these bytes and loads them from an in-memory fd.
+         build-engine-so.sh produces it; copy it to lib/ before packing. -->
+    <None Include="lib/libmlengine.so">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>res/lib/libmlengine.so</Link>
+    </None>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Web UI app of the hybrid Moonlight package. The launchable app that appears
+     in the TV app bar; it runs moonlight-tizen's web front-end, with the native
+     transport swapped to the message port (mlbridge.js) to our engine service.
+     Same package id (org.moonlight.tizen5) as service/tizen-manifest.xml so the
+     two combine into one hybrid package. -->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://org.moonlight.tizen5/Moonlight" version="0.0.1" viewmodes="maximized">
+  <tizen:application id="org.moonlight.tizen5.ui" package="org.moonlight.tizen5" required_version="5.0"/>
+  <content src="index.html"/>
+  <icon src="icon.png"/>
+  <name>Moonlight</name>
+  <tizen:profile name="tv"/>
+  <feature name="http://tizen.org/feature/screen.size.all"/>
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://tizen.org/privilege/messageport"/>
+  <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+  <tizen:privilege name="http://tizen.org/privilege/mediastorage"/>
+  <!-- launch the engine service when the UI starts -->
+  <tizen:app-control>
+    <tizen:src name="index.html"/>
+  </tizen:app-control>
+</widget>
