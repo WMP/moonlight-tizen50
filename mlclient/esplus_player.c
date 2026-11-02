@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "esplusplayer_tv50.h"
 #include "mltrace.h"
@@ -29,6 +30,7 @@ void ecore_wl2_window_show(void *w);
 void ecore_wl2_window_alpha_set(void *w, unsigned char alpha);
 void ecore_wl2_window_free(void *w);
 void ecore_wl2_display_flush(void *d);
+void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *data), void *data);
 
 #define PLOG(...) fprintf(stderr, "[esplus] " __VA_ARGS__)
 
@@ -37,9 +39,11 @@ static void *s_disp, *s_win;
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile int s_prepared, s_prepare_ok, s_started;
 
-static void on_prepared(int ok) { s_prepare_ok = ok; s_prepared = 1; PLOG("prepare_async_done=%d\n", ok); }
-static void on_ready(uint32_t st) { (void)st; }
-static void on_error(uint32_t e) { PLOG("player error 0x%x\n", e); }
+static int s_ecore;   /* 1 while we hold an ecore_init()/ecore_wl2_init() reference */
+
+static void on_prepared(int ok) { s_prepare_ok = ok; s_prepared = 1; PLOG("prepare_async_done=%d\n", ok); MLT("cb prepare_async_done ok=%d", ok); }
+static void on_ready(uint32_t st) { (void)st; MLT("cb ready_to_prepare stream=%u", st); }
+static void on_error(uint32_t e) { PLOG("player error 0x%x\n", e); MLT("cb player error 0x%x", e); }
 static void on_buffer(uint32_t st, uint32_t s) { if (s) PLOG("OVERRUN stream=%u\n", st); }
 
 /* idempotent: create + open the player once. */
@@ -47,12 +51,15 @@ esplusplayer_handle esplus_create_open(void) {
   pthread_mutex_lock(&s_lock);
   if (!s_pl) {
     s_pl = esplusplayer_create();
+    MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {
       esplusplayer_set_error_cb(s_pl, on_error);
       esplusplayer_set_buffer_status_cb(s_pl, on_buffer);
       esplusplayer_set_ready_to_prepare_cb(s_pl, on_ready);
       esplusplayer_set_prepare_async_done_cb(s_pl, on_prepared);
-      if (!esplusplayer_open(s_pl)) { PLOG("open failed\n"); }
+      int ok = esplusplayer_open(s_pl);
+      MLT("esplusplayer_open -> %d", ok);
+      if (!ok) { PLOG("open failed\n"); }
       else PLOG("created+opened\n");
     } else PLOG("create failed\n");
   }
@@ -63,20 +70,64 @@ esplusplayer_handle esplus_create_open(void) {
 
 esplusplayer_handle esplus_handle(void) { return s_pl; }
 
-/* video setup supplies the window (it has width/height). */
-int esplus_set_window(int w, int h) {
-  MLT("esplus_set_window %dx%d", w, h);
-  ecore_init();
-  ecore_wl2_init();
+/* EFL is not thread-safe, and LiStartConnection runs video setup on the caller's
+ * thread (a worker thread in the .NET host). So the Wayland display/window work runs
+ * on the ecore main loop (the host's app loop; called directly when the caller is
+ * already the main loop thread, as in the CLI). */
+struct win_req { int w, h, rc; };
+
+static void *win_create_main(void *arg) {
+  struct win_req *r = arg;
+  MLT("win: XDG_RUNTIME_DIR=%s WAYLAND_DISPLAY=%s", getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "(unset)",
+      getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(unset)");
+  int n = ecore_wl2_init();
+  MLT("ecore_wl2_init -> %d", n);
+  if (n <= 0) { r->rc = -1; return NULL; }
+  s_ecore = 1;
   s_disp = ecore_wl2_display_connect(NULL);
-  if (!s_disp) { PLOG("display_connect failed (XDG_RUNTIME_DIR/WAYLAND_DISPLAY?)\n"); MLT("esplus_set_window -> -1 (display)"); return -1; }
-  s_win = ecore_wl2_window_new(s_disp, NULL, 0, 0, w, h);
-  if (!s_win) { PLOG("window_new failed\n"); MLT("esplus_set_window -> -1 (window)"); return -1; }
+  MLT("ecore_wl2_display_connect -> %p", s_disp);
+  if (!s_disp) { PLOG("display_connect failed (XDG_RUNTIME_DIR/WAYLAND_DISPLAY?)\n"); r->rc = -1; return NULL; }
+  s_win = ecore_wl2_window_new(s_disp, NULL, 0, 0, r->w, r->h);
+  MLT("ecore_wl2_window_new -> %p", s_win);
+  if (!s_win) { PLOG("window_new failed\n"); r->rc = -1; return NULL; }
   ecore_wl2_window_alpha_set(s_win, 1);
   ecore_wl2_window_show(s_win);
   ecore_wl2_display_flush(s_disp);
-  if (!esplusplayer_set_ecore_display(s_pl, ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY, s_win, 0, 0, w, h)) {
-    PLOG("set_ecore_display failed\n"); MLT("esplus_set_window -> -1 (set_ecore_display)"); return -1;
+  MLT("window shown");
+  int ok = esplusplayer_set_ecore_display(s_pl, ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY, s_win, 0, 0, r->w, r->h);
+  MLT("esplusplayer_set_ecore_display(OVERLAY) -> %d", ok);
+  if (!ok) { PLOG("set_ecore_display failed\n"); r->rc = -2; return NULL; }
+  r->rc = 0;
+  return NULL;
+}
+
+static void *win_destroy_main(void *arg) {
+  (void)arg;
+  if (s_win) { ecore_wl2_window_free(s_win); s_win = NULL; }
+  if (s_disp) { ecore_wl2_display_disconnect(s_disp); s_disp = NULL; }
+  if (s_ecore) { ecore_wl2_shutdown(); s_ecore = 0; }
+  MLT("window destroyed");
+  return NULL;
+}
+
+/* video setup supplies the window (it has width/height). */
+int esplus_set_window(int w, int h) {
+  MLT("esplus_set_window %dx%d pl=%p", w, h, (void *)s_pl);
+  if (!s_pl) { MLT("esplus_set_window -> -1 (no player)"); return -1; }
+  if (w <= 0 || h <= 0) { MLT("esplus_set_window -> -1 (size)"); return -1; }
+  /* ecore_init() is cheap and refcounted; in the host the app has already done it.
+     It must precede the thread-safe call (the CLI has no ecore yet). */
+  int n = ecore_init();
+  MLT("ecore_init -> %d", n);
+  if (n <= 0) { MLT("esplus_set_window -> -1 (ecore_init)"); return -1; }
+  struct win_req r = { w, h, -1 };
+  MLT("window: running on the main loop");
+  ecore_main_loop_thread_safe_call_sync(win_create_main, &r);
+  if (r.rc != 0) {
+    ecore_main_loop_thread_safe_call_sync(win_destroy_main, NULL);
+    ecore_shutdown();
+    MLT("esplus_set_window -> -1 (%s)", r.rc == -2 ? "set_ecore_display" : "no window: a service may have no display access");
+    return -1;
   }
   MLT("esplus_set_window -> 0");
   return 0;
@@ -93,7 +144,7 @@ void esplus_prepare(void) {
 int esplus_submit(const esplusplayer_es_packet *pkt) {
   pthread_mutex_lock(&s_lock);
   if (s_prepared && s_prepare_ok == 1 && !s_started) {
-    s_started = 1; int ok = esplusplayer_start(s_pl); PLOG("started\n"); MLT("esplus_start -> %d", ok);
+    s_started = 1; int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
   /* shortcut: sample per-frame trace (first 30, then every 300th, plus failures);
@@ -107,10 +158,17 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
 void esplus_close(void) {
   MLT("esplus_close");
   pthread_mutex_lock(&s_lock);
-  if (s_pl) { esplusplayer_stop(s_pl); esplusplayer_close(s_pl); s_pl = NULL; }
+  if (s_pl) {
+    int st = esplusplayer_stop(s_pl), cl = esplusplayer_close(s_pl); (void)st; (void)cl;
+    MLT("esplusplayer_stop -> %d, close -> %d", st, cl);
+    s_pl = NULL;
+  }
   s_prepared = s_prepare_ok = s_started = 0;
   pthread_mutex_unlock(&s_lock);
-  if (s_win) { ecore_wl2_window_free(s_win); s_win = NULL; }
-  if (s_disp) { ecore_wl2_display_disconnect(s_disp); s_disp = NULL; }
-  ecore_wl2_shutdown(); ecore_shutdown();
+  /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would
+     shut down the host app's own ecore loop. */
+  if (s_win || s_disp || s_ecore) {
+    ecore_main_loop_thread_safe_call_sync(win_destroy_main, NULL);
+    ecore_shutdown();
+  }
 }
