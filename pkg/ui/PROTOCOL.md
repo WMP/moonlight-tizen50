@@ -74,3 +74,15 @@ same values the WASM build rejects with, for example `-1` = GS_FAILED).
 Each command rejects after 15 s with `timeout`. `openUrl` uses its own timeout
 argument when it has one, and then also sends `cancelRequest`. `pair` waits up to
 120 s, because the user types the PIN on the PC.
+
+## Video window (known limit)
+
+The engine creates its own Wayland window (`ecore_wl2`) for the esplusplayer overlay,
+on the host's ecore main loop. The host is a service app; if the TV gives a service
+no display access, `ecore_wl2_display_connect` or `ecore_wl2_window_new` fails. The
+engine then fails video setup cleanly: `startStream` replies `error` and the UI gets
+`streamTerminated: -1` (MLENGINE shows `esplus_set_window -> -1 (no window ...)`).
+
+If that happens on the TV, the alternative is a small UI app in the same `.tpk` that
+owns the overlay window only while a stream runs (the stream takes the screen anyway);
+the service keeps the engine and the message ports.
