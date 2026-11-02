@@ -7,7 +7,7 @@
 (function () {
   window.ML_TRACE = true;
   var HOST_APPID = 'org.moonlight.host.app', HOST_PORT = 'mllog', CAP = 500;
-  var buf = [], remote = null;
+  var buf = [], remote = null, launched = false;
 
   function fmt(a) {
     try {
@@ -28,7 +28,13 @@
         remote.sendMessage([{ key: 'level', value: m[0] }, { key: 'msg', value: m[1] }]);
         buf.shift();
       }
-    } catch (e) { remote = null; }   // host not running yet: keep buffer, retry
+    } catch (e) {
+      remote = null;   // host not running yet: keep buffer, retry
+      if (!launched && typeof tizen !== 'undefined' && tizen.application) {
+        launched = true;   // the host is a service app with no launcher icon: start it once
+        try { tizen.application.launch(HOST_APPID); } catch (e2) {}
+      }
+    }
   }
 
   function push(lvl, args) {

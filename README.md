@@ -62,14 +62,15 @@ uninstall the other first, or install over it.
 Read the logs from a PC (with `sdb` connected to the TV):
 
 ```bash
-sdb shell dlogutil MLUI:* *:S                  # UI console (needs the debug host .tpk installed and launched)
+sdb shell dlogutil MLUI:* *:S                  # UI console (needs the debug host .tpk installed)
 sdb shell dlogutil MLHOST:* MLENGINE:* *:S     # host + engine trace
 sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
 sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
 ```
 
-The UI console reaches `dlog` only through the debug host, which relays it. If the
-debug host is not running, UI lines are not shown in `dlog`. For the web inspector run
+The UI console reaches `dlog` only through the debug host, which relays it. The host
+is a background service; the debug UI starts it. If it does not start, UI lines are
+buffered (up to 500) and not shown in `dlog`. For the web inspector run
 `sdb forward tcp:<port> tcp:<port>` with the printed port, then open `chrome://inspect`
 in Chrome.
 

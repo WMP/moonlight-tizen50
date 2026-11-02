@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 4be5581..76bd41b 100644
+index 72437e6..e1c8082 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -68,16 +68,18 @@ index 4be5581..76bd41b 100644
  
  ## Debug vs release packages
  
-@@ -54,107 +68,163 @@ sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
+@@ -54,108 +68,164 @@ sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
  sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
  ```
  
--The UI console reaches `dlog` only through the debug host, which relays it. If
--the debug host is not running, UI lines are not shown in `dlog`. For the web
+-The UI console reaches `dlog` only through the debug host, which relays it. The
+-host is a background service; the debug UI starts it. If it does not start, UI
+-lines are buffered (up to 500) and not shown in `dlog`. For the web
 -inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
 -open `chrome://inspect` in Chrome.
-+The UI console reaches `dlog` only through the debug host, which relays it. If the
-+debug host is not running, UI lines are not shown in `dlog`. For the web inspector run
++The UI console reaches `dlog` only through the debug host, which relays it. The host
++is a background service; the debug UI starts it. If it does not start, UI lines are
++buffered (up to 500) and not shown in `dlog`. For the web inspector run
 +`sdb forward tcp:<port> tcp:<port>` with the printed port, then open `chrome://inspect`
 +in Chrome.
  
@@ -281,7 +283,7 @@ index 4be5581..76bd41b 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -165,5 +235,6 @@ device.
+@@ -166,5 +236,6 @@ device.
  
  ## Disclaimer
  
