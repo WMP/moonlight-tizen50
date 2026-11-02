@@ -35,5 +35,9 @@ The point of this repo is to improve the client itself:
 - Host self-tests that need no TV: `mlclient/xml_selftest.c` (XML parser),
   `tests/esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
   parser or the bitstream code.
+- `BUILD_VARIANT=debug|release` (default `release`) is honoured by
+  `mlclient/build-engine-so.sh`, `pkg/build-tpk.sh` and `pkg/build-package.sh`. The
+  trace macro is `MLT_TRACE` in `mlclient/mltrace.h`; it must compile to nothing in
+  release.
 - The engine ABI (`mlclient/mlengine.h`) is **additive only**: never change a
   signature, only append functions.

@@ -10,10 +10,18 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 GCC=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-gcc
 OBJD=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-objdump
 C=$MLT/moonlight-common-c; TVL=$DEPS/tv-libs/usr/lib
+# BUILD_VARIANT: release (default, -O2) or debug (-O0 -g, MLT_TRACE trace on).
+BUILD_VARIANT=${BUILD_VARIANT:-release}
+case "$BUILD_VARIANT" in
+  release) OPT="-O2"; LOPT="-O2"; DBGLIB="" ;;
+  debug)   OPT="-O0 -g -DMLT_TRACE"; LOPT="-O0 -g"; DBGLIB="-ldl" ;;
+  *) echo "BUILD_VARIANT must be debug or release, got: $BUILD_VARIANT" >&2; exit 1 ;;
+esac
+echo "engine variant: $BUILD_VARIANT"
 OUT=${OUT:-./engine-build}; mkdir -p "$OUT"
 cp "$HERE/../esplusplayer_tv50.h" "$OUT/"
 ARCH="-mcpu=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=softfp"
-FLAGS="--sysroot=$DEPS/sysroot $ARCH -O2 -std=gnu11 -Wall -Wextra -fPIC"
+FLAGS="--sysroot=$DEPS/sysroot $ARCH $OPT -std=gnu11 -Wall -Wextra -fPIC"
 INC="-I$C/src -I$OUT -I$HERE -I$MLT/libgamestream -I$BPD/ossl-inc -I$BPD/curl759/include"
 
 # engine objects (everything except the thin main.c)
@@ -28,7 +36,7 @@ done
 # loader resolves symbols via a SYSV DT_HASH. The engine is also built TLS-free
 # (that loader can't do R_ARM_TLS_*); verified: no _Thread_local in the
 # engine/moonlight-common-c.
-"$GCC" --sysroot=$DEPS/sysroot $ARCH -O2 -shared -Wl,-soname,libmlengine.so \
+"$GCC" --sysroot=$DEPS/sysroot $ARCH $LOPT -shared -Wl,-soname,libmlengine.so \
   -Wl,--hash-style=both \
   -o "$OUT/libmlengine.so" \
   "$OUT"/cert_init.o "$OUT"/engine_api.o "$OUT"/video_esplus.o "$OUT"/audio_opus.o \
@@ -36,11 +44,11 @@ done
   "$DEPSBUILD"/obj/*.o "$DEPSBUILD"/gs/*.o "$DEPSBUILD/libmbedcrypto_tv.a" \
   -L"$TVL" -Wl,-rpath-link,"$TVL" -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs \
   -l:libesplusplayer.so -l:libecore_wl2.so.1 -l:libecore.so.1 \
-  -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libcurl.so.4 -lpthread
+  -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libcurl.so.4 -lpthread $DBGLIB
 
 # thin exe: main.o + the .so
 "$GCC" $FLAGS $INC -c "$HERE/main.c" -o "$OUT/main.o"
-"$GCC" --sysroot=$DEPS/sysroot $ARCH -O2 -o "$OUT/mlclient" "$OUT/main.o" \
+"$GCC" --sysroot=$DEPS/sysroot $ARCH $LOPT -o "$OUT/mlclient" "$OUT/main.o" \
   -L"$OUT" -Wl,-rpath-link,"$TVL" -Wl,--unresolved-symbols=ignore-in-shared-libs -lmlengine -Wl,-rpath,'$ORIGIN/../lib'
 
 echo "built: $(file "$OUT/libmlengine.so" | cut -d, -f1-3)"

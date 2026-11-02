@@ -33,6 +33,32 @@ CI builds the packages on every release
 > does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
 > you supply. Apps2Samsung is the same step, automated.
 
+## Debug vs release packages
+
+Each release has two pairs of packages:
+
+- **Normal** (`Moonlight-*.wgt` + `org.moonlight.host-*.tpk`): for daily use.
+- **Trace** (`*-trace.wgt` + `*-trace.tpk`): download these to report a problem.
+  They are debug builds (no optimisation, symbols kept) with verbose logs: the
+  engine (`MLENGINE`), the .NET host (`MLHOST`) and the web UI console (`MLUI`).
+
+Both pairs use the same package and app ids. Install one pair, not both:
+uninstall the other first, or install over it.
+
+Read the logs from a PC (with `sdb` connected to the TV):
+
+```bash
+sdb shell dlogutil MLUI:* *:S                  # UI console (needs the trace host .tpk installed and launched)
+sdb shell dlogutil MLHOST:* MLENGINE:* *:S     # host + engine trace
+sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
+sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
+```
+
+The UI console reaches `dlog` only through the trace host, which relays it. If
+the trace host is not running, UI lines are not shown in `dlog`. For the web
+inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
+open `chrome://inspect` in Chrome.
+
 ## Why this exists
 
 The WebAssembly [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen)
@@ -91,8 +117,10 @@ fetch-tizen-sources.sh ./tizen-deps
 docker build -t moonlight-tizen-build pkg
 
 # 3. build the engine .so, the .NET host .tpk, and the web .wgt in the container
+#    BUILD_VARIANT=release (default) or debug (trace build) is read by all three scripts
 docker run --rm -v "$PWD":/work/repo \
   moonlight-tizen-build bash -lc '
+    export BUILD_VARIANT=debug                   # omit for a normal release build
     REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps
     mlclient/build-engine-so.sh                 # -> libmlengine.so
     pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk

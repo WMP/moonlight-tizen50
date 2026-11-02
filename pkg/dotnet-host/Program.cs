@@ -21,6 +21,13 @@ using Tizen.Applications;
 
 namespace MoonlightHost
 {
+    // Verbose host trace: compiled out of release builds ([Conditional] drops the calls).
+    internal static class Log
+    {
+        [System.Diagnostics.Conditional("DEBUG")]
+        public static void Trace(string m) => Tizen.Log.Debug("MLHOST", m);
+    }
+
     // Loads a shared object from memory (lets downloaded engine updates apply
     // without rewriting the app folder).
     internal static class MemLoader
@@ -45,6 +52,7 @@ namespace MoonlightHost
             // Route 2 (fallback): a C# ELF32-ARM loader for targets where memfd is
             // refused. NOT implemented here yet; add if a target returns an mmap error.
             int fd = syscall_memfd(SYS_memfd_create_arm, "mlengine", MFD_CLOEXEC);
+            Log.Trace("memfd fd=" + fd);
             if (fd < 0) throw new InvalidOperationException("memfd_create(syscall 385) failed: " + Marshal.GetLastWin32Error());
 
             var pin = GCHandle.Alloc(so, GCHandleType.Pinned);
@@ -61,6 +69,7 @@ namespace MoonlightHost
                 }
             }
             finally { pin.Free(); }
+            Log.Trace("wrote " + so.Length + " bytes to memfd " + fd);
 
             IntPtr h = dlopen("/proc/self/fd/" + fd, RTLD_NOW);
             if (h == IntPtr.Zero)
@@ -68,6 +77,7 @@ namespace MoonlightHost
                 IntPtr err = dlerror();
                 throw new InvalidOperationException("dlopen(memfd) failed: " + (err != IntPtr.Zero ? Marshal.PtrToStringAnsi(err) : "?"));
             }
+            Log.Trace("dlopen handle=0x" + h.ToInt64().ToString("x"));
             return h;
         }
 
@@ -75,6 +85,7 @@ namespace MoonlightHost
         {
             IntPtr p = dlsym(handle, symbol);
             if (p == IntPtr.Zero) throw new EntryPointNotFoundException("dlsym: " + symbol);
+            Log.Trace("dlsym " + symbol + " -> 0x" + p.ToInt64().ToString("x"));
             return (T)(object)Marshal.GetDelegateForFunctionPointer(p, typeof(T));
         }
     }
@@ -96,7 +107,9 @@ namespace MoonlightHost
 
         public static void Load(string soPath)
         {
-            IntPtr h = MemLoader.LoadFromMemory(File.ReadAllBytes(soPath));
+            byte[] bytes = File.ReadAllBytes(soPath);
+            Log.Trace("engine .so " + soPath + " (" + bytes.Length + " bytes)");
+            IntPtr h = MemLoader.LoadFromMemory(bytes);
             Start   = MemLoader.GetDelegate<StartDelegate>(h,   "ml_engine_start");
             Running = MemLoader.GetDelegate<RunningDelegate>(h, "ml_engine_running");
             Wait    = MemLoader.GetDelegate<WaitDelegate>(h,    "ml_engine_wait");
@@ -106,16 +119,48 @@ namespace MoonlightHost
 
     internal sealed class App : CoreUIApplication
     {
+#if DEBUG
+        // Relays the web UI console (mltrace.js) to dlog tag MLUI. Kept for process life.
+        private static Tizen.Applications.Messages.MessagePort s_uiLog;
+
+        private static void StartUiLog()
+        {
+            s_uiLog = new Tizen.Applications.Messages.MessagePort("mllog", false);
+            s_uiLog.MessageReceived += (sender, e) =>
+            {
+                try
+                {
+                    var b = e.Message;
+                    string level = b.Contains("level") ? b.GetItem<string>("level") : null;
+                    string msg = b.Contains("msg") ? b.GetItem<string>("msg") : "";
+                    if (level == "error") Tizen.Log.Error("MLUI", msg);
+                    else if (level == "warn") Tizen.Log.Warn("MLUI", msg);
+                    else Tizen.Log.Info("MLUI", msg);
+                }
+                catch (Exception ex) { Tizen.Log.Error("MLHOST", "ui log message failed: " + ex.Message); }
+            };
+            s_uiLog.Listen();
+            Log.Trace("ui log port 'mllog' listening");
+        }
+#endif
+
         protected override void OnCreate()
         {
             base.OnCreate();
+#if DEBUG
+            try { StartUiLog(); }
+            catch (Exception e) { Tizen.Log.Error("MLHOST", "ui log listener failed: " + e); }
+#endif
+            Log.Trace("OnCreate start");
             try
             {
                 string soPath = Path.Combine(DirectoryInfo.Resource, "lib", "libmlengine.so");
                 Engine.Load(soPath);
                 // TODO: real menu + pairing UI (reuse moonlight-tizen web UI, or NUI).
                 string host = Environment.GetEnvironmentVariable("MOONLIGHT_HOST") ?? "192.168.123.3";
+                Log.Trace("Engine.Start host=" + host + " appId=0 pin=(null) 1920x1080@60 20000kbps datadir=" + DirectoryInfo.Data);
                 int rc = Engine.Start(host, 0, null, 1920, 1080, 60, 20000, DirectoryInfo.Data);
+                Log.Trace("Engine.Start rc=" + rc);
                 Tizen.Log.Info("MLHOST", $"engine loaded from memory; ml_engine_start(host={host}) rc={rc}");
             }
             catch (Exception e)
@@ -126,7 +171,8 @@ namespace MoonlightHost
 
         protected override void OnTerminate()
         {
-            try { Engine.Stop?.Invoke(); } catch { }
+            Log.Trace("OnTerminate");
+            try { Log.Trace("Engine.Stop"); Engine.Stop?.Invoke(); } catch { }
             base.OnTerminate();
         }
 

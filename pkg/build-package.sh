@@ -11,6 +11,8 @@
 set -e
 : "${REPO:?}"; : "${MLT:?}"
 HERE="$REPO/pkg"
+BUILD_VARIANT=${BUILD_VARIANT:-release}
+case "$BUILD_VARIANT" in debug|release) ;; *) echo "BUILD_VARIANT must be debug or release" >&2; exit 1 ;; esac
 OUT=${OUT:-$HERE/out}; rm -rf "$OUT"; mkdir -p "$OUT/ui"
 
 echo "== phase 1: web UI (moonlight-tizen front-end + message-port transport) =="
@@ -25,6 +27,12 @@ cp "$HERE/ui/icon.png" "$OUT/ui/icon.png" 2>/dev/null || true
 # Drop the Emscripten module loader and inject the message-port shim after messages.js.
 sed -i '/src="platform\.js"/d' "$OUT/ui/index.html"
 sed -i 's#<script type="text/javascript" src="platform/messages.js"></script>#&\n  <script type="text/javascript" src="platform/mlbridge.js"></script>#' "$OUT/ui/index.html"
+if [ "$BUILD_VARIANT" = debug ]; then
+  # trace build: console -> host -> dlog (see ui/mltrace.js); first script in <head>
+  cp "$HERE/ui/mltrace.js" "$OUT/ui/platform/mltrace.js"
+  sed -i 's#<head\( [^>]*\)\{0,1\}>#&\n  <script type="text/javascript" src="platform/mltrace.js"></script>#I' "$OUT/ui/index.html"
+  grep -q mltrace.js "$OUT/ui/index.html" || { echo "mltrace.js not injected into index.html" >&2; exit 1; }
+fi
 echo "ui assembled -> $OUT/ui"
 
 echo "== phase 2: package + sign =="

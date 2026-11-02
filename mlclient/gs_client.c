@@ -24,6 +24,7 @@
 #include "Limelight.h"
 #include "http.h"
 #include "errors.h"
+#include "mltrace.h"
 
 extern char *g_UniqueId;
 extern int gs_pair(int serverMajorVersion, const char *address, unsigned short httpPort,
@@ -99,6 +100,7 @@ static void write_all(const char *path, const char *s) {
 int gs_orchestrate(const char *host, unsigned short httpPort, unsigned short httpsPort,
                    int appId, const char *pin, STREAM_CONFIGURATION *sc, SERVER_INFORMATION *si,
                    const char *datadir) {
+  MLT("gs_orchestrate host=%s appId=%d pin=%s", host, appId, pin ? "(set)" : "(null)");
   PHTTP_DATA data = http_create_data();
   if (!data) return GS_OUT_OF_MEMORY;
   char url[4096], uuid[40], certpath[1024];
@@ -119,6 +121,7 @@ int gs_orchestrate(const char *host, unsigned short httpPort, unsigned short htt
       si->serverInfoAppVersion = result; result = NULL;
       if (xml_search(data->memory, data->size, "GfeVersion", &result) == GS_OK) { si->serverInfoGfeVersion = result; result = NULL; }
       fprintf(stderr, "[gs] already paired (stored server cert)\n");
+      MLT("gs: already paired, https serverinfo ok");
     } else {
       free(server_cert); server_cert = NULL;   /* stale/unpaired - fall through */
     }
@@ -129,23 +132,25 @@ int gs_orchestrate(const char *host, unsigned short httpPort, unsigned short htt
     data->size = 0; if (data->memory) data->memory[0] = 0;
     gen_uuid(uuid);
     snprintf(url, sizeof url, "http://%s:%u/serverinfo?uniqueid=%s&uuid=%s", host, httpPort, g_UniqueId, uuid);
-    if ((ret = http_request(url, NULL, data)) != GS_OK) { fprintf(stderr, "[gs] serverinfo(http) failed %d\n", ret); goto fail; }
+    if ((ret = http_request(url, NULL, data)) != GS_OK) { fprintf(stderr, "[gs] serverinfo(http) failed %d\n", ret); MLT("gs: serverinfo(http) failed %d", ret); goto fail; }
     int serverMajorVersion = 7;
     if (xml_search(data->memory, data->size, "appversion", &result) == GS_OK) { serverMajorVersion = atoi(result); free(result); result = NULL; }
 
     if (!pin) { fprintf(stderr, "[gs] host not paired and no PIN given\n"); ret = GS_FAILED; goto fail; }
     fprintf(stderr, "[gs] pairing - enter PIN %s on the host\n", pin);
+    MLT("gs: pairing start major=%d", serverMajorVersion);
     if ((ret = gs_pair(serverMajorVersion, host, httpPort, pin, &server_cert)) != GS_OK) {
-      fprintf(stderr, "[gs] pairing failed %d\n", ret); goto fail;
+      fprintf(stderr, "[gs] pairing failed %d\n", ret); MLT("gs: pairing failed %d", ret); goto fail;
     }
     fprintf(stderr, "[gs] paired\n");
+    MLT("gs: pairing ok");
     if (server_cert) write_all(certpath, server_cert);   /* persist for next run */
 
     /* serverinfo over HTTPS (pinned) -> app/GFE version. */
     data->size = 0; if (data->memory) data->memory[0] = 0;
     gen_uuid(uuid);
     snprintf(url, sizeof url, "https://%s:%u/serverinfo?uniqueid=%s&uuid=%s", host, httpsPort, g_UniqueId, uuid);
-    if ((ret = http_request(url, server_cert, data)) != GS_OK) { fprintf(stderr, "[gs] serverinfo(https) failed %d\n", ret); goto fail; }
+    if ((ret = http_request(url, server_cert, data)) != GS_OK) { fprintf(stderr, "[gs] serverinfo(https) failed %d\n", ret); MLT("gs: serverinfo(https) failed %d", ret); goto fail; }
     if (xml_search(data->memory, data->size, "appversion", &result) == GS_OK) { si->serverInfoAppVersion = result; result = NULL; }
     if (xml_search(data->memory, data->size, "GfeVersion", &result) == GS_OK) { si->serverInfoGfeVersion = result; result = NULL; }
   }
@@ -173,18 +178,20 @@ int gs_orchestrate(const char *host, unsigned short httpPort, unsigned short htt
     "&rikey=%s&rikeyid=%d&localAudioPlayMode=0&surroundAudioInfo=%d&remoteControllersBitmap=0&gcmap=0%s",
     host, httpsPort, verb, g_UniqueId, uuid, appId, sc->width, sc->height, sc->fps, sops,
     rikey_hex, (int)rikeyid, surround, LiGetLaunchUrlQueryParameters());
-  if ((ret = http_request(url, server_cert, data)) != GS_OK) { fprintf(stderr, "[gs] %s failed %d\n", verb, ret); goto fail; }
-  if ((ret = xml_status(data->memory, data->size)) != GS_OK) { fprintf(stderr, "[gs] %s status not 200\n", verb); goto fail; }
+  if ((ret = http_request(url, server_cert, data)) != GS_OK) { fprintf(stderr, "[gs] %s failed %d\n", verb, ret); MLT("gs: %s failed %d", verb, ret); goto fail; }
+  if ((ret = xml_status(data->memory, data->size)) != GS_OK) { fprintf(stderr, "[gs] %s status not 200\n", verb); MLT("gs: %s status not 200 (%d)", verb, ret); goto fail; }
   if (xml_search(data->memory, data->size, "gamesession", &result) != GS_OK &&
       xml_search(data->memory, data->size, "resume", &result) != GS_OK) {
-    fprintf(stderr, "[gs] no gamesession in %s response\n", verb); ret = GS_FAILED; goto fail;
+    fprintf(stderr, "[gs] no gamesession in %s response\n", verb); MLT("gs: no gamesession in %s response", verb); ret = GS_FAILED; goto fail;
   }
-  if (!strcmp(result, "0")) { fprintf(stderr, "[gs] %s returned session 0\n", verb); free(result); ret = GS_FAILED; goto fail; }
+  if (!strcmp(result, "0")) { fprintf(stderr, "[gs] %s returned session 0\n", verb); MLT("gs: %s returned session 0", verb); free(result); ret = GS_FAILED; goto fail; }
   free(result); result = NULL;
   if (xml_search(data->memory, data->size, "sessionUrl0", &result) == GS_OK) { si->rtspSessionUrl = result; result = NULL; }
 
   fprintf(stderr, "[gs] %s ok, rtsp=%s app=%s\n", verb, si->rtspSessionUrl ? si->rtspSessionUrl : "(none)",
           si->serverInfoAppVersion ? si->serverInfoAppVersion : "?");
+  MLT("gs: %s ok rtsp=%s app=%s", verb, si->rtspSessionUrl ? si->rtspSessionUrl : "(none)",
+      si->serverInfoAppVersion ? si->serverInfoAppVersion : "?");
   http_free_data(data);
   free(server_cert);
   return GS_OK;
