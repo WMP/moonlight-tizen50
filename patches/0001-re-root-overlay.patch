@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index fcc241c..353d85e 100644
+index fcc241c..112b2d6 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -38,7 +38,7 @@ index fcc241c..353d85e 100644
  (`.github/workflows/build-packages.yml`); download them from the
  [Releases](../../releases) page and install with
  **[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
-@@ -22,111 +30,165 @@ CI builds the packages on every release
+@@ -22,111 +30,175 @@ CI builds the packages on every release
  1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
     reboot).
  2. Download the package for your TV from Releases:
@@ -194,9 +194,19 @@ index fcc241c..353d85e 100644
 +CI (`.github/workflows/build-packages.yml`) builds the `.tpk` + `.wgt` and attaches
 +them to a GitHub Release.
 +
-+1. One-time: add the **`TV_LIBS_URL`** repo secret — a URL to a tarball containing
-+   `tv-libs/usr/lib/libesplusplayer.so` (and the other TV `.so` libs). Without it the
-+   native build is skipped (the run stays green but produces no packages).
++1. One-time: host the TV libraries **privately** (they must never be public) and give
++   CI read-only access:
++   - create a **private** repo, e.g. `WMP/tv-libs`, and upload the tarball as a release
++     asset — `gh release create v1 tv-libs.tar -R WMP/tv-libs` (the tar must contain
++     `tv-libs/usr/lib/libesplusplayer.so` and the other TV `.so` files);
++   - get the asset's API URL:
++     `gh api repos/WMP/tv-libs/releases/tags/v1 --jq '.assets[0].url'`;
++   - create a **fine-grained PAT** scoped to *Contents: read* on `WMP/tv-libs` only;
++   - add two repo secrets here (*Settings → Secrets and variables → Actions*):
++     **`TV_LIBS_URL`** = that asset API URL, **`TV_LIBS_TOKEN`** = the PAT.
++   CI downloads the tar with the token in an `Authorization` header, so the URL alone
++   is useless to anyone else. Without both secrets the native build is skipped (the run
++   stays green but produces no packages).
 +2. The `third_party/moonlight-tizen` submodule must resolve (CI checks it out with
 +   `submodules: recursive`).
 +3. Push a tag `vX.Y.Z` (or run it from *Actions → Run workflow*). CI builds in the
@@ -254,7 +264,7 @@ index fcc241c..353d85e 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -137,5 +199,6 @@ device.
+@@ -137,5 +209,6 @@ device.
  
  ## Disclaimer
  

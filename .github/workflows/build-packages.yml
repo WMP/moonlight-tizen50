@@ -27,25 +27,34 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Check for TV libraries secret
+      - name: Check for TV libraries secrets
         id: gate
         run: |
-          if [ -n "${{ secrets.TV_LIBS_URL }}" ]; then
+          if [ -n "${{ secrets.TV_LIBS_URL }}" ] && [ -n "${{ secrets.TV_LIBS_TOKEN }}" ]; then
             echo "have_libs=true" >> "$GITHUB_OUTPUT"
           else
             echo "have_libs=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::TV_LIBS_URL secret not set — skipping native package build."
+            echo "::notice::TV_LIBS_URL / TV_LIBS_TOKEN not set — skipping native package build."
           fi
 
       - name: Build toolchain image
         if: steps.gate.outputs.have_libs == 'true'
         run: docker build -t moonlight-tizen-build pkg
 
-      - name: Fetch TV libraries (proprietary, from secret)
+      - name: Fetch TV libraries (proprietary, from a private store)
         if: steps.gate.outputs.have_libs == 'true'
+        env:
+          TV_LIBS_URL: ${{ secrets.TV_LIBS_URL }}
+          TV_LIBS_TOKEN: ${{ secrets.TV_LIBS_TOKEN }}
         run: |
           mkdir -p tdeps
-          curl -fsSL "${{ secrets.TV_LIBS_URL }}" -o tv-libs.tar
+          # TV_LIBS_URL points at the tarball in a PRIVATE store (e.g. a private
+          # GitHub release asset: https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>).
+          # TV_LIBS_TOKEN authorizes the download; the content is never public.
+          curl -fsSL \
+            -H "Authorization: Bearer $TV_LIBS_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "$TV_LIBS_URL" -o tv-libs.tar
           tar -xf tv-libs.tar -C tdeps
           test -f tdeps/tv-libs/usr/lib/libesplusplayer.so \
             || { echo "tv-libs tarball missing usr/lib/libesplusplayer.so"; exit 1; }

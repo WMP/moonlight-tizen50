@@ -141,9 +141,19 @@ docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
 CI (`.github/workflows/build-packages.yml`) builds the `.tpk` + `.wgt` and attaches
 them to a GitHub Release.
 
-1. One-time: add the **`TV_LIBS_URL`** repo secret — a URL to a tarball containing
-   `tv-libs/usr/lib/libesplusplayer.so` (and the other TV `.so` libs). Without it the
-   native build is skipped (the run stays green but produces no packages).
+1. One-time: host the TV libraries **privately** (they must never be public) and give
+   CI read-only access:
+   - create a **private** repo, e.g. `WMP/tv-libs`, and upload the tarball as a release
+     asset — `gh release create v1 tv-libs.tar -R WMP/tv-libs` (the tar must contain
+     `tv-libs/usr/lib/libesplusplayer.so` and the other TV `.so` files);
+   - get the asset's API URL:
+     `gh api repos/WMP/tv-libs/releases/tags/v1 --jq '.assets[0].url'`;
+   - create a **fine-grained PAT** scoped to *Contents: read* on `WMP/tv-libs` only;
+   - add two repo secrets here (*Settings → Secrets and variables → Actions*):
+     **`TV_LIBS_URL`** = that asset API URL, **`TV_LIBS_TOKEN`** = the PAT.
+   CI downloads the tar with the token in an `Authorization` header, so the URL alone
+   is useless to anyone else. Without both secrets the native build is skipped (the run
+   stays green but produces no packages).
 2. The `third_party/moonlight-tizen` submodule must resolve (CI checks it out with
    `submodules: recursive`).
 3. Push a tag `vX.Y.Z` (or run it from *Actions → Run workflow*). CI builds in the
