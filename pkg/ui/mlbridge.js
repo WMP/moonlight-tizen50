@@ -255,6 +255,21 @@
     HEAPF64: { buffer: new ArrayBuffer(0) },
   };
 
+  // Update check: moonlight-tizen's index.js asks GitHub for ITS latest release and
+  // offers that package as an update. Those packages do not fit this client, so the
+  // check is off. The functions stay in index.js; to point them at this project's
+  // releases later, set __REPO_OWNER__/__REPO_NAME__ in pkg/build-package.sh (index.js
+  // reads them in fetchLatestRelease), keep config.xml's version in step with the
+  // release tags (checkVersionUpdate compares against it) and set UPDATE_CHECK = true.
+  var UPDATE_CHECK = false;
+  function disableUpdateCheck() {
+    if (UPDATE_CHECK) return;
+    ['checkForAppUpdates', 'checkForAppUpdatesAtStartup', 'updateAppButton', 'updateAppDialog'].forEach(function (n) {
+      window[n] = function () { trace('update check disabled:', n); };
+    });
+    window.fetchLatestRelease = function () { return Promise.reject(new Error('update check disabled')); };
+  }
+
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -263,6 +278,7 @@
   // before common.js, so this DOMContentLoaded listener runs first and replaces
   // common.domContentLoaded to skip the WASM load and fire moduleDidLoad() ourselves.
   document.addEventListener('DOMContentLoaded', function () {
+    disableUpdateCheck();   // index.js is loaded now; runs before attachListeners binds the button
     trace('DOMContentLoaded: common.domContentLoaded exists =',
           !!(window.common && typeof window.common.domContentLoaded === 'function'));
     if (window.common && typeof window.common.domContentLoaded === 'function') {

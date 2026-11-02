@@ -2,7 +2,7 @@
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], timers = [], now = 0, tid = 1;
-var remoteUp = false, hostDead = false, sentAt = 0, launches = 0, sent = [], listener = null, handled = [];
+var domReady = null, remoteUp = false, hostDead = false, sentAt = 0, launches = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
@@ -25,7 +25,7 @@ var tizen = {
 };
 var sandbox = {
   window: win, tizen: tizen, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
-  document: { addEventListener: function () {} },
+  document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') domReady = f; } },
   console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () {}, error: function () {} },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
   clearTimeout: function (id) { timers = timers.filter(function (t) { return t.id !== id; }); }
@@ -145,6 +145,16 @@ test('timeout starts at send, queue re-sends on reconnect, pending reply resolve
   assert.strictEqual(sentAt, now);             // connected: sent at once
   advance(15000);                              // armed at send: 15 s after it -> timeout
   await assert.rejects(q, function (e) { return e === 'timeout'; });
+});
+
+test('upstream update check is disabled', async function () {
+  var called = [];
+  ['checkForAppUpdates', 'checkForAppUpdatesAtStartup', 'updateAppButton', 'updateAppDialog', 'fetchLatestRelease']
+    .forEach(function (n) { win[n] = function () { called.push(n); }; });
+  domReady();
+  win.checkForAppUpdates(); win.checkForAppUpdatesAtStartup(); win.updateAppButton('9'); win.updateAppDialog('9', '');
+  await assert.rejects(win.fetchLatestRelease());
+  assert.strictEqual(called.length, 0, 'original update functions must not run: ' + called);
 });
 
 test('event passes string', async function () {
