@@ -53,6 +53,7 @@ int ml_engine_start(const char *host, int appId, const char *pin,
       host ? host : "(null)", appId, pin ? "(set)" : "(null)", width, height, fps,
       bitrate_kbps, datadir ? datadir : "(null)");
   if (g_running) { MLT("ml_engine_start -> 0 (already streaming)"); return 0; }
+  if (g_started) ml_engine_stop();  /* previous session ended by host drop but was never stopped */
   if (!host) { MLT("ml_engine_start -> 2 (no host)"); return 2; }
   if (!datadir) datadir = "/tmp";
   if (!width)  width = 1920;

@@ -41,6 +41,7 @@ static int write_file(const char *path, const char *data, size_t len) {
 
 /* dir must be writable (e.g. /tmp on the TV). Returns 0 on success. */
 int ml_cert_init(const char *dir) {
+  if (g_Cert && g_PrivateKey && g_UniqueId && g_CertHex) return 0;  /* already initialised in this process */
   char certpath[1024], keypath[1024], idpath[1024];
   snprintf(certpath, sizeof certpath, "%s/client.pem", dir);
   snprintf(keypath, sizeof keypath, "%s/client.key", dir);

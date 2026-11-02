@@ -28,6 +28,7 @@ static int s_fps;
 static uint8_t *s_scratch;
 static size_t s_scratch_cap;
 static uint64_t s_base_pts_ms;
+static int s_have_base;
 
 static int ensure_scratch(size_t need) {
   if (need <= s_scratch_cap) return 0;
@@ -56,7 +57,7 @@ static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, v
   return 0;
 }
 
-static void VidDecStart(void) { s_base_pts_ms = 0; esplus_prepare(); }
+static void VidDecStart(void) { s_base_pts_ms = 0; s_have_base = 0; esplus_prepare(); }
 static void VidDecStop(void) {}
 static void VidDecCleanup(void) { esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
 
@@ -67,7 +68,7 @@ static int VidDecSubmit(PDECODE_UNIT du) {
     memcpy(s_scratch + off, e->data, (size_t)e->length);
     off += (size_t)e->length;
   }
-  if (s_base_pts_ms == 0) s_base_pts_ms = du->presentationTimeMs;
+  if (!s_have_base) { s_base_pts_ms = du->presentationTimeMs; s_have_base = 1; }
   uint64_t pts_ms = du->presentationTimeMs - s_base_pts_ms;
   esplusplayer_es_packet pkt = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, (char *)s_scratch, (uint32_t)off,
                                 pts_ms * 1000000ull, (1000000000ull / s_fps)};

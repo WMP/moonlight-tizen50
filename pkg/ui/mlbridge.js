@@ -31,9 +31,12 @@
     if (localPort && remotePort) return true;
     trace('ensurePorts: connecting', ENGINE_APPID, ENGINE_PORT);
     try {
-      localPort = tizen.messageport.requestLocalMessagePort(LOCAL_PORT);
-      localPort.addMessagePortListener(onReply);
-      remotePort = tizen.messageport.requestRemoteMessagePort(ENGINE_APPID, ENGINE_PORT);
+      if (!localPort) {
+        var lp = tizen.messageport.requestLocalMessagePort(LOCAL_PORT);
+        lp.addMessagePortListener(onReply);
+        localPort = lp;   // set only once the listener is attached
+      }
+      if (!remotePort) remotePort = tizen.messageport.requestRemoteMessagePort(ENGINE_APPID, ENGINE_PORT);
       trace('ensurePorts: ok');
       return true;
     } catch (e) {

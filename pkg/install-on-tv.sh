@@ -24,9 +24,12 @@ if [ -n "$PASS" ]; then
   [ -f /certificates/author.p12 ] && [ -f /certificates/distributor.p12 ] \
     || { echo "cert_password given but /certificates/{author,distributor}.p12 missing"; exit 1; }
   PROF="${HOME:-/home/developer}/tizen-studio-data/profile/profiles.xml"
-  sed "s|_CERTIFICATEPASSWORD_|$PASS|g" "$HERE/profile.xml" > /tmp/prof-frag.xml
-  # insert the <profile name="custom"> block before </profiles> (portable)
-  awk -v f="$(cat /tmp/prof-frag.xml)" '/<\/profiles>/{print f} {print}' "$PROF" > "$PROF.new" \
+  # XML-escape first, then escape for the sed replacement (delimiter |)
+  PASS_ESC=$(printf '%s' "$PASS" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' -e "s/'/\&apos;/g" -e 's/[\\&|]/\\&/g')
+  sed "s|_CERTIFICATEPASSWORD_|$PASS_ESC|g" "$HERE/profile.xml" > /tmp/prof-frag.xml
+  # insert the <profile name="custom"> block before </profiles> (portable; ENVIRON keeps backslashes)
+  F="$(cat /tmp/prof-frag.xml)" awk '/<\/profiles>/{print ENVIRON["F"]} {print}' "$PROF" > "$PROF.new" \
     && mv "$PROF.new" "$PROF"
   echo "[install] re-signing $PKG with custom (Samsung) certificate"
   tizen package -t "$TYPE" -s custom -- "$PKG"

@@ -108,6 +108,7 @@ void esplus_close(void) {
   MLT("esplus_close");
   pthread_mutex_lock(&s_lock);
   if (s_pl) { esplusplayer_stop(s_pl); esplusplayer_close(s_pl); s_pl = NULL; }
+  s_prepared = s_prepare_ok = s_started = 0;
   pthread_mutex_unlock(&s_lock);
   if (s_win) { ecore_wl2_window_free(s_win); s_win = NULL; }
   if (s_disp) { ecore_wl2_display_disconnect(s_disp); s_disp = NULL; }

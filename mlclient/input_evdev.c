@@ -152,10 +152,16 @@ static void *reader(void *arg) {
     int n = poll(pfd, s_nfds, 200);
     if (n <= 0) continue;
     for (int i = 0; i < s_nfds; i++) {
-      if (!(pfd[i].revents & POLLIN)) continue;
-      struct input_event ev[32];
-      ssize_t r = read(pfd[i].fd, ev, sizeof ev);
-      for (ssize_t k = 0; k >= 0 && (size_t)(k + 1) * sizeof(ev[0]) <= (size_t)r; k++) handle(&ev[k]);
+      if (pfd[i].revents & POLLIN) {
+        struct input_event ev[32];
+        ssize_t r = read(pfd[i].fd, ev, sizeof ev);
+        if (r > 0)
+          for (size_t k = 0; k < (size_t)r / sizeof ev[0]; k++) handle(&ev[k]);
+      }
+      if (pfd[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        pfd[i].fd = -1; /* poll ignores negative fds */
+        fprintf(stderr, "[input] device %d gone\n", i);
+      }
     }
   }
   return NULL;
@@ -177,12 +183,17 @@ int input_init(void) {
   closedir(d);
   if (!s_nfds) { fprintf(stderr, "[input] no readable devices (need input permissions)\n"); return -1; }
   s_run = 1;
-  return pthread_create(&s_thread, NULL, reader, NULL);
+  if (pthread_create(&s_thread, NULL, reader, NULL) != 0) {
+    for (int i = 0; i < s_nfds; i++) close(s_fds[i]);
+    s_nfds = 0; s_run = 0;
+    return -1;
+  }
+  return 0;
 }
 
 void input_shutdown(void) {
   s_run = 0;
-  if (s_thread) pthread_join(s_thread, NULL);
+  if (s_thread) { pthread_join(s_thread, NULL); s_thread = 0; }
   for (int i = 0; i < s_nfds; i++) close(s_fds[i]);
   s_nfds = 0;
 }
