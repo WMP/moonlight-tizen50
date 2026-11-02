@@ -51,8 +51,30 @@
   var localPort = null, remotePort = null, nextId = 1;
   var pending = {};   // id -> {resolve, reject, timer, msg, cmd, timeoutMs, cancelOnTimeout}
   var queue = [];     // ids waiting for the remote port, in send order
-  var launched = false, retryTimer = null, retryDelay = 250;
+  var misses = 0, LAUNCH_EVERY = 8, retryTimer = null, retryDelay = 250;
   var DEFAULT_TIMEOUT = 15000, PAIR_TIMEOUT = 120000, RETRY_MAX = 4000;
+
+  function errText(e) { return e ? (e.name || '') + ' ' + (e.message || e) : '?'; }
+
+  // The host is a service app. application.launch() does not start it on Tizen 5.0
+  // TVs, so ask with an explicit app control first (the way Samsung's guides start
+  // a background service) and fall back to launch(). Results are logged (MLUI).
+  function startHost() {
+    function ok(how) { return function () { console.log('[mlbridge] host start requested (' + how + ')'); }; }
+    function viaLaunch(why) {
+      console.warn('[mlbridge] launchAppControl failed: ' + why + '; trying application.launch');
+      try { tizen.application.launch(ENGINE_APPID, ok('launch'),
+              function (e) { console.error('[mlbridge] application.launch failed: ' + errText(e)); }); }
+      catch (e) { console.error('[mlbridge] application.launch threw: ' + errText(e)); }
+    }
+    trace('startHost', ENGINE_APPID);
+    try {
+      var ctl = new tizen.ApplicationControl('http://tizen.org/appcontrol/operation/default', null, null, null,
+                  [new tizen.ApplicationControlData('caller', ['Moonlight5.ui'])]);
+      tizen.application.launchAppControl(ctl, ENGINE_APPID, ok('appcontrol'),
+                                         function (e) { viaLaunch(errText(e)); }, null);
+    } catch (e) { viaLaunch('threw ' + errText(e)); }
+  }
 
   function ensurePorts() {
     if (localPort && remotePort) return true;
@@ -73,12 +95,9 @@
       return true;
     } catch (e) {
       trace('ensurePorts: remote port missing', e && (e.name || e.message || e));
-      if (!launched) {   // start the host once; it creates the port
-        launched = true;
-        trace('launch', ENGINE_APPID);
-        try { tizen.application.launch(ENGINE_APPID); }
-        catch (e2) { console.error('[mlbridge] launch failed:', e2); }
-      }
+      // Start the host on the first miss, then again every LAUNCH_EVERY misses
+      // (about every 30 s at the 4 s backoff) in case a launch was lost.
+      if (misses++ % LAUNCH_EVERY === 0) startHost();
       return false;
     }
   }

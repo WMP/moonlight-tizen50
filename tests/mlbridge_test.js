@@ -2,15 +2,24 @@
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], timers = [], now = 0, tid = 1;
-var remoteUp = false, hostDead = false, launches = 0, sent = [], listener = null, handled = [];
+var remoteUp = false, hostDead = false, sentAt = 0, launches = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
-  application: { launch: function (id) { launches++; assert.strictEqual(id, 'org.moonlight.host.app'); remoteUp = true; } },
+  ApplicationControl: function (op) { this.operation = op; },
+  ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
+  application: {
+    launchAppControl: function (ctl, id, ok) {
+      launches++; assert.strictEqual(id, 'org.moonlight.host.app');
+      assert.strictEqual(ctl.operation, 'http://tizen.org/appcontrol/operation/default');
+      remoteUp = true; ok();
+    },
+    launch: function () { throw new Error('launch() must not be used when launchAppControl works'); }
+  },
   messageport: {
     requestLocalMessagePort: function () { return { addMessagePortListener: function (f) { listener = f; } }; },
     requestRemoteMessagePort: function () {
       if (!remoteUp) { var e = new Error('x'); e.name = 'NotFoundError'; throw e; }
-      return { sendMessage: function (m) { if (hostDead) throw new Error('gone'); sent.push(m); } };
+      return { sendMessage: function (m) { if (hostDead) throw new Error('gone'); sent.push(m); sentAt = now; } };
     }
   }
 };
@@ -125,7 +134,7 @@ test('timeout starts at send, queue re-sends on reconnect, pending reply resolve
   assert.strictEqual(sent.length, 1);
   var f = fields(sent[0]);
   assert.strictEqual(f.cmd, 'httpInit');
-  advance(14000);                              // 14 s after the send: still pending
+  advance(sentAt + 14000 - now);               // 14 s after the send: still pending
   await tick();
   assert.strictEqual(done, null);
   reply(f.id, {});
@@ -133,6 +142,7 @@ test('timeout starts at send, queue re-sends on reconnect, pending reply resolve
   assert.strictEqual(done, 'ok', 'late but still pending reply resolves');
   var q = win.sendMessage('httpInit', ['c', 'k', 'u']);
   q.then(null, function () {});
+  assert.strictEqual(sentAt, now);             // connected: sent at once
   advance(15000);                              // armed at send: 15 s after it -> timeout
   await assert.rejects(q, function (e) { return e === 'timeout'; });
 });
