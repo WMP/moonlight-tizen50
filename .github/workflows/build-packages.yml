@@ -12,6 +12,10 @@ name: Build Moonlight packages (.tpk + .wgt)
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (for example v0.0.2). Empty: build only."
+        required: false
   push:
     tags: ['v*']
 
@@ -92,6 +96,11 @@ jobs:
               # function"), so ignore its exit code and fail only if no .wgt was made.
               REPO="$REPO" MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
                 SIGN_PROFILE=dev "$REPO/pkg/build-package.sh" || true
+              # shortcut: build-package.sh packages ui/ together with the ui/.buildResult
+              # copy made by build-web, so every file is in the .wgt twice. Repackage
+              # without it; remove this when the core script is fixed.
+              rm -rf "$REPO"/pkg/out/ui/.buildResult "$REPO"/pkg/out/ui/*.wgt
+              tizen package -t wgt -s dev -- "$REPO/pkg/out/ui"
               cp "$REPO"/pkg/out/ui/*.wgt /work/out/
               ls -la /work/out
             '
@@ -105,7 +114,10 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to release
-        if: steps.gate.outputs.have_libs == 'true' && startsWith(github.ref, 'refs/tags/')
+        if: steps.gate.outputs.have_libs == 'true' && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '')
         uses: softprops/action-gh-release@v2
         with:
+          # a dispatch with a tag creates that tag on the built commit
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: out/*
