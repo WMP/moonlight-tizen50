@@ -37,10 +37,11 @@ namespace MoonlightHost
         private const int  RTLD_NOW    = 0x0002;
         // Tizen 4/5 libc does NOT export memfd_create, so create the anonymous fd by
         // raw syscall. ARM (32-bit) __NR_memfd_create = 385.
-        private const long SYS_memfd_create_arm = 385;
+        private const int  SYS_memfd_create_arm = 385;
 
         [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
-        private static extern int syscall_memfd(long number, string name, uint flags);
+        // number is C long = 32-bit on ARM; a C# long (64-bit) shifts name/flags into the wrong registers -> EINVAL.
+        private static extern int syscall_memfd(int number, string name, uint flags);
         [DllImport("libc", SetLastError = true)]  private static extern IntPtr write(int fd, IntPtr buf, UIntPtr count);
         [DllImport("libdl")]                       private static extern IntPtr dlopen(string filename, int flags);
         [DllImport("libdl")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
