@@ -6,11 +6,13 @@
  */
 #define _GNU_SOURCE
 #include <stdarg.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include "Limelight.h"
+#include "errors.h"
 #include "mlengine.h"
 #include "mltrace.h"
 
@@ -28,6 +30,9 @@ static volatile int g_started;   /* 1 once LiStartConnection succeeded (needs Li
 static char g_host[256];         /* si.address is held by moonlight-common-c for the
                                     session, so the host string must outlive the call */
 
+static STREAM_CONFIGURATION g_sc;  /* static: held by moonlight-common-c for the session */
+static SERVER_INFORMATION g_si;
+
 static void cl_stageFailed(int stage, int errorCode) {
   fprintf(stderr, "[ml] stage %d FAILED err=%d\n", stage, errorCode);
   MLT("stageFailed stage=%d err=%d", stage, errorCode);
@@ -44,6 +49,28 @@ static void cl_logMessage(const char *format, ...) {
 #ifdef MLT_TRACE   /* moonlight-common-c RTSP/control logs */
   { char b[512]; va_start(a, format); vsnprintf(b, sizeof b, format, a); va_end(a); MLT("cc: %s", b); }
 #endif
+}
+
+/* Shared tail of both start paths: callbacks, LiStartConnection, input.
+   Uses g_sc/g_si. Returns 0 or 1 (LiStartConnection failed). */
+static int start_connection(void) {
+  DECODER_RENDERER_CALLBACKS dr; VidEsplus_FillCallbacks(&dr);
+  AUDIO_RENDERER_CALLBACKS   ar; AudEsplus_FillCallbacks(&ar);
+  CONNECTION_LISTENER_CALLBACKS cl;
+  LiInitializeConnectionCallbacks(&cl);
+  cl.stageFailed = cl_stageFailed;
+  cl.connectionTerminated = cl_connTerminated;
+  cl.logMessage = cl_logMessage;
+
+  fprintf(stderr, "[ml] LiStartConnection %dx%d@%d %dkbps -> %s\n",
+          g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, (const char *)g_si.address);
+  int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
+  if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("start_connection -> 1 (LiStartConnection %d)", err); return 1; }
+  g_started = 1; g_running = 1;
+
+  if (input_init() != 0) fprintf(stderr, "[ml] input disabled (no evdev access)\n");
+  fprintf(stderr, "[ml] streaming\n");
+  return 0;
 }
 
 int ml_engine_start(const char *host, int appId, const char *pin,
@@ -67,40 +94,23 @@ int ml_engine_start(const char *host, int appId, const char *pin,
   MLT("cert init rc=%d", certrc);
   if (certrc != 0) { fprintf(stderr, "[ml] cert init failed\n"); MLT("ml_engine_start -> 1 (cert)"); return 1; }
 
-  static STREAM_CONFIGURATION sc;        /* static: held for the session */
-  static SERVER_INFORMATION si;
-  LiInitializeStreamConfiguration(&sc);
-  sc.width = width; sc.height = height; sc.fps = fps; sc.bitrate = bitrate_kbps;
-  sc.packetSize = 1024;
-  sc.supportedVideoFormats = VIDEO_FORMAT_H264;   /* HEVC later */
-  sc.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
+  LiInitializeStreamConfiguration(&g_sc);
+  g_sc.width = width; g_sc.height = height; g_sc.fps = fps; g_sc.bitrate = bitrate_kbps;
+  g_sc.packetSize = 1024;
+  g_sc.supportedVideoFormats = VIDEO_FORMAT_H264;   /* HEVC later */
+  g_sc.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
 
-  LiInitializeServerInformation(&si);
-  si.address = g_host;
+  LiInitializeServerInformation(&g_si);
+  g_si.address = g_host;
 
-  if (gs_orchestrate(g_host, httpPort, httpsPort, appId, pin, &sc, &si, datadir) != 0) {
+  if (gs_orchestrate(g_host, httpPort, httpsPort, appId, pin, &g_sc, &g_si, datadir) != 0) {
     fprintf(stderr, "[ml] GameStream orchestration failed; cannot start stream.\n");
     MLT("ml_engine_start -> 3 (orchestrate)");
     return 3;
   }
-  si.serverCodecModeSupport = SCM_H264;
+  g_si.serverCodecModeSupport = SCM_H264;
 
-  DECODER_RENDERER_CALLBACKS dr; VidEsplus_FillCallbacks(&dr);
-  AUDIO_RENDERER_CALLBACKS   ar; AudEsplus_FillCallbacks(&ar);
-  CONNECTION_LISTENER_CALLBACKS cl;
-  LiInitializeConnectionCallbacks(&cl);
-  cl.stageFailed = cl_stageFailed;
-  cl.connectionTerminated = cl_connTerminated;
-  cl.logMessage = cl_logMessage;
-
-  fprintf(stderr, "[ml] LiStartConnection %dx%d@%d %dkbps -> %s\n",
-          width, height, fps, bitrate_kbps, g_host);
-  int err = LiStartConnection(&si, &sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
-  if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("ml_engine_start -> 1 (LiStartConnection %d)", err); return 1; }
-  g_started = 1; g_running = 1;
-
-  if (input_init() != 0) fprintf(stderr, "[ml] input disabled (no evdev access)\n");
-  fprintf(stderr, "[ml] streaming\n");
+  if (start_connection() != 0) return 1;
   MLT("ml_engine_start -> 0");
   return 0;
 }
@@ -122,4 +132,75 @@ void ml_engine_stop(void) {
   input_shutdown();
   LiStopConnection();   /* tears down stages -> video sink cleanup -> esplus_close */
   MLT("ml_engine_stop -> done");
+}
+
+/* Copy for the session lifetime: moonlight-common-c keeps these pointers. */
+static char g_sess_host[256], g_sess_appver[64], g_sess_gfever[64], g_sess_rtsp[512];
+
+static int hexval(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+int ml_engine_start_session(const char *host, int width, int height, int fps, int bitrate_kbps,
+                            const char *rikey_hex, int rikeyid, const char *app_version,
+                            const char *gfe_version, const char *rtsp_url,
+                            int server_codec_mode_support, const char *video_codec, int hdr,
+                            const char *audio_config) {
+  MLT("ml_engine_start_session host=%s %dx%d@%d %dkbps rikey=%s rikeyid=%d appver=%s gfever=%s rtsp=%s scm=%d codec=%s hdr=%d audio=%s",
+      host ? host : "(null)", width, height, fps, bitrate_kbps, rikey_hex ? "(set)" : "(null)",
+      rikeyid, app_version ? app_version : "(null)", gfe_version ? gfe_version : "(null)",
+      rtsp_url ? "(set)" : "(null)", server_codec_mode_support, video_codec ? video_codec : "(null)",
+      hdr, audio_config ? audio_config : "(null)");
+  if (g_running) { MLT("ml_engine_start_session -> 0 (already streaming)"); return 0; }
+  if (g_started) ml_engine_stop();
+  if (!host || !rikey_hex || strlen(rikey_hex) != 32) { MLT("ml_engine_start_session -> GS_INVALID"); return GS_INVALID; }
+  unsigned char key[16];
+  for (int i = 0; i < 16; i++) {
+    int hi = hexval(rikey_hex[i * 2]), lo = hexval(rikey_hex[i * 2 + 1]);
+    if (hi < 0 || lo < 0) { MLT("ml_engine_start_session -> GS_INVALID (rikey hex)"); return GS_INVALID; }
+    key[i] = (unsigned char)(hi << 4 | lo);
+  }
+  if (!width)  width = 1920;
+  if (!height) height = 1080;
+  if (!fps)    fps = 60;
+  if (!bitrate_kbps) bitrate_kbps = 20000;
+  snprintf(g_sess_host, sizeof g_sess_host, "%s", host);
+  snprintf(g_sess_appver, sizeof g_sess_appver, "%s", app_version ? app_version : "");
+  snprintf(g_sess_gfever, sizeof g_sess_gfever, "%s", gfe_version ? gfe_version : "");
+  snprintf(g_sess_rtsp, sizeof g_sess_rtsp, "%s", rtsp_url ? rtsp_url : "");
+
+  LiInitializeStreamConfiguration(&g_sc);
+  g_sc.width = width; g_sc.height = height; g_sc.fps = fps; g_sc.bitrate = bitrate_kbps;
+  g_sc.packetSize = 1024;
+  if (video_codec && !strcmp(video_codec, "HEVC"))
+    g_sc.supportedVideoFormats = hdr ? VIDEO_FORMAT_H265_MAIN10 : VIDEO_FORMAT_H265;
+  else {
+    if (video_codec && !strcmp(video_codec, "AV1")) {
+      fprintf(stderr, "[ml] AV1 not supported by the video sink, using H264\n");
+      MLT("start_session: AV1 -> H264 fallback");
+    }
+    g_sc.supportedVideoFormats = VIDEO_FORMAT_H264;
+  }
+  g_sc.audioConfiguration = !audio_config ? AUDIO_CONFIGURATION_STEREO
+    : !strcmp(audio_config, "51Surround") ? AUDIO_CONFIGURATION_51_SURROUND
+    : !strcmp(audio_config, "71Surround") ? AUDIO_CONFIGURATION_71_SURROUND
+    : AUDIO_CONFIGURATION_STEREO;
+  memcpy(g_sc.remoteInputAesKey, key, 16);
+  memset(g_sc.remoteInputAesIv, 0, 16);
+  int iv = (int)htonl((unsigned int)rikeyid);
+  memcpy(g_sc.remoteInputAesIv, &iv, sizeof iv);
+
+  LiInitializeServerInformation(&g_si);
+  g_si.address = g_sess_host;
+  g_si.serverInfoAppVersion = g_sess_appver;
+  g_si.serverInfoGfeVersion = g_sess_gfever;
+  g_si.rtspSessionUrl = g_sess_rtsp[0] ? g_sess_rtsp : NULL;
+  g_si.serverCodecModeSupport = server_codec_mode_support ? server_codec_mode_support : SCM_H264;
+
+  int rc = start_connection();
+  MLT("ml_engine_start_session -> %d", rc);
+  return rc;
 }

@@ -30,6 +30,23 @@ void ml_engine_wait(void);
 /* Stop the session and release the HW video overlay. Idempotent. */
 void ml_engine_stop(void);
 
+/* Per-step calls used by the web UI through the host (pkg/ui/PROTOCOL.md).
+ * Out strings/buffers are malloc'd: release them with ml_engine_free(). All return
+ * 0 on success, else an engine/libgamestream error code (GS_* from errors.h). */
+int  ml_engine_make_cert(char **cert_pem, char **key_pem);
+int  ml_engine_http_init(const char *cert_pem, const char *key_pem, const char *unique_id);
+int  ml_engine_open_url(const char *url, const char *ppk, unsigned char **out, int *out_len);
+int  ml_engine_pair(int server_major, const char *address, int http_port, const char *pin,
+                    char **server_cert_pem);
+void ml_engine_cancel_request(void);
+int  ml_engine_start_session(const char *host, int width, int height, int fps, int bitrate_kbps,
+                             const char *rikey_hex, int rikeyid, const char *app_version,
+                             const char *gfe_version, const char *rtsp_url,
+                             int server_codec_mode_support, const char *video_codec, int hdr,
+                             const char *audio_config);
+void ml_engine_send_key(int key_code, int key_action, int modifiers);
+void ml_engine_free(void *p);
+
 #ifdef __cplusplus
 }
 #endif
