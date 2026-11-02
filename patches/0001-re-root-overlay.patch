@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index fcc241c..8e07f55 100644
+index fcc241c..353d85e 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,20 +1,21 @@
+@@ -1,20 +1,28 @@
 -# moonlight-tizen50-core
 +# moonlight-tizen5.0
  
@@ -24,14 +24,21 @@ index fcc241c..8e07f55 100644
 +> brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state.
  
 -## Install (no build needed)
-+## Install (no root required)
++> **Where to make changes:** the engine and UI are developed in
++> **[moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core)**. This repo
++> is that upstream **plus `patches/`** (the device-integration overlay), re-assembled by
++> `.github/workflows/sync-from-clean.yml`. Edit code in core; here only the overlay
++> (`patches/`), the device-only files (`pkg/service/`, `pkg/roottest/`) and `docs/` are
++> maintained directly. See [`AGENTS.md`](AGENTS.md).
  
 -CI builds the packages on every release
++## Install (no root required)
++
 +**You do not build anything.** CI builds the packages on every release
  (`.github/workflows/build-packages.yml`); download them from the
  [Releases](../../releases) page and install with
  **[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
-@@ -22,111 +23,148 @@ CI builds the packages on every release
+@@ -22,111 +30,165 @@ CI builds the packages on every release
  1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
     reboot).
  2. Download the package for your TV from Releases:
@@ -46,14 +53,14 @@ index fcc241c..8e07f55 100644
 +   with a sample dev cert on purpose — Apps2Samsung re-signs per-DUID, which is
 +   what the TV accepts (a fixed distributor cert would lock installs to a preset
 +   list of TVs). No Samsung certificate to create by hand, no `sdb` commands.
++
++The hardware video path runs from this sandboxed, dev-signed app — **root is not
++required** (the esplusplayer path runs under a `User::Pkg` SMACK label). Root is
++only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
  
 -> Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
 -> does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
 -> you supply. Apps2Samsung is the same step, automated.
-+The hardware video path runs from this sandboxed, dev-signed app — **root is not
-+required** (the esplusplayer path runs under a `User::Pkg` SMACK label). Root is
-+only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
-+
 +> Developer alternative (no Apps2Samsung): `pkg/install-on-tv.sh <TV_IP>
 +> <package> [cert_password]` does `sdb connect` + `tizen install`, re-signing with
 +> a Samsung DUID cert you supply (`author.p12`/`distributor.p12`). Apps2Samsung is
@@ -162,16 +169,16 @@ index fcc241c..8e07f55 100644
 -    REPO=$REPO MLT=$MLT pkg/build-package.sh     # -> the web .wgt'
 +    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps \
 +      /work/repo/pkg/build-package.sh'
-+```
-+
+ ```
+ 
 +Then install on the TV exactly like Jellyfin — `sdb` + `tizen install`, in
 +Developer Mode:
 +
 +```bash
 +docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
 +  /work/repo/pkg/install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
- ```
- 
++```
++
 +> **Packaging status.** The web `.wgt` builds, signs and installs headless on the
 +> vitalets image (the Tizen-Studio-install problem is gone). The native engine ships
 +> as `libmlengine.so` driven by a thin exe (root path) or a **.NET host `.tpk`**
@@ -181,6 +188,23 @@ index fcc241c..8e07f55 100644
 +> install with Apps2Samsung (per-DUID signing); developers can use `install-on-tv.sh`
 +> with a Samsung DUID cert, since recent TVs reject the default Tizen cert
 +> ("Invalid certificate chain").
++
++## Releasing
++
++CI (`.github/workflows/build-packages.yml`) builds the `.tpk` + `.wgt` and attaches
++them to a GitHub Release.
++
++1. One-time: add the **`TV_LIBS_URL`** repo secret — a URL to a tarball containing
++   `tv-libs/usr/lib/libesplusplayer.so` (and the other TV `.so` libs). Without it the
++   native build is skipped (the run stays green but produces no packages).
++2. The `third_party/moonlight-tizen` submodule must resolve (CI checks it out with
++   `submodules: recursive`).
++3. Push a tag `vX.Y.Z` (or run it from *Actions → Run workflow*). CI builds in the
++   Docker image and uploads `org.moonlight.host-*.tpk` + `Moonlight-*.wgt` to the Release.
++4. Users install the released packages with Apps2Samsung (per-DUID signing).
++
++For the sync workflow to open PRs, enable *Settings → Actions → General → Allow GitHub
++Actions to create and approve pull requests*.
 +
  ## Requirements
  
@@ -230,7 +254,7 @@ index fcc241c..8e07f55 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -137,5 +175,6 @@ device.
+@@ -137,5 +199,6 @@ device.
  
  ## Disclaimer
  

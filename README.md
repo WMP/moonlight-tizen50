@@ -13,6 +13,13 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 > frame player latency). The hybrid app package (UI + service) is still being
 > brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state.
 
+> **Where to make changes:** the engine and UI are developed in
+> **[moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core)**. This repo
+> is that upstream **plus `patches/`** (the device-integration overlay), re-assembled by
+> `.github/workflows/sync-from-clean.yml`. Edit code in core; here only the overlay
+> (`patches/`), the device-only files (`pkg/service/`, `pkg/roottest/`) and `docs/` are
+> maintained directly. See [`AGENTS.md`](AGENTS.md).
+
 ## Install (no root required)
 
 **You do not build anything.** CI builds the packages on every release
@@ -128,6 +135,23 @@ docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
 > install with Apps2Samsung (per-DUID signing); developers can use `install-on-tv.sh`
 > with a Samsung DUID cert, since recent TVs reject the default Tizen cert
 > ("Invalid certificate chain").
+
+## Releasing
+
+CI (`.github/workflows/build-packages.yml`) builds the `.tpk` + `.wgt` and attaches
+them to a GitHub Release.
+
+1. One-time: add the **`TV_LIBS_URL`** repo secret — a URL to a tarball containing
+   `tv-libs/usr/lib/libesplusplayer.so` (and the other TV `.so` libs). Without it the
+   native build is skipped (the run stays green but produces no packages).
+2. The `third_party/moonlight-tizen` submodule must resolve (CI checks it out with
+   `submodules: recursive`).
+3. Push a tag `vX.Y.Z` (or run it from *Actions → Run workflow*). CI builds in the
+   Docker image and uploads `org.moonlight.host-*.tpk` + `Moonlight-*.wgt` to the Release.
+4. Users install the released packages with Apps2Samsung (per-DUID signing).
+
+For the sync workflow to open PRs, enable *Settings → Actions → General → Allow GitHub
+Actions to create and approve pull requests*.
 
 ## Requirements
 
