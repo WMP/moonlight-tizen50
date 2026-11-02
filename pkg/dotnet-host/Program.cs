@@ -49,9 +49,9 @@ namespace MoonlightHost
         // number is C long = 32-bit on ARM; a C# long (64-bit) shifts name/flags into the wrong registers -> EINVAL.
         private static extern int syscall_memfd(int number, string name, uint flags);
         [DllImport("libc", SetLastError = true)]  private static extern IntPtr write(int fd, IntPtr buf, UIntPtr count);
-        [DllImport("libdl")]                       private static extern IntPtr dlopen(string filename, int flags);
-        [DllImport("libdl")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
-        [DllImport("libdl")]                       private static extern IntPtr dlerror();
+        [DllImport("libdl.so.2")]                       private static extern IntPtr dlopen(string filename, int flags);
+        [DllImport("libdl.so.2")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
+        [DllImport("libdl.so.2")]                       private static extern IntPtr dlerror();
 
         public static IntPtr LoadFromMemory(byte[] so)
         {
