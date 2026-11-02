@@ -49,10 +49,32 @@
   } catch (e) { console.error('[mlbridge] webapis guard failed:', e); }
 
   var localPort = null, remotePort = null, nextId = 1;
-  var pending = {};   // id -> {resolve, reject, timer}
-  var queue = [];     // messages waiting for the remote port
-  var launched = false, retryTimer = null, retryDelay = 250;
+  var pending = {};   // id -> {resolve, reject, timer, msg, cmd, timeoutMs, cancelOnTimeout}
+  var queue = [];     // ids waiting for the remote port, in send order
+  var misses = 0, LAUNCH_EVERY = 8, retryTimer = null, retryDelay = 250;
   var DEFAULT_TIMEOUT = 15000, PAIR_TIMEOUT = 120000, RETRY_MAX = 4000;
+
+  function errText(e) { return e ? (e.name || '') + ' ' + (e.message || e) : '?'; }
+
+  // The host is a service app. application.launch() does not start it on Tizen 5.0
+  // TVs, so ask with an explicit app control first (the way Samsung's guides start
+  // a background service) and fall back to launch(). Results are logged (MLUI).
+  function startHost() {
+    function ok(how) { return function () { console.log('[mlbridge] host start requested (' + how + ')'); }; }
+    function viaLaunch(why) {
+      console.warn('[mlbridge] launchAppControl failed: ' + why + '; trying application.launch');
+      try { tizen.application.launch(ENGINE_APPID, ok('launch'),
+              function (e) { console.error('[mlbridge] application.launch failed: ' + errText(e)); }); }
+      catch (e) { console.error('[mlbridge] application.launch threw: ' + errText(e)); }
+    }
+    trace('startHost', ENGINE_APPID);
+    try {
+      var ctl = new tizen.ApplicationControl('http://tizen.org/appcontrol/operation/default', null, null, null,
+                  [new tizen.ApplicationControlData('caller', ['Moonlight5.ui'])]);
+      tizen.application.launchAppControl(ctl, ENGINE_APPID, ok('appcontrol'),
+                                         function (e) { viaLaunch(errText(e)); }, null);
+    } catch (e) { viaLaunch('threw ' + errText(e)); }
+  }
 
   function ensurePorts() {
     if (localPort && remotePort) return true;
@@ -73,42 +95,93 @@
       return true;
     } catch (e) {
       trace('ensurePorts: remote port missing', e && (e.name || e.message || e));
-      if (!launched) {   // start the host once; it creates the port
-        launched = true;
-        trace('launch', ENGINE_APPID);
-        try { tizen.application.launch(ENGINE_APPID); }
-        catch (e2) { console.error('[mlbridge] launch failed:', e2); }
-      }
+      // Start the host on the first miss, then again every LAUNCH_EVERY misses
+      // (about every 30 s at the 4 s backoff) in case a launch was lost.
+      if (misses++ % LAUNCH_EVERY === 0) startHost();
       return false;
     }
   }
 
-  function rawSend(msg) {
-    try { remotePort.sendMessage(msg, localPort); return null; }
-    catch (e) { remotePort = null; launched = false; return e; }   // host gone: reconnect (and relaunch) on the next call
+  // Tizen message ports reject a message over ~4 KB, so a large message is sent as
+  // ordered parts {id, seq, total, field, chunk} (pkg/ui/PROTOCOL.md). The limits
+  // leave room for the Bundle encoding overhead.
+  var MAX_SINGLE = 1536, CHUNK_CHARS = 512;   // 512 chars <= 1536 UTF-8 bytes
+  function utf8Len(v) { try { return unescape(encodeURIComponent(v)).length; } catch (e) { return v.length * 3; } }
+
+  // msg: [{key,value}] with cmd and id first. Returns the list of messages to send.
+  function split(msg) {
+    var size = 0, i;
+    for (i = 0; i < msg.length; i++) size += msg[i].key.length + utf8Len(msg[i].value);
+    if (size <= MAX_SINGLE) return [msg];
+    var parts = [];
+    for (i = 2; i < msg.length; i++) {
+      var v = msg[i].value, off = 0;
+      do { parts.push({ field: msg[i].key, chunk: v.substr(off, CHUNK_CHARS) }); off += CHUNK_CHARS; } while (off < v.length);
+    }
+    return parts.map(function (pt, seq) {
+      return [msg[0], msg[1], { key: 'seq', value: String(seq) }, { key: 'total', value: String(parts.length) },
+              { key: 'field', value: pt.field }, { key: 'chunk', value: pt.chunk }];
+    });
+  }
+
+  // Collects the parts of a chunked reply; returns the joined map once all arrived.
+  var partial = {};   // id -> {total, n, seqs: {seq: {field, chunk}}}
+  function join(m) {
+    var a = partial[m.id] || (partial[m.id] = { total: +m.total, n: 0, seqs: {} });
+    if (!a.seqs[m.seq]) { a.seqs[m.seq] = { field: m.field, chunk: m.chunk }; a.n++; }
+    if (a.n < a.total) return null;
+    delete partial[m.id];
+    var out = { id: m.id };
+    for (var i = 0; i < a.total; i++) {
+      var pt = a.seqs[i], prev = out[pt.field];
+      if (prev === undefined) out[pt.field] = pt.chunk;
+      else if (typeof prev === 'string') out[pt.field] = prev + pt.chunk;
+      else out[pt.field] = prev.concat(Array.prototype.slice.call(pt.chunk));   // byte chunks
+    }
+    trace('joined id=' + m.id, 'parts=' + a.total);
+    return out;
+  }
+
+  // Send one pending command. Its timeout is armed only after sendMessage succeeded,
+  // so time spent waiting for the host to start does not count against it.
+  function sendNow(id) {
+    var p = pending[id];
+    if (!p) return;
+    try { for (var i = 0; i < p.msgs.length; i++) remotePort.sendMessage(p.msgs[i], localPort); }
+    catch (e) {   // host gone: forget the port, keep the command first in the queue, reconnect
+      trace('send failed id=' + id, e && (e.name || e.message || e));
+      remotePort = null;
+      queue.unshift(id);
+      scheduleRetry();
+      return;
+    }
+    trace('sent cmd=' + p.cmd, 'id=' + id, p.msgs.length > 1 ? 'parts=' + p.msgs.length : '');
+    if (p.timeoutMs > 0) p.timer = setTimeout(function () { onTimeout(id); }, p.timeoutMs);
+  }
+
+  function onTimeout(id) {
+    var p = pending[id];
+    if (!p) return;
+    delete pending[id];
+    trace('timeout cmd=' + p.cmd, 'id=' + id);
+    if (p.cancelOnTimeout) bridgeCall('cancelRequest', {}, 0).then(null, function () {});
+    p.reject('timeout');
   }
 
   function flush() {
     trace('flush queued=' + queue.length);
-    while (queue.length) {
-      var q = queue.shift();
-      var err = rawSend(q.msg);
-      if (err) failPending(q.id, err);
-    }
-  }
-
-  function failPending(id, err) {
-    var p = pending[id];
-    if (!p) return;
-    delete pending[id];
-    if (p.timer) clearTimeout(p.timer);
-    p.reject(err);
+    while (queue.length && remotePort) sendNow(queue.shift());
   }
 
   // Connect now, or retry with backoff (250 ms doubling up to 4 s); one timer at a time.
   function connect() {
     if (retryTimer) return;
     if (ensurePorts()) { retryDelay = 250; flush(); return; }
+    scheduleRetry();
+  }
+
+  function scheduleRetry() {
+    if (retryTimer) return;
     trace('retry in ' + retryDelay + ' ms');
     retryTimer = setTimeout(function () {
       retryTimer = null;
@@ -121,6 +194,7 @@
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
+    if (m.total !== undefined) { m = join(m); if (!m) return; }
     trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
@@ -146,23 +220,11 @@
         msg.push({ key: k, value: String(fields[k]) });
         names.push(k);   // names only: cert/key/pin values must not be logged
       }
-      var p = pending[id] = { resolve: resolve, reject: reject, timer: null };
-      if (timeoutMs > 0) p.timer = setTimeout(function () {
-        if (!pending[id]) return;
-        delete pending[id];
-        trace('timeout cmd=' + cmd, 'id=' + id);
-        if (cancelOnTimeout) bridgeCall('cancelRequest', {}, 0).then(null, function () {});
-        reject('timeout');
-      }, timeoutMs);
-      if (remotePort) {
-        trace('send cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
-        var err = rawSend(msg);
-        if (err) failPending(id, err);
-      } else {
-        trace('queue cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
-        queue.push({ id: id, msg: msg });
-        connect();
-      }
+      pending[id] = { resolve: resolve, reject: reject, timer: null, msgs: split(msg), cmd: cmd,
+                      timeoutMs: timeoutMs, cancelOnTimeout: cancelOnTimeout };
+      trace('call cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
+      if (remotePort && !queue.length) sendNow(id);
+      else { trace('queue id=' + id); queue.push(id); connect(); }
     });
   }
 
@@ -234,6 +296,31 @@
     HEAPF64: { buffer: new ArrayBuffer(0) },
   };
 
+  // Update check: moonlight-tizen's index.js asks GitHub for ITS latest release and
+  // offers that package as an update. Those packages do not fit this client, so the
+  // check is off. The functions stay in index.js; to point them at this project's
+  // releases later, set __REPO_OWNER__/__REPO_NAME__ in pkg/build-package.sh (index.js
+  // reads them in fetchLatestRelease), keep config.xml's version in step with the
+  // release tags (checkVersionUpdate compares against it) and set UPDATE_CHECK = true.
+  var UPDATE_CHECK = false;
+  function disableUpdateCheck() {
+    if (UPDATE_CHECK) return;
+    ['checkForAppUpdates', 'checkForAppUpdatesAtStartup', 'updateAppButton', 'updateAppDialog'].forEach(function (n) {
+      window[n] = function () { trace('update check disabled:', n); };
+    });
+    window.fetchLatestRelease = function () { return Promise.reject(new Error('update check disabled')); };
+  }
+
+  // Settings > About shows "Moonlight v<version> (<build>)": which fork, variant,
+  // commit and base UI version (build-package.sh fills ML_BUILD). index.js would show
+  // only the version, or the base UI's commit in debug.
+  var ML_BUILD = '__ML_BUILD__';
+  function showBuild() {
+    window.getBuildVersion = function (version) {
+      return version + ' (' + (ML_BUILD.indexOf('__') === 0 ? 'tizen50-core dev' : ML_BUILD) + ')';
+    };
+  }
+
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -242,6 +329,8 @@
   // before common.js, so this DOMContentLoaded listener runs first and replaces
   // common.domContentLoaded to skip the WASM load and fire moduleDidLoad() ourselves.
   document.addEventListener('DOMContentLoaded', function () {
+    disableUpdateCheck();   // index.js is loaded now; runs before attachListeners binds the button
+    showBuild();
     trace('DOMContentLoaded: common.domContentLoaded exists =',
           !!(window.common && typeof window.common.domContentLoaded === 'function'));
     if (window.common && typeof window.common.domContentLoaded === 'function') {

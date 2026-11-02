@@ -28,13 +28,21 @@ cp "$HERE/ui/config.xml" "$OUT/ui/config.xml"
 cp "$HERE/ui/icon.png" "$OUT/ui/icon.png" 2>/dev/null || true
 # Inject the message-port shim after messages.js (it replaces the WASM transport).
 sed -i 's#<script type="text/javascript" src="platform/messages.js"></script>#&\n  <script type="text/javascript" src="platform/mlbridge.js"></script>#' "$OUT/ui/index.html"
-# Build metadata placeholders in index.js (moonlight-tizen's own Dockerfile does the same).
-if [ "$BUILD_VARIANT" = debug ]; then BT=development; else BT=release; fi
-sed -i "s/__BUILD_TYPE__/$BT/g" "$OUT/ui/platform/index.js"
-if [ "$BT" = development ]; then
-  SHA=$(git -C "$MLT" rev-parse --short HEAD 2>/dev/null || true)
-  [ -n "$SHA" ] && sed -i "s/__BUILD_COMMIT__/$SHA/g" "$OUT/ui/platform/index.js"
+# Version + build id shown in Settings > About ("Moonlight v<ver> (<ML_BUILD>)").
+#   APP_VERSION   x.y.z for config.xml (CI: the release tag); unset keeps config.xml's
+#   BUILD_COMMIT  this repo's commit (CI passes it; git may refuse the mount in a container)
+BUILD_COMMIT=${BUILD_COMMIT:-$(git -C "$REPO" -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo unknown)}
+UI_BASE=$(sed -n 's/.*<widget[^>]* version="\([^"]*\)".*/\1/p' "$MLT/res/config.xml" | head -1)
+ML_BUILD="tizen50-core $BUILD_VARIANT $BUILD_COMMIT${UI_BASE:+, UI $UI_BASE}"
+if [ -n "$APP_VERSION" ]; then
+  echo "$APP_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "APP_VERSION must be x.y.z, got: $APP_VERSION" >&2; exit 1; }
+  sed -i "/<widget/,/>/ s/ version=\"[^\"]*\"/ version=\"$APP_VERSION\"/" "$OUT/ui/config.xml"   # <widget> spans lines
 fi
+sed -i "s/__ML_BUILD__/$ML_BUILD/" "$OUT/ui/platform/mlbridge.js"
+# index.js placeholders (moonlight-tizen's own Dockerfile does the same).
+if [ "$BUILD_VARIANT" = debug ]; then BT=development; else BT=release; fi
+sed -i -e "s/__BUILD_TYPE__/$BT/g" -e "s/__BUILD_COMMIT__/$BUILD_COMMIT/g" "$OUT/ui/platform/index.js"
+echo "version: $(sed -n '/<widget/,/>/ s/.* version="\([^"]*\)".*/\1/p' "$OUT/ui/config.xml" | head -1) ($ML_BUILD)"
 if [ "$BUILD_VARIANT" = debug ]; then
   # trace build: console -> host -> dlog (see ui/mltrace.js); first script in <head>
   cp "$HERE/ui/mltrace.js" "$OUT/ui/platform/mltrace.js"

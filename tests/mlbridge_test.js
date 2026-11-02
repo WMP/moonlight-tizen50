@@ -2,21 +2,30 @@
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], timers = [], now = 0, tid = 1;
-var remoteUp = false, launches = 0, sent = [], listener = null, handled = [];
+var domReady = null, remoteUp = false, hostDead = false, sentAt = 0, launches = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
-  application: { launch: function (id) { launches++; assert.strictEqual(id, 'org.moonlight.host.app'); remoteUp = true; } },
+  ApplicationControl: function (op) { this.operation = op; },
+  ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
+  application: {
+    launchAppControl: function (ctl, id, ok) {
+      launches++; assert.strictEqual(id, 'org.moonlight.host.app');
+      assert.strictEqual(ctl.operation, 'http://tizen.org/appcontrol/operation/default');
+      remoteUp = true; ok();
+    },
+    launch: function () { throw new Error('launch() must not be used when launchAppControl works'); }
+  },
   messageport: {
     requestLocalMessagePort: function () { return { addMessagePortListener: function (f) { listener = f; } }; },
     requestRemoteMessagePort: function () {
       if (!remoteUp) { var e = new Error('x'); e.name = 'NotFoundError'; throw e; }
-      return { sendMessage: function (m) { sent.push(m); } };
+      return { sendMessage: function (m) { if (hostDead) throw new Error('gone'); sent.push(m); sentAt = now; } };
     }
   }
 };
 var sandbox = {
   window: win, tizen: tizen, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
-  document: { addEventListener: function () {} },
+  document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') domReady = f; } },
   console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () {}, error: function () {} },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
   clearTimeout: function (id) { timers = timers.filter(function (t) { return t.id !== id; }); }
@@ -108,6 +117,79 @@ test('timeouts and late reply', async function () {
   advance(15000);
   await assert.rejects(q, function (e) { return e === 'timeout'; });
   assert.strictEqual(sent.length, 3);   // no cancelRequest for non-openUrl
+});
+
+test('timeout starts at send, queue re-sends on reconnect, pending reply resolves', async function () {
+  sent.length = 0;
+  hostDead = true; remoteUp = false;           // host died: next send fails, port is gone
+  var done = null;
+  var p = win.sendMessage('httpInit', ['c', 'k', 'u']);
+  p.then(function () { done = 'ok'; }, function (e) { done = 'err ' + e; });
+  assert.strictEqual(sent.length, 0);
+  advance(60000);                              // much longer than 15 s, but never sent
+  await tick();
+  assert.strictEqual(done, null, 'must not time out while queued');
+  hostDead = false; remoteUp = true;           // host is back
+  advance(4000);                               // next retry reconnects and flushes
+  assert.strictEqual(sent.length, 1);
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'httpInit');
+  advance(sentAt + 14000 - now);               // 14 s after the send: still pending
+  await tick();
+  assert.strictEqual(done, null);
+  reply(f.id, {});
+  await tick();
+  assert.strictEqual(done, 'ok', 'late but still pending reply resolves');
+  var q = win.sendMessage('httpInit', ['c', 'k', 'u']);
+  q.then(null, function () {});
+  assert.strictEqual(sentAt, now);             // connected: sent at once
+  advance(15000);                              // armed at send: 15 s after it -> timeout
+  await assert.rejects(q, function (e) { return e === 'timeout'; });
+});
+
+test('upstream update check is disabled', async function () {
+  var called = [];
+  ['checkForAppUpdates', 'checkForAppUpdatesAtStartup', 'updateAppButton', 'updateAppDialog', 'fetchLatestRelease']
+    .forEach(function (n) { win[n] = function () { called.push(n); }; });
+  domReady();
+  win.checkForAppUpdates(); win.checkForAppUpdatesAtStartup(); win.updateAppButton('9'); win.updateAppDialog('9', '');
+  await assert.rejects(win.fetchLatestRelease());
+  assert.strictEqual(called.length, 0, 'original update functions must not run: ' + called);
+});
+
+test('multi-part replies join; large commands are split', async function () {
+  sent.length = 0;
+  var xml = '<root>' + new Array(3000).join('x') + '</root>';
+  var p = win.sendMessage('openUrl', ['https://h/applist', null, false, 0]);
+  var id = fields(sent[0]).id;
+  var parts = [xml.slice(0, 1000), xml.slice(1000, 2000), xml.slice(2000)];
+  [2, 0, 1].forEach(function (seq) {          // out of order, plus one duplicate
+    listener([{ key: 'id', value: id }, { key: 'seq', value: String(seq) }, { key: 'total', value: '3' },
+              { key: 'field', value: 'data' }, { key: 'chunk', value: parts[seq] }]);
+  });
+  assert.strictEqual(await p, xml);
+  var pb = win.sendMessage('openUrl', ['https://h/appasset', null, true, 0]);
+  var idb = fields(sent[1]).id;
+  listener([{ key: 'id', value: idb }, { key: 'seq', value: '0' }, { key: 'total', value: '2' }, { key: 'field', value: 'data' }, { key: 'chunk', value: [1, 2] }]);
+  listener([{ key: 'id', value: idb }, { key: 'seq', value: '1' }, { key: 'total', value: '2' }, { key: 'field', value: 'data' }, { key: 'chunk', value: [3] }]);
+  var r = await pb;
+  assert.ok(r instanceof Uint8Array); assert.strictEqual(Array.prototype.join.call(r, ','), '1,2,3');
+
+  sent.length = 0;                             // UI -> host: a ~3 KB httpInit is split
+  var cert = new Array(1400).join('C'), key = new Array(1700).join('K');
+  var q = win.sendMessage('httpInit', [cert, key, 'uid']);
+  assert.ok(sent.length > 1, 'split into parts');
+  var got = {};
+  sent.forEach(function (m) {
+    var f = fields(m);
+    assert.strictEqual(f.cmd, 'httpInit'); assert.strictEqual(f.total, String(sent.length));
+    var bytes = m.reduce(function (n, kv) { return n + kv.key.length + String(kv.value).length; }, 0);
+    assert.ok(bytes <= 2048, 'part size ' + bytes);
+    got[f.field] = (got[f.field] || '') + f.chunk;
+  });
+  assert.strictEqual(got.cert, cert); assert.strictEqual(got.key, key); assert.strictEqual(got.uniqueId, 'uid');
+  reply(fields(sent[0]).id, {});
+  await q;
 });
 
 test('event passes string', async function () {
