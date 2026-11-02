@@ -143,12 +143,12 @@ them to a GitHub Release.
 
 1. One-time: host the TV libraries **privately** (they must never be public) and give
    CI read-only access:
-   - create a **private** repo, e.g. `WMP/tv-libs`, and upload the tarball as a release
-     asset — `gh release create v1 tv-libs.tar -R WMP/tv-libs` (the tar must contain
+   - create a **private** repo, e.g. `WMP/tizen-50-tv-libs`, and upload the tarball as a release
+     asset — `gh release create v1 tv-libs.tar -R WMP/tizen-50-tv-libs` (the tar must contain
      `tv-libs/usr/lib/libesplusplayer.so` and the other TV `.so` files);
    - get the asset's API URL:
-     `gh api repos/WMP/tv-libs/releases/tags/v1 --jq '.assets[0].url'`;
-   - create a **fine-grained PAT** scoped to *Contents: read* on `WMP/tv-libs` only;
+     `gh api repos/WMP/tizen-50-tv-libs/releases/tags/v1 --jq '.assets[0].url'`;
+   - create a **fine-grained PAT** scoped to *Contents: read* on `WMP/tizen-50-tv-libs` only;
    - add two repo secrets here (*Settings → Secrets and variables → Actions*):
      **`TV_LIBS_URL`** = that asset API URL, **`TV_LIBS_TOKEN`** = the PAT.
    CI downloads the tar with the token in an `Authorization` header, so the URL alone
