@@ -24,6 +24,29 @@
     console.log.apply(console, a);
   }
 
+  // index.js reads Samsung product/AV info at top level (index.js:2-29). One throwing
+  // call there aborts the whole file (db, BUILD_TYPE never initialise) and the UI
+  // resets to the splash. mlbridge.js loads before index.js, so wrap those calls
+  // to log and return a safe default instead of throwing.
+  function guard(obj, name, names, dflt) {
+    if (!obj) return;
+    names.forEach(function (n) {
+      var f = obj[n];
+      if (typeof f !== 'function') return;
+      obj[n] = function () {
+        try { return f.apply(obj, arguments); }
+        catch (e) { console.warn('[mlbridge] ' + name + '.' + n + ' failed, using default:', e && (e.message || e.name || e)); return dflt; }
+      };
+    });
+  }
+  try {
+    if (window.webapis) {
+      guard(webapis.productinfo, 'productinfo', ['getModel', 'getRealModel', 'getModelCode', 'getFirmware', 'getDuid'], '');
+      guard(webapis.productinfo, 'productinfo', ['isUdPanelSupported', 'is8KPanelSupported'], false);
+      guard(webapis.avinfo, 'avinfo', ['isHdrTvSupport'], false);
+    }
+  } catch (e) { console.error('[mlbridge] webapis guard failed:', e); }
+
   var localPort = null, remotePort = null, nextId = 1;
   var pending = {};   // id -> {resolve, reject, binary}
 
