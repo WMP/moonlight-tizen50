@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index fcc241c..3b59092 100644
+index 4be5581..76bd41b 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -38,7 +38,7 @@ index fcc241c..3b59092 100644
  (`.github/workflows/build-packages.yml`); download them from the
  [Releases](../../releases) page and install with
  **[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
-@@ -22,111 +30,175 @@ CI builds the packages on every release
+@@ -22,16 +30,22 @@ CI builds the packages on every release
  1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
     reboot).
  2. Download the package for your TV from Releases:
@@ -65,6 +65,21 @@ index fcc241c..3b59092 100644
 +> <package> [cert_password]` does `sdb connect` + `tizen install`, re-signing with
 +> a Samsung DUID cert you supply (`author.p12`/`distributor.p12`). Apps2Samsung is
 +> the same DUID signing step, automated.
+ 
+ ## Debug vs release packages
+ 
+@@ -54,107 +68,163 @@ sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
+ sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
+ ```
+ 
+-The UI console reaches `dlog` only through the debug host, which relays it. If
+-the debug host is not running, UI lines are not shown in `dlog`. For the web
+-inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
+-open `chrome://inspect` in Chrome.
++The UI console reaches `dlog` only through the debug host, which relays it. If the
++debug host is not running, UI lines are not shown in `dlog`. For the web inspector run
++`sdb forward tcp:<port> tcp:<port>` with the printed port, then open `chrome://inspect`
++in Chrome.
  
  ## Why this exists
  
@@ -159,10 +174,12 @@ index fcc241c..3b59092 100644
  docker build -t moonlight-tizen-build pkg
  
 -# 3. build the engine .so, the .NET host .tpk, and the web .wgt in the container
+-#    BUILD_VARIANT=release (default) or debug (trace build) is read by all three scripts
 +# 3. build the engine .so + the web .wgt inside the container
 +#    (first: git submodule update --init --depth 1 third_party/moonlight-tizen)
  docker run --rm -v "$PWD":/work/repo \
    moonlight-tizen-build bash -lc '
+-    export BUILD_VARIANT=debug                   # omit for a normal release build
 -    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps
 -    mlclient/build-engine-so.sh                 # -> libmlengine.so
 -    pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk
@@ -264,7 +281,7 @@ index fcc241c..3b59092 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -137,5 +209,6 @@ device.
+@@ -165,5 +235,6 @@ device.
  
  ## Disclaimer
  
@@ -273,19 +290,6 @@ index fcc241c..3b59092 100644
 +Independent, unofficial project. Reverse-engineering notes are engineering aids;
 +items marked "assumed" need verification on the target hardware before relying on
 +them. Not affiliated with or endorsed by Samsung, NVIDIA, or the Moonlight project.
-diff --git a/build-core.sh b/build-core.sh
-index f25f0e6..fcd65a4 100755
---- a/build-core.sh
-+++ b/build-core.sh
-@@ -3,7 +3,7 @@
- # + enet + reedsolomon) for Tizen 5.0 armv7l with the Tizen GCC 6.2 toolchain.
- # This is the FEASIBILITY build - it stops at .o files. Crypto (PlatformCrypto.c,
- # needs mbedTLS) and libgamestream (needs OpenSSL 1.0 + libcurl) are NOT built
--# here.
-+# here; see docs/BACKPORT.md for the dependency plan.
- #
- # Result on first run (2026-11-01): 27/27 core files compile, 0 warnings.
- #
 diff --git a/docs/ARCHITECTURE.en.md b/docs/ARCHITECTURE.en.md
 new file mode 100644
 index 0000000..99b77b4
@@ -1331,323 +1335,6 @@ index 1696478..47844c4 100644
  
  void esplusplayer_set_error_cb(esplusplayer_handle h, esplusplayer_error_cb cb);
  void esplusplayer_set_buffer_status_cb(esplusplayer_handle h, esplusplayer_buffer_status_cb cb);
-diff --git a/mlclient/build-engine-so.sh b/mlclient/build-engine-so.sh
-index 248dd64..0a7a862 100755
---- a/mlclient/build-engine-so.sh
-+++ b/mlclient/build-engine-so.sh
-@@ -23,11 +23,11 @@ done
- 
- # libmlengine.so: engine objects + the static deps (moonlight-common-c core,
- # libgamestream, mbedcrypto) + the TV's shared libs, resolved into the .so.
--# --hash-style=both: the .NET host loads the engine from memory (so downloaded
--# engine updates apply without rewriting the app folder) and its fallback ELF
--# loader resolves symbols via a SYSV DT_HASH. The engine is also built TLS-free
--# (that loader can't do R_ARM_TLS_*); verified: no _Thread_local in the
--# engine/moonlight-common-c.
-+# --hash-style=both: the no-root .NET host's fallback ELF loader needs a SYSV
-+# DT_HASH (Tizen 4/5 UEP blocks dlopen of a file, so the engine is loaded from
-+# anonymous memory; the fallback loader resolves symbols via DT_HASH). See nuvio's
-+# samsung-tpk-legacy design. The engine is also built TLS-free (that loader can't do
-+# R_ARM_TLS_*); verified: no _Thread_local in the engine/moonlight-common-c.
- "$GCC" --sysroot=$DEPS/sysroot $ARCH -O2 -shared -Wl,-soname,libmlengine.so \
-   -Wl,--hash-style=both \
-   -o "$OUT/libmlengine.so" \
-diff --git a/mlclient/engine_api.c b/mlclient/engine_api.c
-index 1969a00..34361b7 100644
---- a/mlclient/engine_api.c
-+++ b/mlclient/engine_api.c
-@@ -2,7 +2,7 @@
-  * engine_api.c - implements the libmlengine.so C ABI (mlengine.h).
-  *
-  * This is the former body of main.c, turned into a reusable, non-blocking engine
-- * so the .NET host and the CLI harness can both drive it.
-+ * so a thin native exe (root path) or a .NET host (no-root path) can drive it.
-  */
- #define _GNU_SOURCE
- #include <stdarg.h>
-diff --git a/mlclient/input_evdev.c b/mlclient/input_evdev.c
-index def80a1..ea1eecb 100644
---- a/mlclient/input_evdev.c
-+++ b/mlclient/input_evdev.c
-@@ -175,7 +175,7 @@ int input_init(void) {
-     s_fds[s_nfds++] = fd;
-   }
-   closedir(d);
--  if (!s_nfds) { fprintf(stderr, "[input] no readable devices (need input permissions)\n"); return -1; }
-+  if (!s_nfds) { fprintf(stderr, "[input] no readable devices (need permissions / root)\n"); return -1; }
-   s_run = 1;
-   return pthread_create(&s_thread, NULL, reader, NULL);
- }
-diff --git a/mlclient/main.c b/mlclient/main.c
-index af822e4..ca78ad2 100644
---- a/mlclient/main.c
-+++ b/mlclient/main.c
-@@ -1,9 +1,9 @@
- /*
-- * main.c - native CLI over libmlengine.so (bring-up / test harness).
-+ * main.c - thin native CLI over libmlengine.so (root path / bring-up harness).
-  *
-  * All the real work lives in the engine .so (mlengine.h / engine_api.c); this just
-  * parses argv, starts a session, waits, and stops cleanly on the host drop or a
-- * signal. The .NET host drives the same four ml_engine_* functions.
-+ * signal. The no-root .NET host drives the same four ml_engine_* functions.
-  */
- #include <signal.h>
- #include <stdio.h>
-diff --git a/mlclient/mlengine.h b/mlclient/mlengine.h
-index aeee8af..d0ffec2 100644
---- a/mlclient/mlengine.h
-+++ b/mlclient/mlengine.h
-@@ -1,9 +1,10 @@
- /*
-  * mlengine.h - public C ABI of libmlengine.so.
-  *
-- * One stable surface used by both the .NET (TizenFX) host and the CLI harness:
-- *   - the .NET host loads the .so and P/Invokes these symbols (1:1 DllImport);
-- *   - the CLI harness (main.c) links this .so directly for bring-up/testing.
-+ * One stable surface used by BOTH delivery paths:
-+ *   - root path: a thin native exe (main.c) links this .so directly;
-+ *   - no-root path: a .NET (TizenFX) host loads the .so and P/Invokes these
-+ *     same four symbols (1:1 DllImport).
-  * Keep this ABI additive: never change a signature, only append new functions.
-  */
- #ifndef MLENGINE_H
-diff --git a/pkg/Dockerfile b/pkg/Dockerfile
-index 6d6a925..920c8c9 100644
---- a/pkg/Dockerfile
-+++ b/pkg/Dockerfile
-@@ -22,10 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
-       git unzip cpio libarchive-tools \
-     && rm -rf /var/lib/apt/lists/*
- 
--# .NET SDK for the .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)
-+# .NET SDK for the no-root .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)
- # builds with the OLD Tizen.NET.Sdk delivered as a NuGet package + any modern .NET
--# SDK; it needs NO `dotnet workload install tizen` (that is only for net6+/tizen7+).
--# The vitalets Tizen CLI already present does the signing.
-+# SDK; it needs NO `dotnet workload install tizen` (that is only for net6+/tizen7+ —
-+# see nuvio tools/tpk.sh). The vitalets Tizen CLI already present does the signing.
- ENV DOTNET_ROOT=/opt/dotnet \
-     PATH=/opt/dotnet:$PATH \
-     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-diff --git a/pkg/build-package.sh b/pkg/build-package.sh
-index f7914df..6c66471 100755
---- a/pkg/build-package.sh
-+++ b/pkg/build-package.sh
-@@ -1,19 +1,28 @@
- #!/bin/sh
--# Build the Moonlight Tizen 5.0 web UI package (.wgt): the moonlight-tizen
--# front-end with its transport swapped to the Tizen message port (mlbridge.js).
--# The native streaming engine ships separately as the .NET host .tpk (build-tpk.sh).
--# Run inside the Docker image (pkg/Dockerfile) for a reproducible toolchain.
-+# Build the hybrid Moonlight Tizen 5.0 package: native engine service (tpk) +
-+# moonlight-tizen web UI (wgt) with the transport swapped to the message port.
-+# Run inside the Docker image (pkg/Dockerfile) for a reproducible toolchain,
-+# or on a host that has the same tools. Heavy/secret inputs come via env:
- #
--#   REPO           repo root (this checkout)
--#   MLT            a moonlight-tizen checkout (web UI source)
--#   TIZEN_PROFILE  signing profiles.xml path (optional; else a dev cert is generated)
--#   SIGN_PROFILE   profile name in profiles.xml (default: Moonlight)
-+#   REPO       repo root (this checkout)
-+#   MLT        a moonlight-tizen checkout (web UI + moonlight-common-c)
-+#   DEPS       tizen-deps dir (fetch-tizen-sources.sh output; path without spaces)
-+#   BPD        backport-deps dir (fetch-backport-deps.sh output)
-+#   DEPSBUILD  build-deps-lib.sh output (core/gs objs + libmbedcrypto_tv.a)
-+#   TIZEN_CLI      Tizen Studio CLI dir (host ~/tizen-tmp/tools)      [phase 4]
-+#   TIZEN_PROFILE  signing profiles.xml path                          [phase 4]
-+#   SIGN_PROFILE   profile name in profiles.xml (default: Moonlight)  [phase 4]
- set -e
--: "${REPO:?}"; : "${MLT:?}"
-+: "${REPO:?}"; : "${MLT:?}"; : "${DEPS:?}"; : "${BPD:?}"; : "${DEPSBUILD:?}"
- HERE="$REPO/pkg"
--OUT=${OUT:-$HERE/out}; rm -rf "$OUT"; mkdir -p "$OUT/ui"
-+OUT=${OUT:-$HERE/out}; rm -rf "$OUT"; mkdir -p "$OUT/service/bin" "$OUT/ui"
- 
--echo "== phase 1: web UI (moonlight-tizen front-end + message-port transport) =="
-+echo "== phase 1: native engine service =="
-+OUT="$OUT/_sb" MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" "$HERE/service/build-service.sh"
-+cp "$OUT/_sb/moonlight-engine" "$OUT/service/bin/moonlight-engine"
-+cp "$HERE/service/tizen-manifest.xml" "$OUT/service/tizen-manifest.xml"
-+
-+echo "== phase 2: web UI (moonlight-tizen front-end + message-port transport) =="
- # Ship the web front-end, NOT the WASM module.
- cp "$MLT/wasm/index.html" "$OUT/ui/index.html"
- cp -r "$MLT/wasm/platform" "$OUT/ui/platform"
-@@ -27,12 +36,17 @@ sed -i '/src="platform\.js"/d' "$OUT/ui/index.html"
- sed -i 's#<script type="text/javascript" src="platform/messages.js"></script>#&\n  <script type="text/javascript" src="platform/mlbridge.js"></script>#' "$OUT/ui/index.html"
- echo "ui assembled -> $OUT/ui"
- 
--echo "== phase 2: package + sign =="
-+echo "== phase 3: tpk service project ready, wgt ui project ready =="
-+echo "service: $OUT/service   ui: $OUT/ui"
-+
-+echo "== phase 4: package + sign =="
- # tizen CLI is on PATH inside the image; allow override for host runs.
- TZ=$(command -v tizen || echo "${TIZEN_CLI:+$TIZEN_CLI/tizen}")
- if [ -n "$TZ" ] && [ -x "$TZ" ]; then
-   P=${SIGN_PROFILE:-Moonlight}
-   PWD_=${CERT_PASS:-tizenpkpass}
-+  # Use a mounted profile if given; otherwise generate a self-signed dev author
-+  # cert + security profile in-container (distributor = bundled Tizen dev cert).
-   if [ -n "$TIZEN_PROFILE" ]; then
-     "$TZ" cli-config "default.profiles.path=$TIZEN_PROFILE/profile/profiles.xml" >/dev/null 2>&1 || true
-   elif ! "$TZ" security-profiles list 2>/dev/null | grep -q "^$P\b"; then
-@@ -41,9 +55,14 @@ if [ -n "$TZ" ] && [ -x "$TZ" ]; then
-     "$TZ" certificate -a "$P" -p "$PWD_" -c PL -n Moonlight -- "$OUT/certs"
-     "$TZ" security-profiles add -n "$P" -a "$OUT/certs/author.p12" -p "$PWD_"
-   fi
-+  # web wgt (UI)
-   "$TZ" build-web -- "$OUT/ui" || true
-   "$TZ" package -t wgt -s "$P" -- "$OUT/ui"
--  echo "package(s):"; ls "$OUT/ui"/*.wgt 2>/dev/null
-+  # native tpk (engine)
-+  "$TZ" package -t tpk -s "$P" -- "$OUT/service"
-+  # hybrid: combine the signed wgt into the tpk package (-r = HybridApp reference)
-+  "$TZ" package -t tpk -r "$(ls "$OUT"/ui/*.wgt 2>/dev/null | head -1)" -s "$P" -- "$OUT/service"
-+  echo "package(s):"; ls "$OUT/service"/*.tpk "$OUT/ui"/*.wgt 2>/dev/null
- else
-   echo "tizen CLI not found - run inside the Docker image (pkg/Dockerfile)."
- fi
-diff --git a/pkg/build-tpk.sh b/pkg/build-tpk.sh
-index bd36497..eb88180 100755
---- a/pkg/build-tpk.sh
-+++ b/pkg/build-tpk.sh
-@@ -1,12 +1,12 @@
- #!/bin/sh
--# Build the .NET host .tpk (dotnet-host/) around the native engine .so.
-+# Build the no-root .NET host .tpk (dotnet-host/) around the native engine .so.
- # Run inside the moonlight-tizen-build image (has .NET SDK + Tizen CLI), e.g.:
- #   docker run --rm -v "$PWD:/work/repo" -v /tmp/claude-1000/engine-build:/work/eng \
- #     moonlight-tizen-build sh /work/repo/pkg/build-tpk.sh /work/eng/libmlengine.so
- #
- # Arg 1: path to the prebuilt libmlengine.so (build-engine-so.sh output).
- # tizen40 TFM builds with the OLD Tizen.NET.Sdk NuGet + a modern .NET SDK; no
--# `dotnet workload install tizen` needed.
-+# `dotnet workload install tizen` needed (nuvio tools/tpk.sh). See docs/DEV-CERT-PATH.md.
- set -e
- SO=${1:?usage: build-tpk.sh <path-to-libmlengine.so>}
- HERE=$(cd "$(dirname "$0")" && pwd)
-diff --git a/pkg/dotnet-host/MoonlightHost.csproj b/pkg/dotnet-host/MoonlightHost.csproj
-index 620191a..bab3d3d 100644
---- a/pkg/dotnet-host/MoonlightHost.csproj
-+++ b/pkg/dotnet-host/MoonlightHost.csproj
-@@ -1,14 +1,15 @@
- <Project Sdk="Microsoft.NET.Sdk">
-   <!--
--    Tizen 4.0-5.5 host (the legacy Tizen 4/5 .tpk shape):
-+    Tizen 4.0-5.5 host, shape copied from nuvio's proven NuvioTpk40.csproj:
-       - TFM tizen40 runs on 4.0 through 5.5 (our TV is 5.0).
-       - The tizen40 TFM builds with the OLD Tizen.NET.Sdk delivered as a NuGet
-         package + a .NET SDK. It needs NO `dotnet workload install tizen` (that is
-         only for net6+/tizen7+). The Tizen CLI (from the vitalets base image) does
-         the .tpk packaging/signing.
--      - Tizen.NET.TV brings TVGLApplication, the lifecycle base for 4/5
-+      - Tizen.NET.TV brings TVGLApplication, the lifecycle base nuvio used on 4/5
-         (there is no GLWindow before API9). ExcludeAssets=Runtime: the TV already
-         has the assemblies; we ship only the reference.
-+    See docs/DEV-CERT-PATH.md.
-   -->
-   <PropertyGroup>
-     <OutputType>Exe</OutputType>
-diff --git a/pkg/dotnet-host/Program.cs b/pkg/dotnet-host/Program.cs
-index 01bd9d1..a2f25eb 100644
---- a/pkg/dotnet-host/Program.cs
-+++ b/pkg/dotnet-host/Program.cs
-@@ -1,18 +1,21 @@
- /*
-- * MoonlightHost - Tizen .NET host for the dev-cert path.
-+ * MoonlightHost - Tizen .NET host for the no-root dev-cert path.
-  *
-  * On a retail (unrooted) Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
-  * the installable unit is a dev-signed .NET .tpk; our native streaming engine ships
-  * inside it as libmlengine.so and is driven over the stable C ABI (mlengine.h).
-  *
-- * The engine is loaded from memory rather than from a file in the app folder: we
-- * read libmlengine.so's bytes and load them from an anonymous in-memory fd
-- * (memfd_create -> write -> dlopen /proc/self/fd/N). This is also how a downloaded
-- * engine update is applied without rewriting the app folder. Only OUR .so comes from
-- * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
-- * the TV's /usr/lib.
-+ * KEY POINT (why not plain [DllImport]): 2018-2020 Samsung TVs block native code
-+ * loaded from the application folder. So we do NOT let the loader dlopen
-+ * libmlengine.so from lib/; instead we read its bytes and load it from an anonymous
-+ * in-memory fd (memfd_create -> write -> dlopen /proc/self/fd/N), the nuvio-native
-+ * pattern. Only OUR .so comes from memory; its dependencies (esplusplayer, ssl, curl,
-+ * ecore...) still resolve normally from the TV's /usr/lib.
-  *
-  * STATUS: the loader + ABI are the real mechanism; lifecycle/UI are placeholders.
-+ * Verify TFM/privileges against the on-device dev.moonlight.tvshell, and confirm the
-+ * sandbox permits memfd_create + dlopen(/proc/self/fd) on the target. See
-+ * docs/DEV-CERT-PATH.md.
-  */
- using System;
- using System.IO;
-@@ -21,14 +24,13 @@ using Tizen.Applications;
- 
- namespace MoonlightHost
- {
--    // Loads a shared object from memory (lets downloaded engine updates apply
--    // without rewriting the app folder).
-+    // Loads a shared object from memory (bypasses app-folder native-code blocking).
-     internal static class MemLoader
-     {
-         private const uint MFD_CLOEXEC = 0x0001u;
-         private const int  RTLD_NOW    = 0x0002;
-         // Tizen 4/5 libc does NOT export memfd_create, so create the anonymous fd by
--        // raw syscall. ARM (32-bit) __NR_memfd_create = 385.
-+        // raw syscall. ARM (32-bit) __NR_memfd_create = 385. (nuvio samsung-tpk-legacy.)
-         private const long SYS_memfd_create_arm = 385;
- 
-         [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
-@@ -40,10 +42,11 @@ namespace MoonlightHost
- 
-         public static IntPtr LoadFromMemory(byte[] so)
-         {
--            // Route 1 (preferred): memfd - load the engine image from an anonymous fd.
--            // The fd must stay open for process life.
--            // Route 2 (fallback): a C# ELF32-ARM loader for targets where memfd is
--            // refused. NOT implemented here yet; add if a target returns an mmap error.
-+            // Route 1 (preferred): memfd. UEP blocks dlopen of a FILE (even signed) but
-+            // allows PROT_EXEC anonymous memory. The fd must stay open for process life.
-+            // Route 2 (fallback, nuvio's): a C# ELF32-ARM loader for TVs where memfd is
-+            // refused. NOT implemented here yet (memfd worked on 3 of nuvio's 4 test sets);
-+            // add if a target returns an mmap/dlopen error.
-             int fd = syscall_memfd(SYS_memfd_create_arm, "mlengine", MFD_CLOEXEC);
-             if (fd < 0) throw new InvalidOperationException("memfd_create(syscall 385) failed: " + Marshal.GetLastWin32Error());
- 
-diff --git a/pkg/dotnet-host/tizen-manifest.xml b/pkg/dotnet-host/tizen-manifest.xml
-index 4bb22ec..9515482 100644
---- a/pkg/dotnet-host/tizen-manifest.xml
-+++ b/pkg/dotnet-host/tizen-manifest.xml
-@@ -1,8 +1,10 @@
- <?xml version="1.0" encoding="utf-8"?>
--<!-- dev-cert path, Tizen 4.0-5.5 (api-version="4"); type="dotnet".
--     Use PUBLIC privileges only - extra privileges force Partner signing, which
--     recent 4/5 TVs reject at install. The engine is loaded from memory, not from
--     a file in the app folder. -->
-+<!-- No-root dev-cert path, shape proven by nuvio's NuvioTpk40 (Tizen 4.0-5.5):
-+     api-version="4" runs on 4.0 through 5.5; type="dotnet"; PUBLIC privileges only.
-+     MUST NOT declare http://developer.samsung.com/privilege/drminfo: on 4/5 that
-+     makes Apps2Samsung sign Partner and the TV rejects install with 118014. Public
-+     works (nuvio, since 2026-09-29) because the engine is loaded from memory (memfd),
-+     not dlopen'd from a file, so UEP never sees a file .so. -->
- <manifest xmlns="http://tizen.org/ns/packages" api-version="4" package="org.moonlight.host" version="0.0.1">
-     <profile name="tv"/>
-     <ui-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
-diff --git a/pkg/install-on-tv.sh b/pkg/install-on-tv.sh
-index 719f1a8..a2d72cd 100755
---- a/pkg/install-on-tv.sh
-+++ b/pkg/install-on-tv.sh
-@@ -5,7 +5,7 @@
- # `sdb connect` + `tizen install`. Also works on any host with sdb+tizen on PATH.
- #
- # Usage: install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
--#   TV must be in Developer Mode with this host's IP allowed.
-+#   TV must be in Developer Mode with this host's IP allowed (see docs/DEV-CERT-PATH.md).
- #   With [cert_password]: re-sign using /certificates/author.p12 +
- #   /certificates/distributor.p12 (mount them). Needed on recent TVs that reject the
- #   default Tizen cert with "Invalid certificate chain" [118,-12] — there the
 diff --git a/pkg/roottest/.gitignore b/pkg/roottest/.gitignore
 new file mode 100644
 index 0000000..b1a6cd6
@@ -2044,28 +1731,3 @@ index 0000000..0a8f85d
 +    <privilege>http://tizen.org/privilege/datasharing</privilege>
 +  </privileges>
 +</manifest>
-diff --git a/pkg/ui/mlbridge.js b/pkg/ui/mlbridge.js
-index 721eb31..cec0dd9 100644
---- a/pkg/ui/mlbridge.js
-+++ b/pkg/ui/mlbridge.js
-@@ -10,7 +10,7 @@
-  *
-  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
-  * and sendMessage. UNTESTED on device (tizen.messageport availability + round-trips)
-- * - validate once the hybrid package is installed.
-+ * - validate once the hybrid package is installed. See docs/ARCHITECTURE.md.
-  */
- (function () {
-   var ENGINE_APPID = 'org.moonlight.tizen5.engine';
-diff --git a/tests/build-esppplay.sh b/tests/build-esppplay.sh
-index 3ddb7e8..12123ae 100755
---- a/tests/build-esppplay.sh
-+++ b/tests/build-esppplay.sh
-@@ -1,6 +1,6 @@
- #!/bin/sh
- # Build esppplay for the TV. Needs fetch-tizen-sources.sh output and
--# TV libraries must be present under $DEPS/tv-libs (your device's own /lib + /usr/lib).
-+# TV libraries copied to $DEPS/tv-libs (ssh root@TV 'tar cf - lib usr/lib' | tar xf - -C $DEPS/tv-libs).
- set -e
- cd "$(dirname "$0")"
- DEPS=${DEPS:-../tizen-deps}

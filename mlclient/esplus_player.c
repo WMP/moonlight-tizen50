@@ -15,6 +15,7 @@
 #include <stdio.h>
 
 #include "esplusplayer_tv50.h"
+#include "mltrace.h"
 
 /* EFL opaque decls (same as esppplay.c). */
 int ecore_init(void);
@@ -55,6 +56,7 @@ esplusplayer_handle esplus_create_open(void) {
       else PLOG("created+opened\n");
     } else PLOG("create failed\n");
   }
+  MLT("esplus_create_open -> %p", (void *)s_pl);
   pthread_mutex_unlock(&s_lock);
   return s_pl;
 }
@@ -63,40 +65,50 @@ esplusplayer_handle esplus_handle(void) { return s_pl; }
 
 /* video setup supplies the window (it has width/height). */
 int esplus_set_window(int w, int h) {
+  MLT("esplus_set_window %dx%d", w, h);
   ecore_init();
   ecore_wl2_init();
   s_disp = ecore_wl2_display_connect(NULL);
-  if (!s_disp) { PLOG("display_connect failed (XDG_RUNTIME_DIR/WAYLAND_DISPLAY?)\n"); return -1; }
+  if (!s_disp) { PLOG("display_connect failed (XDG_RUNTIME_DIR/WAYLAND_DISPLAY?)\n"); MLT("esplus_set_window -> -1 (display)"); return -1; }
   s_win = ecore_wl2_window_new(s_disp, NULL, 0, 0, w, h);
-  if (!s_win) { PLOG("window_new failed\n"); return -1; }
+  if (!s_win) { PLOG("window_new failed\n"); MLT("esplus_set_window -> -1 (window)"); return -1; }
   ecore_wl2_window_alpha_set(s_win, 1);
   ecore_wl2_window_show(s_win);
   ecore_wl2_display_flush(s_disp);
   if (!esplusplayer_set_ecore_display(s_pl, ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY, s_win, 0, 0, w, h)) {
-    PLOG("set_ecore_display failed\n"); return -1;
+    PLOG("set_ecore_display failed\n"); MLT("esplus_set_window -> -1 (set_ecore_display)"); return -1;
   }
+  MLT("esplus_set_window -> 0");
   return 0;
 }
 
 /* called from video start, after both streams are added. */
 void esplus_prepare(void) {
-  if (!esplusplayer_prepare_async(s_pl)) PLOG("prepare_async failed\n");
+  int ok = esplusplayer_prepare_async(s_pl);
+  MLT("esplus_prepare prepare_async -> %d", ok);
+  if (!ok) PLOG("prepare_async failed\n");
 }
 
 /* submit + start-once-prepared; safe to call from the video and audio threads. */
 int esplus_submit(const esplusplayer_es_packet *pkt) {
   pthread_mutex_lock(&s_lock);
   if (s_prepared && s_prepare_ok == 1 && !s_started) {
-    s_started = 1; esplusplayer_start(s_pl); PLOG("started\n");
+    s_started = 1; int ok = esplusplayer_start(s_pl); PLOG("started\n"); MLT("esplus_start -> %d", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
+  /* shortcut: sample per-frame trace (first 30, then every 300th, plus failures);
+     raise the rate here if a hang needs every frame. Counter is under s_lock. */
+  static unsigned n; n++;
+  if (n <= 30 || n % 300 == 0 || r != ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) MLT("esplus_submit #%u -> %d", n, r);
   pthread_mutex_unlock(&s_lock);
   return r;
 }
 
 void esplus_close(void) {
+  MLT("esplus_close");
   pthread_mutex_lock(&s_lock);
   if (s_pl) { esplusplayer_stop(s_pl); esplusplayer_close(s_pl); s_pl = NULL; }
+  s_prepared = s_prepare_ok = s_started = 0;
   pthread_mutex_unlock(&s_lock);
   if (s_win) { ecore_wl2_window_free(s_win); s_win = NULL; }
   if (s_disp) { ecore_wl2_display_disconnect(s_disp); s_disp = NULL; }

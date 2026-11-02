@@ -10,22 +10,34 @@
  *
  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
  * and sendMessage. UNTESTED on device (tizen.messageport availability + round-trips)
- * - validate once the hybrid package is installed. See docs/ARCHITECTURE.md.
+ * - validate once the hybrid package is installed.
  */
 (function () {
   var ENGINE_APPID = 'org.moonlight.tizen5.engine';
   var ENGINE_PORT = 'moonlight';
   var LOCAL_PORT = 'moonlightui';
 
+  var TRACE = !!window.ML_TRACE;   // set by mltrace.js in debug builds
+  function trace() {
+    if (!TRACE) return;
+    var a = ['[mlbridge]'].concat(Array.prototype.slice.call(arguments));
+    console.log.apply(console, a);
+  }
+
   var localPort = null, remotePort = null, nextId = 1;
   var pending = {};   // id -> {resolve, reject, binary}
 
   function ensurePorts() {
     if (localPort && remotePort) return true;
+    trace('ensurePorts: connecting', ENGINE_APPID, ENGINE_PORT);
     try {
-      localPort = tizen.messageport.requestLocalMessagePort(LOCAL_PORT);
-      localPort.addMessagePortListener(onReply);
-      remotePort = tizen.messageport.requestRemoteMessagePort(ENGINE_APPID, ENGINE_PORT);
+      if (!localPort) {
+        var lp = tizen.messageport.requestLocalMessagePort(LOCAL_PORT);
+        lp.addMessagePortListener(onReply);
+        localPort = lp;   // set only once the listener is attached
+      }
+      if (!remotePort) remotePort = tizen.messageport.requestRemoteMessagePort(ENGINE_APPID, ENGINE_PORT);
+      trace('ensurePorts: ok');
       return true;
     } catch (e) {
       console.error('[mlbridge] message port setup failed:', e);
@@ -37,7 +49,9 @@
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
+    trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
     if (m.event) {              // async push (streamTerminated/streamFailed)
+      trace('event', m.event);
       if (typeof window.handleMessage === 'function')
         window.handleMessage({ data: { callbackId: -1, type: 'event', ret: m.event } });
       return;
@@ -56,8 +70,12 @@
       var id = String(nextId++);
       pending[id] = { resolve: resolve, reject: reject };
       var msg = [{ key: 'cmd', value: cmd }, { key: 'id', value: id }];
-      for (var k in fields) if (fields[k] !== undefined && fields[k] !== null)
+      var names = [];
+      for (var k in fields) if (fields[k] !== undefined && fields[k] !== null) {
         msg.push({ key: k, value: String(fields[k]) });
+        names.push(k);   // names only: cert/key/pin values must not be logged
+      }
+      trace('bridgeCall cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
       try { remotePort.sendMessage(msg, localPort); }
       catch (e) { delete pending[id]; reject(e); }
     });
@@ -93,6 +111,8 @@
   window.sendMessage = function (method, params) {
     params = params || [];
     var fn = window.SyncFunctions[method] || window.AsyncFunctions[method];
+    trace('sendMessage', method);
+    if (!fn) trace('unknown method', method);
     if (!fn) return Promise.reject('unknown method ' + method);
     return fn.apply(null, params).then(function (r) {
       if (method === 'makeCert') return r;                 // {cert, privateKey}
@@ -124,10 +144,13 @@
   // before common.js, so this DOMContentLoaded listener runs first and replaces
   // common.domContentLoaded to skip the WASM load and fire moduleDidLoad() ourselves.
   document.addEventListener('DOMContentLoaded', function () {
+    trace('DOMContentLoaded: common.domContentLoaded exists =',
+          !!(window.common && typeof window.common.domContentLoaded === 'function'));
     if (window.common && typeof window.common.domContentLoaded === 'function') {
       window.common.domContentLoaded = function () {
         try { if (window.common.attachDefaultListeners) window.common.attachDefaultListeners(); } catch (e) {}
         ensurePorts();   // connect to the native engine service (lazy is fine)
+        trace('boot: moduleDidLoad found =', typeof window.moduleDidLoad === 'function');
         if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad();
       };
     }

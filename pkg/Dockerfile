@@ -22,10 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git unzip cpio libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# .NET SDK for the no-root .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)
+# .NET SDK for the .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)
 # builds with the OLD Tizen.NET.Sdk delivered as a NuGet package + any modern .NET
-# SDK; it needs NO `dotnet workload install tizen` (that is only for net6+/tizen7+ —
-# see nuvio tools/tpk.sh). The vitalets Tizen CLI already present does the signing.
+# SDK; it needs NO `dotnet workload install tizen` (that is only for net6+/tizen7+).
+# The vitalets Tizen CLI already present does the signing.
 ENV DOTNET_ROOT=/opt/dotnet \
     PATH=/opt/dotnet:$PATH \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build esppplay for the TV. Needs fetch-tizen-sources.sh output and
-# TV libraries copied to $DEPS/tv-libs (ssh root@TV 'tar cf - lib usr/lib' | tar xf - -C $DEPS/tv-libs).
+# TV libraries must be present under $DEPS/tv-libs (your device's own /lib + /usr/lib).
 set -e
 cd "$(dirname "$0")"
 DEPS=${DEPS:-../tizen-deps}

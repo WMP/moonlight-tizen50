@@ -63,6 +63,21 @@ jobs:
           test -f tdeps/tv-libs/usr/lib/libesplusplayer.so \
             || { echo "tv-libs tarball missing usr/lib/libesplusplayer.so"; exit 1; }
 
+      - name: Compute version
+        if: steps.gate.outputs.have_libs == 'true'
+        env:
+          REF: ${{ github.ref }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$REF" in refs/tags/*) is_tag=1 ;; *) is_tag=${INPUT_TAG:+1} ;; esac
+          if [ -n "$is_tag" ]; then
+            VER=${TAG#v}
+          else
+            VER=$(git rev-parse --short HEAD)
+          fi
+          echo "VER=$VER" >> "$GITHUB_ENV"
+
       - name: Build packages
         if: steps.gate.outputs.have_libs == 'true'
         run: |
@@ -72,6 +87,7 @@ jobs:
             -v "$PWD/tdeps:/work/tdeps" \
             -v "$PWD/out:/work/out" \
             -e HOME=/home/developer \
+            -e VER \
             moonlight-tizen-build bash -euo pipefail -c '
               cd /work
               REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen
@@ -83,25 +99,35 @@ jobs:
               OUT="$BPD" "$REPO/fetch-backport-deps.sh"
               # 3. core/crypto/gamestream objects + libmbedcrypto_tv.a
               MLT="$MLT" DEPS="$DEPS" BPD="$BPD" OUT="$DEPSBUILD" "$REPO/build-deps-lib.sh"
-              # 4. the engine shared library
-              MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
-                OUT=/work/engine "$REPO/mlclient/build-engine-so.sh"
-              # 5. the .NET host .tpk (Apps2Samsung target)
-              "$REPO/pkg/build-tpk.sh" /work/engine/libmlengine.so
-              cp $(find "$REPO/pkg/dotnet-host/bin" -name "*.tpk" | head -1) /work/out/
-              # 6. the web UI .wgt (needs MLT; signed by the image dev cert)
-              # SIGN_PROFILE=dev: the profile built into the image; a freshly added one fails with
-              # "Invaild password" (CLI 2.5.25 writes no .pwd). The native/hybrid
-              # tpk steps after the .wgt fail in this image ("Cannot provide a package
-              # function"), so ignore its exit code and fail only if no .wgt was made.
-              REPO="$REPO" MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
-                SIGN_PROFILE=dev "$REPO/pkg/build-package.sh" || true
-              # shortcut: build-package.sh packages ui/ together with the ui/.buildResult
-              # copy made by build-web, so every file is in the .wgt twice. Repackage
-              # without it; remove this when the core script is fixed.
-              rm -rf "$REPO"/pkg/out/ui/.buildResult "$REPO"/pkg/out/ui/*.wgt
-              tizen package -t wgt -s dev -- "$REPO/pkg/out/ui"
-              cp "$REPO"/pkg/out/ui/*.wgt /work/out/
+
+              # Steps 4-6 run twice: release (normal) and debug (trace) packages.
+              for V in release debug; do
+                export BUILD_VARIANT=$V
+                if [ "$V" = debug ]; then SFX=-debug; else SFX=; fi
+                # 4. the engine shared library
+                MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
+                  OUT=/work/engine-$V "$REPO/mlclient/build-engine-so.sh"
+                # 5. the .NET host .tpk (Apps2Samsung target)
+                "$REPO/pkg/build-tpk.sh" /work/engine-$V/libmlengine.so | tee /work/tpk-$V.log
+                TPK=$(sed -n "s/^built: //p" /work/tpk-$V.log | tail -1)
+                [ -f "$TPK" ] || { echo "no .tpk for $V"; exit 1; }
+                cp "$TPK" "/work/out/org.moonlight.host-$VER$SFX.tpk"
+                # 6. the web UI .wgt (needs MLT; signed by the image dev cert)
+                # SIGN_PROFILE=dev: the profile built into the image; a freshly added one fails with
+                # "Invaild password" (CLI 2.5.25 writes no .pwd). The native/hybrid
+                # tpk steps after the .wgt fail in this image ("Cannot provide a package
+                # function"), so ignore its exit code and fail only if no .wgt was made.
+                REPO="$REPO" MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
+                  SIGN_PROFILE=dev "$REPO/pkg/build-package.sh" || true
+                # shortcut: build-package.sh packages ui/ together with the ui/.buildResult
+                # copy made by build-web, so every file is in the .wgt twice. Repackage
+                # without it; remove this when the core script is fixed.
+                rm -rf "$REPO"/pkg/out/ui/.buildResult "$REPO"/pkg/out/ui/*.wgt
+                tizen package -t wgt -s dev -- "$REPO/pkg/out/ui"
+                set -- "$REPO"/pkg/out/ui/*.wgt
+                [ $# -eq 1 ] && [ -f "$1" ] || { echo "expected exactly one .wgt for $V, got: $*"; exit 1; }
+                cp "$1" "/work/out/Moonlight-$VER$SFX.wgt"
+              done
               ls -la /work/out
             '
 
@@ -121,3 +147,4 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: out/*
+          body: "Normal: Moonlight-${{ env.VER }}.wgt + org.moonlight.host-${{ env.VER }}.tpk. Debug (trace) build: the -debug files. Install one pair, not both."

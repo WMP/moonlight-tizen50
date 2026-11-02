@@ -1,10 +1,9 @@
 /*
  * mlengine.h - public C ABI of libmlengine.so.
  *
- * One stable surface used by BOTH delivery paths:
- *   - root path: a thin native exe (main.c) links this .so directly;
- *   - no-root path: a .NET (TizenFX) host loads the .so and P/Invokes these
- *     same four symbols (1:1 DllImport).
+ * One stable surface used by both the .NET (TizenFX) host and the CLI harness:
+ *   - the .NET host loads the .so and P/Invokes these symbols (1:1 DllImport);
+ *   - the CLI harness (main.c) links this .so directly for bring-up/testing.
  * Keep this ABI additive: never change a signature, only append new functions.
  */
 #ifndef MLENGINE_H

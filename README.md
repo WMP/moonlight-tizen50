@@ -47,6 +47,32 @@ only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
 > a Samsung DUID cert you supply (`author.p12`/`distributor.p12`). Apps2Samsung is
 > the same DUID signing step, automated.
 
+## Debug vs release packages
+
+Each release has two pairs of packages:
+
+- **Normal** (`Moonlight-*.wgt` + `org.moonlight.host-*.tpk`): for daily use.
+- **Debug** (`*-debug.wgt` + `*-debug.tpk`): download these to report a problem.
+  They are debug builds (no optimisation, symbols kept) with verbose logs: the
+  engine (`MLENGINE`), the .NET host (`MLHOST`) and the web UI console (`MLUI`).
+
+Both pairs use the same package and app ids. Install one pair, not both:
+uninstall the other first, or install over it.
+
+Read the logs from a PC (with `sdb` connected to the TV):
+
+```bash
+sdb shell dlogutil MLUI:* *:S                  # UI console (needs the debug host .tpk installed and launched)
+sdb shell dlogutil MLHOST:* MLENGINE:* *:S     # host + engine trace
+sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
+sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
+```
+
+The UI console reaches `dlog` only through the debug host, which relays it. If the
+debug host is not running, UI lines are not shown in `dlog`. For the web inspector run
+`sdb forward tcp:<port> tcp:<port>` with the printed port, then open `chrome://inspect`
+in Chrome.
+
 ## Why this exists
 
 [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) is a

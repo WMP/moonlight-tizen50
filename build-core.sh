@@ -3,7 +3,7 @@
 # + enet + reedsolomon) for Tizen 5.0 armv7l with the Tizen GCC 6.2 toolchain.
 # This is the FEASIBILITY build - it stops at .o files. Crypto (PlatformCrypto.c,
 # needs mbedTLS) and libgamestream (needs OpenSSL 1.0 + libcurl) are NOT built
-# here; see docs/BACKPORT.md for the dependency plan.
+# here.
 #
 # Result on first run (2026-11-01): 27/27 core files compile, 0 warnings.
 #

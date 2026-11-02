@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- No-root dev-cert path, shape proven by nuvio's NuvioTpk40 (Tizen 4.0-5.5):
-     api-version="4" runs on 4.0 through 5.5; type="dotnet"; PUBLIC privileges only.
-     MUST NOT declare http://developer.samsung.com/privilege/drminfo: on 4/5 that
-     makes Apps2Samsung sign Partner and the TV rejects install with 118014. Public
-     works (nuvio, since 2026-09-29) because the engine is loaded from memory (memfd),
-     not dlopen'd from a file, so UEP never sees a file .so. -->
+<!-- dev-cert path, Tizen 4.0-5.5 (api-version="4"); type="dotnet".
+     Use PUBLIC privileges only - extra privileges force Partner signing, which
+     recent 4/5 TVs reject at install. The engine is loaded from memory, not from
+     a file in the app folder. -->
 <manifest xmlns="http://tizen.org/ns/packages" api-version="4" package="org.moonlight.host" version="0.0.1">
     <profile name="tv"/>
     <ui-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
