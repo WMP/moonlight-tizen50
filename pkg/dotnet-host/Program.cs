@@ -12,7 +12,8 @@
  * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
  * the TV's /usr/lib.
  *
- * STATUS: the loader + ABI are the real mechanism; lifecycle/UI are placeholders.
+ * The host is a background service app: a second UI app would be closed when the
+ * web UI comes to the foreground. STATUS: the UI command port is not implemented yet.
  */
 using System;
 using System.IO;
@@ -117,7 +118,7 @@ namespace MoonlightHost
         }
     }
 
-    internal sealed class App : CoreUIApplication
+    internal sealed class App : ServiceApplication
     {
 #if DEBUG
         // Relays the web UI console (mltrace.js) to dlog tag MLUI. Kept for process life.
@@ -154,18 +155,17 @@ namespace MoonlightHost
             Log.Trace("OnCreate start");
             try
             {
-                string soPath = Path.Combine(DirectoryInfo.Resource, "lib", "libmlengine.so");
+                // The SDK packs the csproj Link "res/lib/..." next to the assembly (bin/res/lib/),
+                // not under the app's res/ directory, so resolve it from the assembly folder.
+                string soPath = Path.Combine(Path.GetDirectoryName(typeof(App).Assembly.Location),
+                                             "res", "lib", "libmlengine.so");
                 Engine.Load(soPath);
-                // TODO: real menu + pairing UI (reuse moonlight-tizen web UI, or NUI).
-                string host = Environment.GetEnvironmentVariable("MOONLIGHT_HOST") ?? "192.168.123.3";
-                Log.Trace("Engine.Start host=" + host + " appId=0 pin=(null) 1920x1080@60 20000kbps datadir=" + DirectoryInfo.Data);
-                int rc = Engine.Start(host, 0, null, 1920, 1080, 60, 20000, DirectoryInfo.Data);
-                Log.Trace("Engine.Start rc=" + rc);
-                Tizen.Log.Info("MLHOST", $"engine loaded from memory; ml_engine_start(host={host}) rc={rc}");
+                // No session starts here: the web UI drives the engine over the message port.
+                Tizen.Log.Info("MLHOST", "engine loaded from memory: " + soPath);
             }
             catch (Exception e)
             {
-                Tizen.Log.Error("MLHOST", "engine load/start failed: " + e);
+                Tizen.Log.Error("MLHOST", "engine load failed: " + e);
             }
         }
 
