@@ -14,6 +14,7 @@
 
 #include "Limelight.h"
 #include "esplusplayer_tv50.h"
+#include "mltrace.h"
 
 extern esplusplayer_handle esplus_create_open(void);
 extern esplusplayer_handle esplus_handle(void);
@@ -42,24 +43,27 @@ static int ensure_scratch(size_t need) {
 
 static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
   (void)context; (void)drFlags;
+  MLT("video setup fmt=0x%x %dx%d@%d", videoFormat, width, height, redrawRate);
   s_fps = redrawRate > 0 ? redrawRate : 60;
   uint32_t mime;
   if (videoFormat & VIDEO_FORMAT_MASK_H264) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_H264;
   else if (videoFormat & VIDEO_FORMAT_MASK_H265) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_HEVC;
-  else { VLOG("unsupported videoFormat 0x%x\n", videoFormat); return -1; }
+  else { VLOG("unsupported videoFormat 0x%x\n", videoFormat); MLT("video setup -> -1 (format)"); return -1; }
 
-  if (!esplus_create_open()) return -1;        /* audio init may have created it already */
-  if (esplus_set_window(width, height) != 0) return -1;
+  if (!esplus_create_open()) { MLT("video setup -> -1 (player)"); return -1; }   /* audio init may have created it */
+  if (esplus_set_window(width, height) != 0) { MLT("video setup -> -1 (window)"); return -1; }
   esplusplayer_video_stream_info vi = {NULL, 0, mime, (uint32_t)width, (uint32_t)height,
                                        (uint32_t)width, (uint32_t)height, (uint32_t)s_fps, 1};
-  if (!esplusplayer_add_video_stream_info(esplus_handle(), &vi)) { VLOG("add_video_stream_info failed\n"); return -1; }
+  int ok = esplusplayer_add_video_stream_info(esplus_handle(), &vi);
+  MLT("esplusplayer_add_video_stream_info mime=%u -> %d", mime, ok);
+  if (!ok) { VLOG("add_video_stream_info failed\n"); return -1; }
   VLOG("setup %dx%d@%d fmt=0x%x\n", width, height, s_fps, videoFormat);
   return 0;
 }
 
-static void VidDecStart(void) { s_base_pts_ms = 0; s_have_base = 0; esplus_prepare(); }
+static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0; esplus_prepare(); }
 static void VidDecStop(void) {}
-static void VidDecCleanup(void) { esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
+static void VidDecCleanup(void) { MLT("video cleanup"); esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
 
 static int VidDecSubmit(PDECODE_UNIT du) {
   if (ensure_scratch((size_t)du->fullLength)) return DR_NEED_IDR;

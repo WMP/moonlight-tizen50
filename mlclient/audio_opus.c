@@ -20,6 +20,7 @@
 
 #include "Limelight.h"
 #include "esplusplayer_tv50.h"
+#include "mltrace.h"
 
 extern esplusplayer_handle esplus_create_open(void);
 extern esplusplayer_handle esplus_handle(void);
@@ -56,16 +57,21 @@ static int build_opushead(uint8_t *o, const POPUS_MULTISTREAM_CONFIGURATION c) {
 
 static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, void *ctx, int flags) {
   (void)audioConfig; (void)ctx; (void)flags;
+  MLT("audio init cfg=0x%x %d Hz %d ch streams=%d", audioConfig, cfg ? cfg->sampleRate : 0,
+      cfg ? cfg->channelCount : 0, cfg ? cfg->streams : 0);
+  if (!cfg || cfg->channelCount <= 0 || cfg->channelCount > 8 || cfg->sampleRate <= 0) { MLT("audio init -> -1 (config)"); return -1; }
   s_sample_rate = cfg->sampleRate;
   s_samples_per_frame = cfg->samplesPerFrame;
   s_pts_ns = 0;
   s_opushead_len = build_opushead(s_opushead, cfg);
 
-  if (!esplus_create_open()) { ALOG("player create failed\n"); return -1; }
+  if (!esplus_create_open()) { ALOG("player create failed\n"); MLT("audio init -> -1 (player)"); return -1; }
   esplusplayer_audio_stream_info ai = {
     (char *)s_opushead, (uint32_t)s_opushead_len, ESPLUSPLAYER_AUDIO_MIME_TYPE_OPUS,
     0, (uint32_t)cfg->channelCount, (uint32_t)cfg->sampleRate};
-  if (!esplusplayer_add_audio_stream_info(esplus_handle(), &ai)) { ALOG("add_audio_stream_info failed\n"); return -1; }
+  int ok = esplusplayer_add_audio_stream_info(esplus_handle(), &ai);
+  MLT("esplusplayer_add_audio_stream_info opus -> %d", ok);
+  if (!ok) { ALOG("add_audio_stream_info failed\n"); return -1; }
   ALOG("init %d Hz, %d ch, %d samples/frame, OpusHead %d B\n",
        cfg->sampleRate, cfg->channelCount, cfg->samplesPerFrame, s_opushead_len);
   return 0;

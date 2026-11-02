@@ -51,6 +51,9 @@ static void cl_logMessage(const char *format, ...) {
 #endif
 }
 
+static void cl_stageStarting(int stage) { (void)stage; MLT("stage %d (%s) starting", stage, LiGetStageName(stage)); }
+static void cl_stageComplete(int stage) { (void)stage; MLT("stage %d (%s) complete", stage, LiGetStageName(stage)); }
+
 /* Shared tail of both start paths: callbacks, LiStartConnection, input.
    Uses g_sc/g_si. Returns 0 or 1 (LiStartConnection failed). */
 static int start_connection(void) {
@@ -58,17 +61,24 @@ static int start_connection(void) {
   AUDIO_RENDERER_CALLBACKS   ar; AudEsplus_FillCallbacks(&ar);
   CONNECTION_LISTENER_CALLBACKS cl;
   LiInitializeConnectionCallbacks(&cl);
+  cl.stageStarting = cl_stageStarting;
+  cl.stageComplete = cl_stageComplete;
   cl.stageFailed = cl_stageFailed;
   cl.connectionTerminated = cl_connTerminated;
   cl.logMessage = cl_logMessage;
 
+  MLT("LiStartConnection %dx%d@%d %dkbps fmt=0x%x audio=0x%x pkt=%d", g_sc.width, g_sc.height, g_sc.fps,
+      g_sc.bitrate, g_sc.supportedVideoFormats, g_sc.audioConfiguration, g_sc.packetSize);
   fprintf(stderr, "[ml] LiStartConnection %dx%d@%d %dkbps -> %s\n",
           g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, (const char *)g_si.address);
   int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
   if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("start_connection -> 1 (LiStartConnection %d)", err); return 1; }
+  MLT("LiStartConnection -> 0");
   g_started = 1; g_running = 1;
 
-  if (input_init() != 0) fprintf(stderr, "[ml] input disabled (no evdev access)\n");
+  int in = input_init();
+  MLT("input_init -> %d", in);
+  if (in != 0) fprintf(stderr, "[ml] input disabled (no evdev access)\n");
   fprintf(stderr, "[ml] streaming\n");
   return 0;
 }
@@ -167,6 +177,12 @@ int ml_engine_start_session(const char *host, int width, int height, int fps, in
   if (!height) height = 1080;
   if (!fps)    fps = 60;
   if (!bitrate_kbps) bitrate_kbps = 20000;
+  /* validate at the ABI boundary: bad values return an error the host can report */
+  if (width < 320 || width > 7680 || height < 240 || height > 4320 || fps < 10 || fps > 240 ||
+      bitrate_kbps < 500 || bitrate_kbps > 500000 || !*host) {
+    MLT("ml_engine_start_session -> GS_INVALID (bad stream settings)");
+    return GS_INVALID;
+  }
   snprintf(g_sess_host, sizeof g_sess_host, "%s", host);
   snprintf(g_sess_appver, sizeof g_sess_appver, "%s", app_version ? app_version : "");
   snprintf(g_sess_gfever, sizeof g_sess_gfever, "%s", gfe_version ? gfe_version : "");
