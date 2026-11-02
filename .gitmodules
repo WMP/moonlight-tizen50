@@ -1,0 +1,4 @@
+[submodule "third_party/moonlight-tizen"]
+	path = third_party/moonlight-tizen
+	url = https://github.com/brightcraft/moonlight-tizen
+	shallow = true

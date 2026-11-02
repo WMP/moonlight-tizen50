@@ -60,7 +60,8 @@ headless Tizen CLI image the Jellyfin community installer uses (Tizen Studio CLI
 `sdb`, a sample dev cert) plus a .NET SDK for the `.tpk` host.
 
 ```bash
-# 1. one-time: fetch toolchain + Tizen 5.0 sources
+# 1. one-time: get moonlight-tizen (submodule) + toolchain/sysroot
+git submodule update --init --depth 1 third_party/moonlight-tizen
 fetch-tizen-sources.sh ./tizen-deps
 # then provide your TV's /lib and /usr/lib under tizen-deps/tv-libs/
 # (your device's own files — used only locally, never redistributed)
@@ -69,9 +70,9 @@ fetch-tizen-sources.sh ./tizen-deps
 docker build -t moonlight-tizen-build pkg
 
 # 3. build the engine .so, the .NET host .tpk, and the web .wgt in the container
-docker run --rm -v "$PWD":/work/repo -v <moonlight-tizen>:/work/mlt \
+docker run --rm -v "$PWD":/work/repo \
   moonlight-tizen-build bash -lc '
-    REPO=/work/repo MLT=/work/mlt DEPS=/work/repo/tizen-deps
+    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps
     mlclient/build-engine-so.sh                 # -> libmlengine.so
     pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk
     REPO=$REPO MLT=$MLT pkg/build-package.sh     # -> the web .wgt'
@@ -110,8 +111,9 @@ CI builds the packages on every release
 esplusplayer_tv50.h   C API for the TV's libesplusplayer.so
 mlclient/             native engine + CLI harness (video, audio, input, pairing)
 pkg/                  app package: Dockerfile, .NET host (tpk), web UI (wgt), build
+tests/                esppplay probe + host self-tests used during bring-up
+third_party/          moonlight-tizen (web UI + moonlight-common-c), git submodule
 fetch-*.sh build-*.sh reproducible build scripts
-esppplay.c            minimal H.264 → esplusplayer probe used during bring-up
 ```
 
 ## Credits & license

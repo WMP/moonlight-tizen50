@@ -29,10 +29,11 @@ The point of this repo is to improve the client itself:
 
 ## Build & test
 
+- Initialize the moonlight-tizen submodule first: `git submodule update --init`.
 - Build everything in the Docker image: `docker build -t moonlight-tizen-build pkg`.
   See `README.md` for the full flow (engine `.so` → `.tpk` host → web `.wgt`).
 - Host self-tests that need no TV: `mlclient/xml_selftest.c` (XML parser),
-  `esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
+  `tests/esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
   parser or the bitstream code.
 - The engine ABI (`mlclient/mlengine.h`) is **additive only**: never change a
   signature, only append functions.

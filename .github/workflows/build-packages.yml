@@ -22,8 +22,10 @@ jobs:
   packages:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (with moonlight-tizen submodule)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Check for TV libraries secret
         id: gate
@@ -38,10 +40,6 @@ jobs:
       - name: Build toolchain image
         if: steps.gate.outputs.have_libs == 'true'
         run: docker build -t moonlight-tizen-build pkg
-
-      - name: Clone moonlight-tizen (web UI + moonlight-common-c)
-        if: steps.gate.outputs.have_libs == 'true'
-        run: git clone --depth 1 https://github.com/brightcraft/moonlight-tizen mlt
 
       - name: Fetch TV libraries (proprietary, from secret)
         if: steps.gate.outputs.have_libs == 'true'
@@ -58,13 +56,12 @@ jobs:
           mkdir -p out
           docker run --rm \
             -v "$PWD:/work/repo" \
-            -v "$PWD/mlt:/work/mlt" \
             -v "$PWD/tdeps:/work/tdeps" \
             -v "$PWD/out:/work/out" \
             -e HOME=/home/developer \
             moonlight-tizen-build bash -euo pipefail -c '
               cd /work
-              REPO=/work/repo MLT=/work/mlt
+              REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen
               DEPS=/work/tdeps BPD=/work/bpd DEPSBUILD=/work/depsbuild
 
               # 1. public toolchain + sysroot (tv-libs already injected under $DEPS)
