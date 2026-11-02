@@ -103,7 +103,7 @@ jobs:
               # Steps 4-6 run twice: release (normal) and debug (trace) packages.
               for V in release debug; do
                 export BUILD_VARIANT=$V
-                if [ "$V" = debug ]; then SFX=-trace; else SFX=; fi
+                if [ "$V" = debug ]; then SFX=-debug; else SFX=; fi
                 # 4. the engine shared library
                 MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
                   OUT=/work/engine-$V "$REPO/mlclient/build-engine-so.sh"
@@ -147,4 +147,4 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: out/*
-          body: "Normal: Moonlight-${{ env.VER }}.wgt + org.moonlight.host-${{ env.VER }}.tpk. Trace (debug) build: the -trace files. Install one pair, not both."
+          body: "Normal: Moonlight-${{ env.VER }}.wgt + org.moonlight.host-${{ env.VER }}.tpk. Debug (trace) build: the -debug files. Install one pair, not both."

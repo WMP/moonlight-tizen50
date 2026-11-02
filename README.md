@@ -38,7 +38,7 @@ CI builds the packages on every release
 Each release has two pairs of packages:
 
 - **Normal** (`Moonlight-*.wgt` + `org.moonlight.host-*.tpk`): for daily use.
-- **Trace** (`*-trace.wgt` + `*-trace.tpk`): download these to report a problem.
+- **Debug** (`*-debug.wgt` + `*-debug.tpk`): download these to report a problem.
   They are debug builds (no optimisation, symbols kept) with verbose logs: the
   engine (`MLENGINE`), the .NET host (`MLHOST`) and the web UI console (`MLUI`).
 
@@ -48,14 +48,14 @@ uninstall the other first, or install over it.
 Read the logs from a PC (with `sdb` connected to the TV):
 
 ```bash
-sdb shell dlogutil MLUI:* *:S                  # UI console (needs the trace host .tpk installed and launched)
+sdb shell dlogutil MLUI:* *:S                  # UI console (needs the debug host .tpk installed and launched)
 sdb shell dlogutil MLHOST:* MLENGINE:* *:S     # host + engine trace
 sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
 sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
 ```
 
-The UI console reaches `dlog` only through the trace host, which relays it. If
-the trace host is not running, UI lines are not shown in `dlog`. For the web
+The UI console reaches `dlog` only through the debug host, which relays it. If
+the debug host is not running, UI lines are not shown in `dlog`. For the web
 inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
 open `chrome://inspect` in Chrome.
 
