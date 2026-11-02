@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Native streaming service of the hybrid Moonlight package. Runs our engine
+     (esplusplayer video/audio + GameStream + input) and talks to the web UI over
+     a message port. The web UI (config.xml, ui-application) is the launchable
+     entry that appears in the app bar; this service runs in the background. -->
+<manifest xmlns="http://tizen.org/ns/packages" api-version="5" package="org.moonlight.tizen5" version="0.0.1">
+  <profile name="tv"/>
+  <service-application appid="org.moonlight.tizen5.engine" exec="moonlight-engine"
+                       type="capp" multiple="false" taskmanage="false" auto-restart="false" on-boot="false">
+    <label>Moonlight Engine</label>
+  </service-application>
+  <privileges>
+    <privilege>http://tizen.org/privilege/internet</privilege>
+    <privilege>http://tizen.org/privilege/network.get</privilege>
+    <privilege>http://tizen.org/privilege/mediastorage</privilege>
+    <privilege>http://tizen.org/privilege/externalstorage</privilege>
+    <privilege>http://tizen.org/privilege/datasharing</privilege>
+  </privileges>
+</manifest>

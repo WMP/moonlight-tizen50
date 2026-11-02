@@ -1,0 +1,100 @@
+name: Build Moonlight packages (.tpk + .wgt)
+
+# Builds the installable Samsung packages. The native engine links against the
+# TV's own libraries (libesplusplayer.so, libecore*, libssl/libcurl, ...), which
+# are proprietary Samsung binaries copied from the TV and are NEVER committed. CI
+# gets them from the TV_LIBS_URL secret (a tarball with a tv-libs/usr/lib/ tree).
+# Without that secret the native packages cannot be built; the job then exits
+# cleanly with a note, so forks without the libs don't see red builds.
+#
+# Everything else (cross toolchain, sysroot, crypto/http deps, moonlight-common-c,
+# the web UI) is public and fetched at build time.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # attach packages to the GitHub Release on a tag
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for TV libraries secret
+        id: gate
+        run: |
+          if [ -n "${{ secrets.TV_LIBS_URL }}" ]; then
+            echo "have_libs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_libs=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TV_LIBS_URL secret not set — skipping native package build."
+          fi
+
+      - name: Build toolchain image
+        if: steps.gate.outputs.have_libs == 'true'
+        run: docker build -t moonlight-tizen-build pkg
+
+      - name: Clone moonlight-tizen (web UI + moonlight-common-c)
+        if: steps.gate.outputs.have_libs == 'true'
+        run: git clone --depth 1 https://github.com/brightcraft/moonlight-tizen mlt
+
+      - name: Fetch TV libraries (proprietary, from secret)
+        if: steps.gate.outputs.have_libs == 'true'
+        run: |
+          mkdir -p tdeps
+          curl -fsSL "${{ secrets.TV_LIBS_URL }}" -o tv-libs.tar
+          tar -xf tv-libs.tar -C tdeps
+          test -f tdeps/tv-libs/usr/lib/libesplusplayer.so \
+            || { echo "tv-libs tarball missing usr/lib/libesplusplayer.so"; exit 1; }
+
+      - name: Build packages
+        if: steps.gate.outputs.have_libs == 'true'
+        run: |
+          mkdir -p out
+          docker run --rm \
+            -v "$PWD:/work/repo" \
+            -v "$PWD/mlt:/work/mlt" \
+            -v "$PWD/tdeps:/work/tdeps" \
+            -v "$PWD/out:/work/out" \
+            -e HOME=/home/developer \
+            moonlight-tizen-build bash -euo pipefail -c '
+              cd /work
+              REPO=/work/repo MLT=/work/mlt
+              DEPS=/work/tdeps BPD=/work/bpd DEPSBUILD=/work/depsbuild
+
+              # 1. public toolchain + sysroot (tv-libs already injected under $DEPS)
+              "$REPO/fetch-tizen-sources.sh" "$DEPS"
+              # 2. crypto/http deps (headers + mbedTLS/curl sources)
+              OUT="$BPD" "$REPO/fetch-backport-deps.sh"
+              # 3. core/crypto/gamestream objects + libmbedcrypto_tv.a
+              MLT="$MLT" DEPS="$DEPS" BPD="$BPD" OUT="$DEPSBUILD" "$REPO/build-deps-lib.sh"
+              # 4. the engine shared library
+              MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" \
+                OUT=/work/engine "$REPO/mlclient/build-engine-so.sh"
+              # 5. the .NET host .tpk (Apps2Samsung target)
+              "$REPO/pkg/build-tpk.sh" /work/engine/libmlengine.so
+              cp $(find "$REPO/pkg/dotnet-host/bin" -name "*.tpk" | head -1) /work/out/
+              # 6. the web UI .wgt (needs MLT; signed by the image dev cert)
+              REPO="$REPO" MLT="$MLT" "$REPO/pkg/build-package.sh" || true
+              find "$REPO/pkg/out" -name "*.wgt" -exec cp {} /work/out/ \; 2>/dev/null || true
+              ls -la /work/out
+            '
+
+      - name: Upload artifacts
+        if: steps.gate.outputs.have_libs == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonlight-packages
+          path: out/*
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: steps.gate.outputs.have_libs == 'true' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

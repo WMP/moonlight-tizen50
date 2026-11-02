@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No-root dev-cert path, shape proven by nuvio's NuvioTpk40 (Tizen 4.0-5.5):
+     api-version="4" runs on 4.0 through 5.5; type="dotnet"; PUBLIC privileges only.
+     MUST NOT declare http://developer.samsung.com/privilege/drminfo: on 4/5 that
+     makes Apps2Samsung sign Partner and the TV rejects install with 118014. Public
+     works (nuvio, since 2026-09-29) because the engine is loaded from memory (memfd),
+     not dlopen'd from a file, so UEP never sees a file .so. -->
+<manifest xmlns="http://tizen.org/ns/packages" api-version="4" package="org.moonlight.host" version="0.0.1">
+    <profile name="tv"/>
+    <ui-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
+                   multiple="false" nodisplay="false" taskmanage="true" launch_mode="single">
+        <label>Moonlight</label>
+        <icon>icon.png</icon>
+    </ui-application>
+    <privileges>
+        <privilege>http://tizen.org/privilege/internet</privilege>
+        <privilege>http://tizen.org/privilege/network.get</privilege>
+        <privilege>http://tizen.org/privilege/display</privilege>
+    </privileges>
+</manifest>

@@ -1,0 +1,2036 @@
+diff --git a/BACKPORT.en.md b/BACKPORT.en.md
+new file mode 100644
+index 0000000..e58468c
+--- /dev/null
++++ b/BACKPORT.en.md
+@@ -0,0 +1,69 @@
++# Backport moonlight-tizen → native Tizen 5.0 — status
++
++*(Polish step-by-step log: [BACKPORT.md](BACKPORT.md). Code map: [PROVENANCE.en.md](PROVENANCE.en.md).)*
++
++Goal: a fast native Moonlight client on Tizen 5.0 (armv7l softfp, glibc 2.24,
++GCC 6.2), video via `libesplusplayer.so`, ~2–3 frame latency. Source:
++brightcraft/moonlight-tizen (WASM/EMSS).
++
++## What is shared vs. rewritten
++
++Reused unchanged: `moonlight-common-c` (core), `libgamestream` (pairing/HTTP),
++`h264bitstream`, `opus`, `enet`, and the web UI. Only the ~6 platform-shim files
++(video, audio, input, transport/cert) are rewritten. See PROVENANCE.en.md.
++
++Tizen 5.0 libraries (checked in tv-libs): `libcrypto.so.1.0.0`, `libssl`,
++`libcurl.so.4.5.0`, PulseAudio, ALSA, libevdev, Ecore_Wl2, GLES/EGL,
++`libesplusplayer.so`. Missing: libopus, libenet (both vendored). No dev headers
++in the sysroot for openssl/curl/mbedtls — supplied by fetch-backport-deps.sh.
++
++## Milestones (verified unless noted)
++
++- **M1.1 core builds** — `build-core.sh`: moonlight-common-c + enet + reedsolomon,
++  27/27 with GCC 6.2 on the sysroot, 0 errors. Only two trivial Emscripten shims
++  in `Platform.h`. Biggest risk (does GCC 6.2 build the core) retired.
++- **M1.2 deps link** — mbedTLS 2.28.8 (96/96) for PlatformCrypto; libgamestream
++  on OpenSSL 1.0.2o + curl 7.59 headers; whole chain links to an ARM ELF against
++  the real tv-libs, no glibc symbol > 2.24.
++- **M1.3 video sink** — `video_esplus.c`: `DECODER_RENDERER_CALLBACKS` over
++  esplusplayer; whole video path links. 0 warnings.
++- **M1.3b cert + orchestration** — `cert_init.c` (qemu-tested X.509 gen/load);
++  `gs_client.c` ports the GameStream serverinfo→pair→launch→RTSP flow from
++  moonlight-embedded, with an own dependency-free `xml_search` (unit-tested).
++- **M2 audio** — esplusplayer audio ABI reverse-engineered (24 B struct, **OPUS=8**,
++  not the public 7). `esplus_player.c` shares one player for video+audio (one
++  clock); `audio_opus.c` submits audio/x-opus with an RFC 7845 OpusHead.
++- **M3 input** — `input_evdev.c`: `/dev/input` → LiSend* (keyboard/mouse/gamepad).
++
++## End-to-end test (verified on TV + a Wolf host)
++
++Against host `192.168.123.3` = **Wolf** (games-on-whales) over GameStream: the
++native client paired (PIN via Wolf's /pin API), launched an app, completed the
++RTSP handshake, set up the video and audio sinks, enumerated input (the TV remote
++IS on evdev), and grabbed the hardware overlay. The stream ended on the **host**
++side (a Wolf config error: the app runner's Wayland socket), not the client.
++Decode genuinely works (dmesg: first key frame + first set-display). Fixes landed:
++clean overlay release on connection-terminated; pairing persistence (detect via
++HTTPS serverinfo + stored server cert).
++
++## No-root feasibility (verified)
++
++SMACK labels: `libesplusplayer.so` = `_`, `/dev/video*`/`/dev/sdp*`/`/dev/input/*`
++= `*`. Running the probe under a sandbox `User::Pkg` label decoded video — so a
++dev-signed `.tpk` can drive esplusplayer **without root**.
++
++## Hybrid package (in progress)
++
++Reuse moonlight-tizen's web UI + our native engine, wired by a Tizen message-port
++bridge. Done: native service + bridge (`mlservice.c`, builds/links), JS transport
++shim (`mlbridge.js`), UI assembly, headless Docker (engine builds in-container, web
++`.wgt` signs). Remaining: native `.tpk` packaging (needs the Tizen native packaging
++component; the GUI installer can't run headless), hybrid combine, install, and
++on-device validation of the message-port round-trips + streaming.
++
++## Open items to confirm on a real stream
++
++`opensslconf.h` correctness / the TV's `OPENSSL_NO_*` flags; rikey/pairing against
++GFE; an EMSS `kUltraLow` equivalent (no `set_low_latency_mode` export — look in
++buffer/display settings); remote routing (evdev vs CEC); esplusplayer accepting the
++OpusHead as codec_data; the two-track prepare sequence.
+diff --git a/BACKPORT.md b/BACKPORT.md
+new file mode 100644
+index 0000000..1e96b4f
+--- /dev/null
++++ b/BACKPORT.md
+@@ -0,0 +1,164 @@
++# Backport moonlight-tizen -> Tizen 5.0 natywny
++
++Cel: szybki natywny klient Moonlight na Tizen 5.0 (armv7l softfp, glibc 2.24,
++GCC 6.2), wideo przez `/usr/lib/libesplusplayer.so` (ABI w `esplusplayer_tv50.h`,
++zmierzone opóźnienie 2-3 klatki). Źródło: brightcraft/moonlight-tizen (WASM/EMSS).
++
++## Co jest wspólne (zweryfikowane w drzewie źródeł)
++
++| Warstwa | Pliki | Uwaga |
++|---|---|---|
++| Rdzeń strumienia | `moonlight-common-c/src/*.c` (Connection, RTSP, Control/Video/Audio, depacketizer, ENet, Reed-Solomon) | czysty C, przenośny |
++| Krypto rdzenia | `moonlight-common-c/src/PlatformCrypto.c` | **mbedTLS** (cipher + ctr_drbg + entropy, AES-GCM) |
++| Parowanie/HTTP | `libgamestream/{http,pairing,mkcert}.c` | **libcurl + OpenSSL 1.0** |
++| Audio dekod | `wasm/auddec.cpp` | opus_multistream_decode; backend EMSS lub WebAudio |
++| Wideo (EMSS) | `wasm/wasmplayer.cpp` | `ElementaryMediaTrack.AppendPacket` - odpowiednik `esplusplayer_submit_packet` |
++| Wejście | `wasm/input.cpp`, `wasm/gamepad.cpp` | cienkie nakładki na API moonlight-common-c |
++| UI/sterowanie | `wasm/platform/*.js`, `index.html` | Tizen WebAPI |
++
++Tylko ~6 plików nakładek platformy trzeba przepisać. Rdzeń, libgamestream,
++h264bitstream, opus, enet są wspólne.
++
++## Biblioteki na Tizen 5.0 (sprawdzone w tv-libs)
++
++Są: `libcrypto.so.1.0.0`, `libssl`, `libcurl.so.4.5.0`, PulseAudio, ALSA,
++libevdev, libinput, Ecore_Wl2, GLES/EGL, `libesplusplayer.so`.
++Brak: libopus, libenet (oba wbudowane w repo - OK).
++Brak nagłówków dev w sysroot dla openssl/curl/mbedtls - trzeba dostarczyć.
++
++## Milestone 1 krok 1 - WYNIK (2026-11-01)
++
++`build-core.sh`: rdzeń (moonlight-common-c + enet + reedsolomon),
++**27/27 plików kompiluje się GCC 6.2 na sysroot, 0 błędów** (2 nieszkodliwe
++ostrzeżenia strict-aliasing w enet/unix.c, CMSG_DATA - są też w upstream).
++Potrzebne były tylko 2 drobne atrapy dla zbędnych odwołań Emscripten w
++`Platform.h` (żaden plik .c rdzenia nie woła API emscripten):
++- `#include <emscripten.h>` w gałęzi POSIX (linia 46) - zbędny,
++- makro `Limelog` woła `emscripten_log` - port przekieruje na
++  `ListenerCallbacks.logMessage`.
++
++**Największe ryzyko z planu (czy GCC 6.2 zbuduje rdzeń) - ZDJĘTE.**
++
++## Milestone 1 krok 2 - WYNIK (2026-11-01)
++
++Skrypty: `fetch-backport-deps.sh` (pobiera zależności), `build-deps-lib.sh`
++(buduje i linkuje). Dobrano wersje pod biblioteki TV: TV ma OpenSSL **1.0.2o**
++i libcurl **7.59.0**.
++
++- **mbedTLS 2.28.8 LTS**: 96/96 plików kompiluje GCC 6.2, archiwum statyczne.
++- **PlatformCrypto.c** (`-DUSE_MBEDTLS`, API 2.x): kompiluje się na mbedTLS.
++- **libgamestream** (http/pairing/mkcert): kompiluje się na nagłówkach OpenSSL
++  1.0.2o + curl 7.59 (opensslconf.h ręczny dla 32-bit ARM, `OPENSSL_NO_KRB5`).
++- **Test linkowania**: cały łańcuch (rdzeń + mbedTLS statycznie + libgamestream)
++  linkuje się do ARM ELF przeciw prawdziwym `tv-libs` libssl.so.1.0.0 /
++  libcrypto.so.1.0.0 / libcurl.so.4. **Wszystkie symbole krypto/curl rozwiązane.**
++  Żaden symbol glibc > 2.24. Nierozwiązane zostają tylko globale aplikacji
++  (`g_Cert`, `g_PrivateKey`, `g_UniqueId`, `g_CertHex`) - dostarcza je natywny `main`.
++
++**Ryzyko zależności/linkowania z planu - ZDJĘTE.** Nie trzeba portować
++libgamestream na mbedTLS; OpenSSL 1.0.2o z TV wystarcza.
++
++## Milestone 1 krok 3 (część) - WYNIK (2026-11-01)
++
++Sink wideo: `mlclient/video_esplus.c` - implementacja
++`DECODER_RENDERER_CALLBACKS` nad esplusplayer (natywny odpowiednik
++`wasm/wasmplayer.cpp`). `submitDecodeUnit` skleja łańcuch LENTRY (Annex-B)
++w jeden pakiet ES i wysyła z PTS z `presentationTimeMs`. Skrypt:
++`mlclient/build-video-path.sh`.
++
++- Kompiluje się 0 ostrzeżeń.
++- **Cały natywny tor wideo linkuje się w jeden ARM ELF**: rdzeń + PlatformCrypto
++  (mbedTLS) + libgamestream (OpenSSL/curl) + sink + esplusplayer + ecore, przeciw
++  prawdziwym `tv-libs`. NEEDED: libesplusplayer, libecore*, libssl, libcrypto,
++  libcurl. Żaden symbol glibc > 2.24. `--allow-shlib-undefined` potrzebny dla
++  przechodnich zależności esplusplayer tylko-z-TV (jak w `build-esppplay.sh`).
++
++## Milestone 1 krok 3b (część) - WYNIK (2026-11-01)
++
++- `mlclient/cert_init.c`: generuje/ładuje cert klienta (PEM), ustawia
++  globale `g_Cert/g_PrivateKey/g_UniqueId/g_CertHex`, curl init. Natywny
++  odpowiednik `http.cpp` MakeCert/LoadCert/HttpInit.
++  **Przetestowane pod qemu-arm** na OpenSSL 1.0.2 z TV: run 1 tworzy ważny X.509
++  (CN=NVIDIA GameStream Client, 10 lat), zapisuje client.pem/key/uniqueid;
++  run 2 wczytuje istniejący (ta sama uniqueid). Cert poprawny wg `openssl x509`.
++- `mlclient/main.c`: SZKIELET. Wiąże cert init + STREAM_CONFIGURATION +
++  sink wideo + zaślepki audio/listener + `LiStartConnection`. Buduje się i
++  linkuje w pełny klient ELF (`mlclient/build-client.sh`), brak symboli
++  glibc > 2.24.
++
++Uwaga do uruchamiania: klienta (z esplusplayer) nie da się uruchomić pod qemu -
++esplusplayer ciąga `libopen-debugmenu.so` (lib tylko-z-TV). Testować na TV.
++
++## Milestone 1 krok 3b cd. - orkiestracja GameStream (NA SUCHO, 2026-11-01)
++
++`mlclient/gs_client.c`: pełna orkiestracja HTTP przeniesiona z
++moonlight-embedded `client.c`, dostosowana do libgamestream forka
++(`http_request(url, ppkstr, data)` + `gs_pair(...)`):
++1. serverinfo po HTTP (:47989) -> major version, PairStatus;
++2. parowanie `gs_pair` jeśli trzeba (PIN z env `MOONLIGHT_PIN`, wpisywany na hoście);
++3. serverinfo po HTTPS (:47984, cert przypięty) -> appversion/GfeVersion;
++4. klucz rikey (AES) + rikeyid jak w moonlight-embedded;
++5. launch/resume -> `sessionUrl0` = rtspSessionUrl.
++
++Zawiera własny, bezzależnościowy `xml_search`/`xml_status` (fork odwołuje się do
++nich, ale nie dostarcza xml.c; unikamy expat). **Przetestowane jednostkowo na
++hoście** (`xml_selftest.c` + `xml_selftest_stubs.c`): pola, tag z atrybutami,
++brzegowy prefiks tagu, błędny status.
++
++`main.c` wywołuje teraz `gs_orchestrate` i `LiStartConnection`. Cały klient
++buduje się i linkuje (`build-client.sh`), 0 ostrzeżeń, brak glibc > 2.24.
++Uruchomienie: `mlclient <host-ip> <appid> [w h fps bitrate]`, env `MOONLIGHT_PIN`.
++
++**UWAGA: `gs_client.c` nie jest testowany end-to-end** - wymaga hosta Sunshine/GFE
++w LAN. URL-e, parametry i nazwy pól odwzorowane 1:1 z moonlight-embedded.
++
++## Milestone 3 - wejście (NA SUCHO, 2026-11-01)
++
++`mlclient/input_evdev.c`: czyta `/dev/input/event*` przez `<linux/input.h>`
++(stabilne ABI jądra, bez EFL) w osobnym wątku i przekazuje do moonlight-common-c:
++- klawiatura -> `LiSendKeyboardEvent` (mapa Linux KEY_* -> Windows VK, modyfikatory),
++- mysz -> `LiSendMouseMoveEvent`/`LiSendMouseButtonEvent`/`LiSendScrollEvent`,
++- pad -> `LiSendMultiControllerEvent` (przyciski, sticki, triggery, d-pad/HAT).
++Fallback dla starych nagłówków jądra (brak `BTN_SOUTH` itd.). `main.c` wywołuje
++`input_init()` po `LiStartConnection`, `input_shutdown()` przy wyjściu.
++Buduje się i linkuje w pełny klient (0 ostrzeżeń).
++
++**UWAGA: nieprzetestowane na TV.** Do sprawdzenia: czy pilot TV pojawia się na
++evdev (czy przez CEC/uinput) - `input_init()` loguje nazwy urządzeń. Mapa klawiszy
++pokrywa typowe klawisze (shortcut: rozszerzyć `map_vk()` w razie potrzeby).
++Dostęp do `/dev/input` wymaga uprawnień/roota.
++
++## Milestone 2 - audio (NA SUCHO, 2026-11-01)
++
++ABI audio esplusplayer **zdeasemblowane** (patrz `esplusplayer_tv50.h`):
++struktura `audio_stream_info` (24 B, offsety z napisów logów) i enum mime
++(`add_audio`/`SetMimeType_`): **OPUS=8** na TV (nie 7 - TV wstawia DTS=7).
++
++`mlclient/esplus_player.c`: jeden wspólny odtwarzacz dla wideo i audio
++(TV pozwala na jeden na proces). Kolejność z Connection.c gwarantuje:
++ar.init (dodaj audio) -> dr.setup (dodaj wideo + okno) -> dr.start (prepare+start)
++-> ar.start. Dzięki temu audio i wideo mają **jeden zegar** (dobra synchronizacja),
++jak ścieżka EMSS forka.
++
++`mlclient/audio_opus.c`: `AUDIO_RENDERER_CALLBACKS` - dodaje ścieżkę
++audio/x-opus (OPUS=8), submit pakietów Opus wprost (bez libopus - dekoduje
++GStreamer w esplusplayer), codec_data = OpusHead wg RFC 7845 z
++`OPUS_MULTISTREAM_CONFIGURATION`, PTS liczony z licznika próbek.
++`video_esplus.c` przerobiony na wspólny odtwarzacz. Pełny klient linkuje się.
++
++**UWAGA: nieprzetestowane na TV.** Ryzyko: czy esplusplayer przyjmie OpusHead
++dokładnie tak jako codec_data. Fallback: dekodować libopus (wbudowany) i
++submit audio/x-raw PCM, albo PCM do PulseAudio. (Struktura i OPUS=8 są pewne
++z `.so`; akceptacja OpusHead - nie.)
++
++## Dalej
++
++- M1 krok 4: test na TV z hostem Sunshine - parowanie + obraz + audio + wejście z /tmp.
++- Do potwierdzenia na realnym strumieniu: poprawność `opensslconf.h`, flagi
++  `OPENSSL_NO_*` TV, zachowanie rikey/parowania, odpowiednik `kUltraLow`,
++  routing pilota (evdev vs CEC), akceptacja OpusHead przez esplusplayer,
++  sekwencja prepare z dwiema ścieżkami.
++
++Niewiadome do potwierdzenia: odpowiednik EMSS `LatencyMode::kUltraLow` w
++esplusplayer (brak `set_low_latency_mode` w eksportach - szukać w ustawieniach
++bufora/display); synchronizacja A/V przy dwóch ścieżkach esplusplayer.
+diff --git a/PROVENANCE.en.md b/PROVENANCE.en.md
+new file mode 100644
+index 0000000..5800d5d
+--- /dev/null
++++ b/PROVENANCE.en.md
+@@ -0,0 +1,149 @@
++# Code provenance and reverse-engineering results
++
++*(Polish version: [PROVENANCE.md](PROVENANCE.md))*
++
++A **native** Moonlight port for **Samsung TV Tizen 5.0** (armv7l softfp, glibc 2.24,
++GCC 6.2), with no NaCl and no WASM. It combines the reusable parts of
++**moonlight-tizen** (brightcraft) with a new native engine built on the TV's
++internal library `libesplusplayer.so`.
++
++Why a separate port: moonlight-tizen is WASM/Emscripten and uses Samsung EMSS,
++which exists only from Tizen 5.5. Tizen 5.0 has no EMSS and no public API for the
++low-latency elementary-stream path — the only route is native esplusplayer, whose
++ABI had to be read from the machine code.
++
++Legend: **[UP]** taken from moonlight-tizen unchanged · **[MOD]** replaced ·
++**[NEW]** new (no equivalent/API) · **[RE]** reverse-engineering result.
++
++---
++
++## 1. Taken from upstream unchanged — [UP]
++
++| Component | Origin | How used |
++|---|---|---|
++| `moonlight-common-c` (Connection, RTSP, Control/Video/Audio stream, depacketizer, ENet, Reed-Solomon) | moonlight-tizen submodule (upstream) | compiled natively with GCC 6.2; 27/27 files, 0 errors |
++| `libgamestream` — `http.c`, `pairing.c`, `mkcert.c` | moonlight-tizen | compiled against OpenSSL 1.0.2o headers (matching the TV) |
++| `h264bitstream`, `opus`, `enet` | vendored in moonlight-tizen | available to link (absent on the TV) |
++| **Web UI** — `wasm/platform/*.js`, `index.html`, `static/`, `res/` | moonlight-tizen | packaged into the wgt **with unchanged logic** (host list, pairing, app grid, box art, settings) |
++
++The only UI change: remove the WASM module loader (`platform.js`) and inject
++`mlbridge.js` — see section 3.
++
++---
++
++## 2. What had to be replaced — [MOD]
++
++| Original (moonlight-tizen) | Our replacement | Why |
++|---|---|---|
++| `wasm/wasmplayer.cpp` (EMSS `ElementaryMediaTrack.AppendPacket`) | `mlclient/video_esplus.c` | no EMSS on 5.0 → esplusplayer |
++| `wasm/auddec.cpp` (EMSS audio / WebAudio) | `mlclient/audio_opus.c` | same; audio/x-opus path into esplusplayer |
++| `Module.*` + `sendMessage`/`handleMessage` transport (embind) | `pkg/ui/mlbridge.js` (message-port client) | no WASM/embind on 5.0 |
++| `http.cpp` MakeCert/LoadCert/HttpInit (embind) | `cert_init.c` (CLI) / cert handling in `mlservice.c` (service) | native instead of embind |
++| `Platform.h` — unconditional `#include <emscripten.h>` and `Limelog`→`emscripten_log` | two small shims (`emscripten.h` shim) | the core calls no emscripten API; shims only to compile |
++| GameStream orchestration done in JS via WASM (serverinfo/pair/launch) | `gs_client.c` (CLI variant) or JS-driven over the bridge (hybrid) | on 5.0 HTTP/crypto must run natively |
++
++---
++
++## 3. New code — no equivalent or no API — [NEW]
++
++| File | What | Why new |
++|---|---|---|
++| `esplusplayer_tv50.h` | ABI header of the TV's old esplusplayer | **no public API** — see section 5 |
++| `pkg/service/mlservice.c` | Tizen service-app + **message-port bridge** dispatching the 11 UI functions to the engine | upstream UI calls WASM via embind; natively **no such method exists** — a wgt↔service IPC is required |
++| `pkg/ui/mlbridge.js` | `tizen.messageport` client replacing the WASM transport | same, on the JS side |
++| `mlclient/esplus_player.c` | one shared esplusplayer for video+audio (TV allows one per process) | a coordination layer not present in EMSS |
++| `mlclient/input_evdev.c` | input via `/dev/input` → `LiSend*` | native equivalent of HTML5 input |
++| `mlclient/gs_client.c` | native orchestration + **own `xml_search`/`xml_status`** | moonlight-tizen references `xml_search` but **ships no `xml.c`** (the JS did it); written without an expat dependency |
++| `mlclient/main.c` | native CLI client main | ties it together outside the browser |
++| Build/packaging: `fetch-tizen-sources.sh`, `fetch-backport-deps.sh`, `build-core.sh`, `build-deps-lib.sh`, `build-client.sh`, `build-video-path.sh`, `pkg/Dockerfile`, `pkg/build-package.sh`, `pkg/service/build-service.sh`, `service/tizen-manifest.xml`, `ui/config.xml` | environment + hybrid package | new toolchain for 5.0 + the .tpk/.wgt package |
++
++Bridge contract (1:1 with moonlight-tizen's embind exports):
++`makeCert, httpInit, openUrl, pair, startStream, stopStream, cancelRequest,
++sendKeyboardEvent, stun, wakeOnLan, toggleStats` — details in `pkg/ARCHITECTURE.md`.
++
++---
++
++## 4. Crypto/HTTP — supplied dependencies
++
++The public 5.0 sysroot has no headers; versions chosen to match the TV libraries:
++- **mbedTLS 2.28.8** (vendored source) — for the core's `PlatformCrypto.c`.
++- **OpenSSL 1.0.2o** + **libcurl 7.59.0** — headers fetched, linked against the TV `.so`.
++Confirmed: the whole chain links to an ARM ELF, no glibc symbol above 2.24.
++
++---
++
++## 5. Reverse-engineering results for `libesplusplayer.so` — [RE]
++
++Public sources (esplusplayer 0.0.3 from Tizen 6.5) have the **new** API; the TV has
++the **old** one. The following was read from the machine code (objdump);
++**ASM** = confirmed in assembly, **TV** = confirmed by a run on the device.
++
++Calling conventions:
++- Functions return a **bool** (1/0), not a Tizen error code. [ASM]
++- `submit_packet` returns a status where **4 = success**. [ASM, TV]
++- `pts`/`duration` are in **nanoseconds** — the library divides by 1,000,000
++  (constant `0xF4240` in the assembly). [ASM]
++- Callbacks have **no `user_data`**; offsets in a global `listener_bridge`
++  (error +4, buffer_status +8, resource_conflicted +12, eos +16,
++  ready_to_prepare +20, prepare_async_done +24). [ASM]
++- **No `esplusplayer_destroy` export** (though the public headers have it). [ASM]
++
++Structures:
++- `video_stream_info` = **36 B**: codec_data@0, codec_data_length@4, mime@8,
++  width@12, height@16, max_width@20, max_height@24, framerate_num@28,
++  framerate_den@32. Offsets confirmed by the dlog strings ("from->width" etc.). [ASM]
++- `es_packet`: type@0, buffer@4, size@8, pts@16, duration@24. [ASM]
++- `audio_stream_info` = **24 B**: codec_data@0, len@4, mime@8, bitrate@12,
++  channels@16, sample_rate@20. Offsets from the log strings. [ASM]
++
++Enums (read from the jump tables in `SetMimeType_`):
++- Video: H263=1, **H264=2**, HEVC=3, MPEG1/2/4=4/5/6, VP8=7, VP9=8, WMV3=9
++  (no AV1/MJPEG). [ASM]
++- Audio: AAC=1, MP2=2, MP3=3, AC3=4, EAC3=5, VORBIS=6, **DTS=7, OPUS=8**.
++  **Note: differs from the public enum** — the TV inserts DTS=7, so OPUS=8 (not 7).
++  Taking the public value would select the wrong codec. [ASM]
++- `DisplayType`: NONE=0, **OVERLAY=1**, EVAS=2. Any other value → `assert_fail`
++  (abort). The video window is `_Ecore_Wl2_Window*`. [ASM]
++
++Behaviour (on the TV):
++- Prepare sequence: `ready_to_prepare` → feed ~9–10 packets → `prepare_async_done`. [TV]
++- Resource-conflict model: acquiring the video plane **stops the broadcast decoder**
++  (`sdp-dvde-dec0`); esplusplayer uses a different decoder (`sdp-mfc-dec0`) on the
++  same plane. Releasing it does not restart broadcast — only the TV shell does. [TV]
++- `[sdp-mfc-dec0] ERROR invalid user data a20003` is **harmless** (decoding
++  proceeds). The `GStreamer-CRITICAL` (caps) errors come from esplusplayer's own
++  pipeline — they appear even for pure video with no audio, so **not from our
++  OpusHead**. [TV]
++
++No-root access (SMACK/Cynara):
++- `libesplusplayer.so` has SMACK label `_` (loadable by anyone); `/dev/video*`,
++  `/dev/sdp*`, `/dev/input/event*` have label `*` (accessible to any process).
++  esplusplayer does not link Cynara. [TV]
++- Test: `esppplay` run under a sandbox label `User::Pkg::...` **decoded video**
++  (create/open/overlay/prepare/submit OK) — installation via a dev package without
++  root is feasible. [TV]
++
++---
++
++## 6. Measured results [TV]
++
++- In-player latency: **2–3 frames** (34–51 ms queue at 1080p60), stable; a small
++  preroll-pts step brings it down from a constant ~150 ms.
++- End-to-end test against a **Wolf** host (games-on-whales) over GameStream:
++  pairing, app launch, RTSP, stream init, video/audio setup, input enumeration
++  (remote on evdev) — everything on the client side worked. The stream ended on
++  the host (a Wolf config error: the runner's Wayland socket), not the client.
++- esplusplayer accepts raw **H.264 Annex-B** (no AVCC/extradata). [TV]
++
++---
++
++## 7. Method
++
++RE tooling: `arm-linux-gnueabi-objdump`/`nm`/`readelf` from the Tizen 6.2
++toolchain, jump-table analysis (`tbb`/`tbh`), PC-relative string resolution,
++correlation with `dlog` log strings (field names) and the public 0.0.3 headers
++(names, not values). Every result is marked confirmed-in-asm, confirmed-on-TV, or
++assumed.
++
++> Engineering aid. Before any external use, the items marked "assumed" need
++> verification on the target hardware.
+diff --git a/PROVENANCE.md b/PROVENANCE.md
+new file mode 100644
+index 0000000..9152857
+--- /dev/null
++++ b/PROVENANCE.md
+@@ -0,0 +1,150 @@
++# Proweniencja kodu i wyniki reverse engineering
++
++Natywny port Moonlight na **Samsung TV Tizen 5.0** (armv7l softfp, glibc 2.24,
++GCC 6.2), bez NaCl i bez WASM. Powstał przez połączenie wielokrotnie używalnych
++części **moonlight-tizen** (brightcraft) z nowym natywnym silnikiem opartym na
++wewnętrznej bibliotece TV `libesplusplayer.so`.
++
++Powód osobnego portu: moonlight-tizen jest WASM/Emscripten i używa Samsung EMSS,
++który istnieje dopiero od Tizen 5.5. Na 5.0 nie ma EMSS ani publicznego API do
++niskolatencyjnego podawania pakietów elementarnych — jedyną drogą jest natywny
++esplusplayer, którego ABI trzeba było odczytać z kodu maszynowego.
++
++Legenda: **[UP]** wzięte z moonlight-tizen bez zmian · **[MOD]** podmienione/
++zastąpione · **[NEW]** nowe (brak odpowiednika/API) · **[RE]** wynik reverse
++engineering.
++
++---
++
++## 1. Kod wzięty z oryginału bez zmian — [UP]
++
++| Składnik | Pochodzenie | Jak użyty |
++|---|---|---|
++| `moonlight-common-c` (Connection, RTSP, Control/Video/Audio stream, depacketizer, ENet, Reed-Solomon) | submoduł moonlight-tizena (upstream) | kompilowany natywnie GCC 6.2; 27/27 plików bez błędów |
++| `libgamestream` — `http.c`, `pairing.c`, `mkcert.c` | moonlight-tizen | kompilowane na nagłówkach OpenSSL 1.0.2o (z TV) |
++| `h264bitstream`, `opus`, `enet` | wbudowane w moonlight-tizen | dostępne do linkowania (na TV ich nie ma) |
++| **Web UI** — `wasm/platform/*.js`, `index.html`, `static/`, `res/` | moonlight-tizen | pakowane do wgt **bez zmian w logice** (lista hostów, parowanie, siatka aplikacji, box art, ustawienia) |
++
++Jedyna ingerencja w UI: usunięcie ładowania modułu WASM (`platform.js`) i
++wstrzyknięcie `mlbridge.js` — patrz sekcja 3.
++
++---
++
++## 2. Co trzeba było podmienić — [MOD]
++
++| Oryginał (moonlight-tizen) | Nasza podmiana | Dlaczego |
++|---|---|---|
++| `wasm/wasmplayer.cpp` (EMSS `ElementaryMediaTrack.AppendPacket`) | `mlclient/video_esplus.c` | EMSS nie istnieje na 5.0 → esplusplayer |
++| `wasm/auddec.cpp` (EMSS audio / WebAudio) | `mlclient/audio_opus.c` | j.w., ścieżka audio/x-opus do esplusplayer |
++| Transport `Module.*` + `sendMessage`/`handleMessage` (embind) | `pkg/ui/mlbridge.js` (klient message-port) | brak WASM/embind na 5.0 |
++| `http.cpp` MakeCert/LoadCert/HttpInit (embind) | `cert_init.c` (CLI) / obsługa certu w `mlservice.c` (usługa) | j.w., natywnie zamiast embind |
++| `Platform.h` — bezwarunkowy `#include <emscripten.h>` i makro `Limelog`→`emscripten_log` | 2 drobne atrapy (shim `emscripten.h`) | rdzeń nie woła emscripten; shimy tylko do kompilacji |
++| Orkiestracja GameStream robiona w JS przez WASM (serverinfo/pair/launch) | `gs_client.c` (wariant CLI) lub sterowana z JS przez mostek (wariant hybrydowy) | na 5.0 HTTP/krypto muszą działać natywnie |
++
++---
++
++## 3. Kod nowy — brak odpowiednika lub brak API — [NEW]
++
++| Plik | Co to | Dlaczego nowy |
++|---|---|---|
++| `esplusplayer_tv50.h` | nagłówek ABI starego esplusplayer z TV | **brak publicznego API** — patrz sekcja 5 |
++| `pkg/service/mlservice.c` | usługa Tizen (service-app) + **mostek message-port** rozdzielający 11 funkcji UI na silnik | w oryginale UI woła WASM przez embind; natywnie **nie ma takiej metody** — potrzebny IPC wgt↔usługa |
++| `pkg/ui/mlbridge.js` | klient `tizen.messageport` zastępujący transport WASM | j.w. po stronie JS |
++| `mlclient/esplus_player.c` | wspólny jeden esplusplayer dla wideo i audio (TV pozwala na jeden na proces) | nowa warstwa koordynacji nieobecna w EMSS |
++| `mlclient/input_evdev.c` | wejście przez `/dev/input` → `LiSend*` | natywny odpowiednik wejścia HTML5 |
++| `mlclient/gs_client.c` | natywna orkiestracja + **własny `xml_search`/`xml_status`** | moonlight-tizen odwołuje się do `xml_search`, ale **nie dostarcza `xml.c`** (robił to JS); napisany bez zależności expat |
++| `mlclient/main.c` | natywny `main` klienta CLI | spina całość poza przeglądarką |
++| Build/pakowanie: `fetch-tizen-sources.sh`, `fetch-backport-deps.sh`, `build-core.sh`, `build-deps-lib.sh`, `build-client.sh`, `build-video-path.sh`, `pkg/Dockerfile`, `pkg/build-package.sh`, `pkg/service/build-service.sh`, `service/tizen-manifest.xml`, `ui/config.xml` | środowisko i pakiet hybrydowy | nowy toolchain pod 5.0 + pakiet .tpk/.wgt |
++
++Kontrakt mostka (zmapowanie 1:1 z eksportów embind moonlight-tizena):
++`makeCert, httpInit, openUrl, pair, startStream, stopStream, cancelRequest,
++sendKeyboardEvent, stun, wakeOnLan, toggleStats` — szczegóły w `pkg/ARCHITECTURE.md`.
++
++---
++
++## 4. Krypto/HTTP — dostarczone zależności
++
++Publiczny sysroot 5.0 nie ma nagłówków; wersje dobrane pod biblioteki z TV:
++- **mbedTLS 2.28.8** (wbudowane źródło) — dla `PlatformCrypto.c` rdzenia.
++- **OpenSSL 1.0.2o** + **libcurl 7.59.0** — nagłówki pobrane, linkowanie do `.so` z TV.
++Potwierdzone: cały łańcuch linkuje się do ARM ELF, brak symboli glibc > 2.24.
++
++---
++
++## 5. Wyniki reverse engineering `libesplusplayer.so` — [RE]
++
++Publiczne źródła (esplusplayer 0.0.3 z Tizen 6.5) mają **nowe** API; TV ma
++**stare**. Poniższe odczytane z kodu maszynowego (objdump); oznaczenia:
++**ASM** = potwierdzone w asemblerze, **TV** = potwierdzone uruchomieniem.
++
++Konwencje wywołań:
++- Funkcje zwracają **bool** (1/0), nie kod błędu Tizen. [ASM]
++- `submit_packet` zwraca status, gdzie **4 = sukces**. [ASM, TV]
++- `pts`/`duration` w **nanosekundach** — biblioteka dzieli przez 1 000 000
++  (stała `0xF4240` w asemblerze). [ASM]
++- Callbacki **bez `user_data`**; offsety w globalnym `listener_bridge`
++  (error +4, buffer_status +8, resource_conflicted +12, eos +16,
++  ready_to_prepare +20, prepare_async_done +24). [ASM]
++- **Brak eksportu `esplusplayer_destroy`** (mimo że publiczne nagłówki go mają). [ASM]
++
++Struktury:
++- `video_stream_info` = **36 B**: codec_data@0, codec_data_length@4, mime@8,
++  width@12, height@16, max_width@20, max_height@24, framerate_num@28,
++  framerate_den@32. Offsety potwierdzone napisami logów („from->width" itd.). [ASM]
++- `es_packet`: type@0, buffer@4, size@8, pts@16, duration@24. [ASM]
++- `audio_stream_info` = **24 B**: codec_data@0, len@4, mime@8, bitrate@12,
++  channels@16, sample_rate@20. Offsety z napisów logów. [ASM]
++
++Enumy (odczytane ze skoków tablicowych w `SetMimeType_`):
++- Wideo: H263=1, **H264=2**, HEVC=3, MPEG1/2/4=4/5/6, VP8=7, VP9=8, WMV3=9
++  (bez AV1/MJPEG). [ASM]
++- Audio: AAC=1, MP2=2, MP3=3, AC3=4, EAC3=5, VORBIS=6, **DTS=7, OPUS=8**.
++  **Uwaga: różni się od publicznego enum** — TV wstawia DTS=7, przez co OPUS=8
++  (nie 7). Wzięcie publicznej wartości dałoby zły kodek. [ASM]
++- `DisplayType`: NONE=0, **OVERLAY=1**, EVAS=2. Inna wartość → `assert_fail`
++  (abort). Okno wideo to `_Ecore_Wl2_Window*`. [ASM]
++
++Zachowanie (z TV):
++- Sekwencja prepare: `ready_to_prepare` → trzeba wysłać ~9–10 pakietów →
++  `prepare_async_done`. [TV]
++- Model konfliktu zasobu: akwizycja planu wideo **zatrzymuje dekoder broadcastu**
++  (`sdp-dvde-dec0`); esplusplayer używa innego dekodera (`sdp-mfc-dec0`) na tym
++  samym planie. Zwolnienie nie wznawia broadcastu — robi to dopiero powłoka TV. [TV]
++- `[sdp-mfc-dec0] ERROR invalid user data a20003` jest **nieszkodliwy**
++  (dekodowanie przebiega). Błędy `GStreamer-CRITICAL` (caps) pochodzą z
++  wewnętrznego potoku esplusplayer — pojawiają się też przy czystym wideo bez
++  audio, więc **nie z naszego OpusHead**. [TV]
++
++Dostęp bez roota (SMACK/Cynara):
++- `libesplusplayer.so` etykieta SMACK `_` (ładowalna przez każdego);
++  `/dev/video*`, `/dev/sdp*`, `/dev/input/event*` etykieta `*` (dostęp dla
++  każdego). esplusplayer nie linkuje Cynary. [TV]
++- Test: `esppplay` uruchomiony pod etykietą sandboxa `User::Pkg::...` **zdekodował
++  obraz** (create/open/overlay/prepare/submit OK) — instalacja przez dev-paczkę
++  bez roota jest realna. [TV]
++
++---
++
++## 6. Wyniki pomiarów [TV]
++
++- Opóźnienie wewnątrz odtwarzacza: **2–3 klatki** (kolejka 34–51 ms przy 1080p60),
++  stabilne; z krokiem preroll pts ściągnięte ze stałych ~150 ms.
++- Test end-to-end z hostem **Wolf** (games-on-whales) przez GameStream:
++  parowanie, launch aplikacji, RTSP, inicjalizacja strumieni, setup wideo/audio,
++  enumeracja wejścia (pilot na evdev) — wszystko po stronie klienta zadziałało.
++  Strumień zakończył host (błąd konfiguracji Wolfa: Wayland socket runnera),
++  nie klient.
++- esplusplayer przyjmuje surowy **H.264 Annex-B** (bez AVCC/extradata). [TV]
++
++---
++
++## 7. Metoda
++
++Narzędzia RE: `arm-linux-gnueabi-objdump`/`nm`/`readelf` z toolchainu Tizen 6.2,
++analiza skoków tablicowych (`tbb`/`tbh`), rozwiązywanie napisów PC-relative,
++korelacja z napisami logów `dlog` (nazwy pól) i z publicznymi nagłówkami 0.0.3
++(nazwy, nie wartości). Każdy wynik oznaczony jako potwierdzony w asemblerze lub
++na TV, bądź założony.
++
++> Materiał pomocniczy inżynierski. Przed użyciem zewnętrznym części oznaczone
++> jako założone wymagają weryfikacji na docelowym sprzęcie.
+diff --git a/README.md b/README.md
+index 11ad363..5d2f67a 100644
+--- a/README.md
++++ b/README.md
+@@ -1,85 +1,109 @@
+-# moonlight-tizen50-core
++# moonlight-tizen5.0
+ 
+ A **native** [Moonlight](https://moonlight-stream.org/) GameStream client for
+-**Samsung TVs running Tizen 5.0**, with low-latency hardware video.
++**Samsung TVs running Tizen 5.0**, with low-latency hardware video — **no NaCl,
++no WebAssembly**.
+ 
+ It streams games from a GameStream host (Sunshine, GeForce Experience,
+ [Wolf](https://games-on-whales.github.io/wolf/)) and decodes video on the TV's
+ hardware video plane through the vendor library `libesplusplayer.so`.
+ 
+-> Status: **experimental / work in progress.** The streaming engine runs
++> Status: **experimental / work in progress.** The streaming engine is verified
+ > end-to-end on real hardware (pairing → launch → RTSP → hardware decode, 2–3
+-> frame player latency). The app package (UI + engine host) is still being
+-> brought up.
++> frame player latency). The hybrid app package (UI + service) is still being
++> brought up. See [BACKPORT.md](BACKPORT.md) for the step-by-step state.
+ 
+ ## Why this exists
+ 
+-The WebAssembly [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen)
+-app needs **Tizen 5.5+** because it uses Samsung EMSS (elementary media stream
+-source) for the fast, low-latency video path. **Tizen 5.0 has no EMSS**, and the
+-public 5.0 SDK offers only the buffering `capi-media-player` path (high latency).
++[moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) is a
++WebAssembly app that needs **Tizen 5.5+** because it uses Samsung EMSS (elementary
++media stream source) for the fast, low-latency video path. **Tizen 5.0 has no
++EMSS** and the public 5.0 SDK offers only the buffering `capi-media-player` path
++(the same high-latency route the old NaCl client used).
+ 
+-This project brings the fast path to 5.0 by reusing moonlight-tizen's portable
+-parts and replacing the EMSS video/audio path with a native engine built on
+-`libesplusplayer.so`, the TV's hardware ES player.
++This project backports the fast path to 5.0 by reusing moonlight-tizen's
++reusable parts and replacing the EMSS video/audio path with a native engine built
++on `libesplusplayer.so`. That library is **internal / not in the public SDK**, so
++its ABI was reverse-engineered from the device binary — see
++[PROVENANCE.md](PROVENANCE.md).
+ 
+ ## What is reused vs. new
+ 
+ | | |
+ |---|---|
+ | **Reused unchanged** | `moonlight-common-c` (streaming core), `libgamestream` (pairing/HTTP), the web UI (host list, pairing, app grid, settings) |
+-| **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c`, the WASM transport → a message-port bridge, cert handling → native |
+-| **New** | `esplusplayer_tv50.h` (the TV's ES-player C API), the message-port bridge + JS shim, `esplus_player.c`, `input_evdev.c`, `gs_client.c` (+ own `xml_search`), and the build/packaging |
++| **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c`, WASM embind transport → a message-port bridge, cert handling → native |
++| **New** | the reverse-engineered `esplusplayer_tv50.h`, the message-port service + JS bridge, `esplus_player.c`, `input_evdev.c`, `gs_client.c` (+ own `xml_search`), the whole build/packaging |
+ 
+-## Architecture
++Full map and attribution in [PROVENANCE.md](PROVENANCE.md); design in
++[pkg/ARCHITECTURE.md](pkg/ARCHITECTURE.md).
++
++## Architecture (hybrid package)
+ 
+ ```
+-┌──────────────────────── Tizen app ────────────────────────┐
+-│  Web UI (.wgt)  — moonlight-tizen front-end                │
+-│      │  tizen.messageport  (mlbridge.js)                    │
+-│      ▼                                                      │
+-│  .NET host (.tpk)  — loads libmlengine.so (the engine)     │
+-│      makeCert / pair / startStream / input                 │
+-│      → moonlight-common-c + libgamestream + esplusplayer   │
+-└────────────────────────────────────────────────────────────┘
++┌─────────────────────────── Tizen hybrid package ───────────────────────────┐
++│  Web UI (wgt)  — moonlight-tizen front-end, unchanged logic                 │
++│      │  tizen.messageport  (mlbridge.js replaces the WASM embind transport)  │
++│      ▼                                                                       │
++│  Native service (tpk)  — mlservice.c                                         │
++│      makeCert / httpInit / openUrl / pair / startStream / sendKeyboardEvent  │
++│      → moonlight-common-c + libgamestream + esplusplayer video/audio + input │
++└─────────────────────────────────────────────────────────────────────────────┘
+ ```
+ 
+-During streaming the engine owns the hardware video overlay; the web UI is the
+-menu/launcher.
++During streaming the native service owns the hardware video overlay; the web UI
++is the menu/launcher.
+ 
+ ## Build (headless, Docker)
+ 
+-Everything builds in a container. Heavy or device-specific inputs are
+-**mounted**, never committed:
++Everything builds in a container — no GUI, no host Tizen install needed. Heavy or
++device-specific inputs are **mounted**, never committed:
+ 
+ - `tizen-deps/` — cross toolchain + Tizen 5.0 sysroot/sources (`fetch-tizen-sources.sh`)
+ - `tv-libs/` — `.so` libraries copied from **your** TV (never redistribute these)
+ 
+ The build image is based on **`vitalets/docker-tizen-webos-sdk`** — the same
+-headless Tizen CLI image the Jellyfin community installer uses (Tizen Studio CLI,
+-`sdb`, a sample dev cert) plus a .NET SDK for the `.tpk` host.
++headless Tizen CLI image the Jellyfin community installer uses. It ships the Tizen
++Studio CLI (installed non-interactively via the web-cli installer), `sdb`, and a
++sample dev author cert + `profiles.xml`, so there is no GUI installer and no
++Tizen-Studio install step of our own.
+ 
+ ```bash
+-# 1. one-time: fetch toolchain + Tizen 5.0 sources
++# 1. one-time: fetch toolchain + Tizen 5.0 sources, copy the TV's libraries
+ fetch-tizen-sources.sh ./tizen-deps
+-# then provide your TV's /lib and /usr/lib under tizen-deps/tv-libs/
+-# (your device's own files — used only locally, never redistributed)
++ssh root@<TV> 'cd / && tar cf - lib usr/lib' | tar xf - -C tizen-deps/tv-libs
+ 
+-# 2. build the image
++# 2. build the image (vitalets base + a few build tools)
+ docker build -t moonlight-tizen-build pkg
+ 
+-# 3. build the engine .so, the .NET host .tpk, and the web .wgt in the container
++# 3. build the engine .so + the web .wgt inside the container
+ docker run --rm -v "$PWD":/work/repo -v <moonlight-tizen>:/work/mlt \
+   moonlight-tizen-build bash -lc '
+-    REPO=/work/repo MLT=/work/mlt DEPS=/work/repo/tizen-deps
+-    mlclient/build-engine-so.sh                 # -> libmlengine.so
+-    pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk
+-    REPO=$REPO MLT=$MLT pkg/build-package.sh     # -> the web .wgt'
++    REPO=/work/repo MLT=/work/mlt DEPS=/work/repo/tizen-deps \
++      /work/repo/pkg/build-package.sh'
++```
++
++Then install on the TV exactly like Jellyfin — `sdb` + `tizen install`, in
++Developer Mode:
++
++```bash
++docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
++  /work/repo/pkg/install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
+ ```
+ 
+-## Install (no build needed)
++> **Packaging status.** The web `.wgt` builds, signs and installs headless on the
++> vitalets image (the Tizen-Studio-install problem is gone). The native engine ships
++> as `libmlengine.so` driven by a thin exe (root path) or a **.NET host `.tpk`**
++> (no-root dev-cert path — see `pkg/DEV-CERT-PATH.md`). The `.tpk` uses the `tizen40`
++> TFM, built with a plain .NET SDK + the `Tizen.NET.Sdk` NuGet (NO `dotnet workload
++> install tizen`); the vitalets Tizen CLI does the packaging/signing. End users
++> install with Apps2Samsung (per-DUID signing); developers can use `install-on-tv.sh`
++> with a Samsung DUID cert, since recent TVs reject the default Tizen cert
++> ("Invalid certificate chain").
++
++## Install (no root required)
+ 
+-CI builds the packages on every release
++**You do not build anything.** CI builds the packages on every release
+ (`.github/workflows/build-packages.yml`); download them from the
+ [Releases](../../releases) page and install with
+ **[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
+@@ -87,44 +111,59 @@ CI builds the packages on every release
+ 1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
+    reboot).
+ 2. Download the package for your TV from Releases:
+-   - `org.moonlight.host-*.tpk` — the native engine host (Tizen 4.0–5.5).
++   - `org.moonlight.host-*.tpk` — the native engine (Tizen 4.0–5.5).
+    - `Moonlight-*.wgt` — the web UI.
+ 3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
+-   each package for that DUID, and installs it. Packages ship signed only with a
+-   sample dev cert; Apps2Samsung re-signs per-DUID, which is what the TV accepts.
+-   No Samsung certificate to create by hand, no `sdb` commands.
++   each package for that DUID, and installs it. Packages are shipped signed only
++   with a sample dev cert on purpose — Apps2Samsung re-signs per-DUID, which is
++   what the TV accepts (a fixed distributor cert would lock installs to a preset
++   list of TVs). No Samsung certificate to create by hand, no `sdb` commands.
+ 
+-> Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
+-> does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
+-> you supply. Apps2Samsung is the same step, automated.
++The hardware video path runs from this sandboxed, dev-signed app — **root is not
++required** (the esplusplayer path runs under a `User::Pkg` SMACK label). Root is
++only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
++
++> Developer alternative (no Apps2Samsung): `pkg/install-on-tv.sh <TV_IP>
++> <package> [cert_password]` does `sdb connect` + `tizen install`, re-signing with
++> a Samsung DUID cert you supply (`author.p12`/`distributor.p12`). Apps2Samsung is
++> the same DUID signing step, automated.
+ 
+ ## Requirements
+ 
+ - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
+ - A GameStream host on the LAN (Sunshine / GeForce Experience / Wolf).
+-- To build: Linux with Docker/podman, and the TV's `/lib` + `/usr/lib` (copied once).
++- To build: Linux with `podman`, and the TV's `/lib` + `/usr/lib` (copied once).
+ 
+ ## Repository layout
+ 
+ ```
+-esplusplayer_tv50.h   C API for the TV's libesplusplayer.so
++esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
+ mlclient/             native engine + CLI harness (video, audio, input, pairing)
+-pkg/                  app package: Dockerfile, .NET host (tpk), web UI (wgt), build
++pkg/                  hybrid package: Dockerfile, service (tpk), ui (wgt), build
+ fetch-*.sh build-*.sh reproducible build scripts
+-esppplay.c            minimal H.264 → esplusplayer probe used during bring-up
++esppplay.c            minimal H.264→esplusplayer probe used during bring-up
++BACKPORT.md           milestone-by-milestone status
++PROVENANCE.md         code origins + reverse-engineering results
+ ```
+ 
+ ## Credits & license
+ 
+-This project stands on several others:
++This project stands on several others. What came from where:
+ 
+-| Project | What we use |
++| Project | What we took from it |
+ |---|---|
+-| [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) | The streaming core — RTSP, control stream, FEC, the decoder/audio callback ABI. Used unchanged. |
+-| [moonlight-embedded](https://github.com/moonlight-embedded/moonlight-embedded) | `libgamestream` (pairing + GameStream HTTP), and its `client.c` as the reference for our native pairing/launch (`gs_client.c`). |
+-| [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) | The web UI — host list, pairing, app grid, settings — reused as-is, with the WASM transport swapped for our message-port bridge. |
++| [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) (moonlight-stream) | The streaming core — RTSP, control stream, FEC, the decoder/audio callback ABI. Used unchanged. |
++| [moonlight-embedded](https://github.com/moonlight-embedded/moonlight-embedded) (irtimmer) | `libgamestream` (pairing + GameStream HTTP) and its `client.c` as the reference for our native pairing/launch orchestration (`gs_client.c`). |
++| [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) (brightcraft) | The web UI — host list, pairing, app grid, settings — reused as-is, with the WASM/EMSS video transport swapped for our message-port bridge. The WASM port we backport the fast path *from*. |
++| [moonlight-chrome](https://github.com/moonlight-stream/moonlight-chrome) → [moonlight-tizen-nacl](https://github.com/OneLiberty/moonlight-tizen-nacl) (OneLiberty) | The original NaCl Tizen lineage this repo forked (see the top-level README); the pre-5.5 UI and gamepad fixes. |
++| [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) (iqui27) | The **native `.tpk` design for Tizen 4/5**: loading the engine `.so` from memory via `memfd` (UEP blocks file `dlopen`), the `tizen40`/`TVGLApplication` host shape, **PUBLIC / no-`drminfo`** signing, per-DUID install, and the self-update-by-downloaded-`.so` idea. We aligned our host/engine to it; no code copied. |
+ | [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) | The end-user install tool — reads the TV DUID, signs each package for it, installs. |
+-| [vitalets/docker-tizen-webos-sdk](https://github.com/vitalets/docker-tizen-webos-sdk) + the [Jellyfin](https://github.com/jellyfin/jellyfin-tizen) install flow | The headless build+install toolchain our Docker image and `install-on-tv.sh` follow. |
++| [vitalets/docker-tizen-webos-sdk](https://github.com/vitalets/docker-tizen-webos-sdk) + the [Jellyfin](https://github.com/jellyfin/jellyfin-tizen) / [georift](https://github.com/Georift/install-jellyfin-tizen) install flow | The headless build+install toolchain (Tizen CLI + `sdb`), the pattern our Docker image and `install-on-tv.sh` follow. |
++
++**New / our own:** the reverse-engineered `libesplusplayer.so` ABI
++(`esplusplayer_tv50.h`), the native engine (`esplus_player.c`, `video_esplus.c`,
++`audio_opus.c`, `input_evdev.c`), the message-port bridge, and the build/packaging.
++Full file-level map and attribution in [PROVENANCE.md](PROVENANCE.md).
+ 
+ **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
+ **GPLv3**.
+@@ -135,5 +174,6 @@ device.
+ 
+ ## Disclaimer
+ 
+-Independent, unofficial project. Not affiliated with or endorsed by Samsung,
+-NVIDIA, or the Moonlight project.
++Independent, unofficial project. Reverse-engineering notes are engineering aids;
++items marked "assumed" need verification on the target hardware before relying on
++them. Not affiliated with or endorsed by Samsung, NVIDIA, or the Moonlight project.
+diff --git a/build-core.sh b/build-core.sh
+index f25f0e6..954a401 100755
+--- a/build-core.sh
++++ b/build-core.sh
+@@ -3,7 +3,7 @@
+ # + enet + reedsolomon) for Tizen 5.0 armv7l with the Tizen GCC 6.2 toolchain.
+ # This is the FEASIBILITY build - it stops at .o files. Crypto (PlatformCrypto.c,
+ # needs mbedTLS) and libgamestream (needs OpenSSL 1.0 + libcurl) are NOT built
+-# here.
++# here; see BACKPORT.md for the dependency plan.
+ #
+ # Result on first run (2026-11-01): 27/27 core files compile, 0 warnings.
+ #
+diff --git a/build-esppplay.sh b/build-esppplay.sh
+index 3ddb7e8..12123ae 100755
+--- a/build-esppplay.sh
++++ b/build-esppplay.sh
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # Build esppplay for the TV. Needs fetch-tizen-sources.sh output and
+-# TV libraries must be present under $DEPS/tv-libs (your device's own /lib + /usr/lib).
++# TV libraries copied to $DEPS/tv-libs (ssh root@TV 'tar cf - lib usr/lib' | tar xf - -C $DEPS/tv-libs).
+ set -e
+ cd "$(dirname "$0")"
+ DEPS=${DEPS:-../tizen-deps}
+diff --git a/esplusplayer_tv50.h b/esplusplayer_tv50.h
+index 1696478..47844c4 100644
+--- a/esplusplayer_tv50.h
++++ b/esplusplayer_tv50.h
+@@ -1,17 +1,22 @@
+ /*
+- * esplusplayer_tv50.h - C API for libesplusplayer.so (the "plusplayer" ES player
+- * ABI) on Samsung TV Tizen 5.0.
++ * esplusplayer_tv50.h - C API of /usr/lib/libesplusplayer.so on Samsung TV Tizen 5.0
++ * (old "plusplayer" ABI). Reconstructed from the TV binary with objdump.
+  *
+- * This is the older plusplayer ABI, which differs from the public esplusplayer
+- * 0.0.3 (Tizen 6.5) headers in several ways:
++ * Legend:
++ *   [ASM]  confirmed in the disassembly of the TV library (address given)
++ *   [PUB]  taken from public esplusplayer 0.0.3 (Tizen 6.5) headers, NOT checked
++ *          in the TV binary
++ *   [TV]   confirmed by a run on the TV
++ *
++ * Main differences to the public (new) API:
+  *   - Most functions return a C++ bool (1 = OK, 0 = fail), NOT a Tizen error
+- *     code. A NULL handle or a not-implemented call also returns 0.
+- *   - submit_packet returns esplusplayer_submit_status (4 = success).
++ *     code. A NULL handle and a "not implemented" vtable slot also return 0.  [ASM]
++ *   - submit_packet returns esplusplayer_submit_status (4 = success).          [ASM]
+  *   - es_packet.pts / duration are NANOSECONDS. The library divides them by
+- *     1 000 000 internally (its internal unit is ms).
+- *   - Callbacks have NO user_data argument.
++ *     1 000 000 before EsPacket::Create (internal unit is ms).  [ASM 0x340f8]
++ *   - Callbacks have NO user_data argument.                                    [ASM]
+  *   - esplusplayer_create() keeps ONE global player. A second create() deletes
+- *     the first. Use one player per process.
++ *     the first player. Use one player per process.          [ASM 0x337d4]
+  */
+ #ifndef ESPLUSPLAYER_TV50_H
+ #define ESPLUSPLAYER_TV50_H
+@@ -22,15 +27,20 @@
+ extern "C" {
+ #endif
+ 
+-/* Opaque player handle (a plusplayer C++ object). */
++/* Handle = plusplayer::EsPlusPlayer* (C++ object with vtable).  [ASM 0x337a8] */
+ typedef void *esplusplayer_handle;
+ 
++/* Passed unchanged as plusplayer::StreamType.  [PUB]; the values are used
++ * unchanged by EsPacket::Create  [ASM 0x3412c] */
+ typedef enum {
+   ESPLUSPLAYER_STREAM_TYPE_AUDIO = 0,
+   ESPLUSPLAYER_STREAM_TYPE_VIDEO = 1,
+ } esplusplayer_stream_type;
+ 
+-/* Video codec selector. No AV1 / MJPEG on this version. */
++/* Passed unchanged to VideoStream::SetMimeType. Switch in
++ * VideoStream::SetMimeType_ [ASM 0x32878] maps:
++ * 1 x-h263, 2 x-h264, 3 x-h265, 4/5/6 mpeg v1/v2/v4, 7 x-vp8, 8 x-vp9,
++ * 9 x-wmv (wmvversion 3), other "unknown". No AV1 / MJPEG on this version. */
+ typedef enum {
+   ESPLUSPLAYER_VIDEO_MIME_TYPE_UNKNOWN = 0,
+   ESPLUSPLAYER_VIDEO_MIME_TYPE_H263 = 1,
+@@ -44,14 +54,17 @@ typedef enum {
+   ESPLUSPLAYER_VIDEO_MIME_TYPE_WMV3 = 9,
+ } esplusplayer_video_mime_type;
+ 
+-/* Only NONE/OVERLAY/EVAS are valid; other values abort the process. The
+- * Ecore window path accepts only OVERLAY. */
++/* plusplayer::DisplayType. ConvertToTrackRendererDisplayType accepts only
++ * 0, 1, 2; other values call __assert_fail (process abort).
++ * [ASM libplusplayer-core 0x10d08]. The Ecore_Wl2 window path accepts only
++ * OVERLAY (1), other values abort.  [ASM libtrackrenderer 0x1eb56] */
+ typedef enum {
+   ESPLUSPLAYER_DISPLAY_TYPE_NONE = 0,
+   ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY = 1,
+   ESPLUSPLAYER_DISPLAY_TYPE_EVAS = 2,
+ } esplusplayer_display_type;
+ 
++/* [PUB] order; not checked in the binary. */
+ typedef enum {
+   ESPLUSPLAYER_DISPLAY_MODE_LETTER_BOX = 0,
+   ESPLUSPLAYER_DISPLAY_MODE_ORIGIN_SIZE,
+@@ -61,14 +74,16 @@ typedef enum {
+   ESPLUSPLAYER_DISPLAY_MODE_DST_ROI,
+ } esplusplayer_display_mode;
+ 
++/* [PUB]; the TV value is passed unchanged to the callback [ASM 0x35140]. */
+ typedef enum {
+   ESPLUSPLAYER_BUFFER_STATUS_UNDERRUN = 0,
+   ESPLUSPLAYER_BUFFER_STATUS_OVERRUN = 1,
+ } esplusplayer_buffer_status;
+ 
+-/* Returned by submit_packet: 0 not prepared (state <= NONE), 1 null packet or
+- * no active track, 2 out of memory, 4 success. FULL (3) is defined for
+- * completeness. */
++/* plusplayer::PacketSubmitStatus from EsPlayer::SubmitPacketCommon_ [ASM 0x25690]:
++ * 0 state <= NONE (not opened/prepared), 1 null packet or no active track,
++ * 2 GstBuffer alloc failed, 4 success (compared with "cmp r0,#4").
++ * 3 = FULL is [PUB] only. */
+ typedef enum {
+   ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED = 0,
+   ESPLUSPLAYER_SUBMIT_STATUS_INVALID_PACKET = 1,
+@@ -77,7 +92,9 @@ typedef enum {
+   ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS = 4,
+ } esplusplayer_submit_status;
+ 
+-/* 36 bytes. codec_data is copied (new[] + memcpy) when codec_data_length != 0. */
++/* 36 bytes. Offsets and field names confirmed by the dlog strings
++ * "from->width" etc. and loads [r1,#0..#32]  [ASM 0x34854].
++ * codec_data is copied (new[] + memcpy) when codec_data_length != 0. */
+ typedef struct {
+   char *codec_data;           /* +0  */
+   uint32_t codec_data_length; /* +4  */
+@@ -90,8 +107,11 @@ typedef struct {
+   uint32_t framerate_den;     /* +32 */
+ } esplusplayer_video_stream_info;
+ 
+-/* Audio codec selector. NOTE: this ordering differs from public 0.0.3 - it
+- * inserts DTS=7, so OPUS=8 (not 7). 9+ are PCM variants (audio/x-raw). */
++/* Passed unchanged to AudioStream::SetMimeType. Switch in AudioStream::SetMimeType_
++ * [ASM 0x324dc, tbh indexed by value-1] maps the TV's audio mime enum. NOTE: the
++ * TV order DIFFERS from public 0.0.3 - it inserts DTS=7, so OPUS=8 (not 7).
++ * Confirmed values: 1 AAC, 2 MP2, 3 MP3, 4 AC3, 5 EAC3, 6 VORBIS, 7 DTS,
++ * 8 OPUS (audio/x-opus), 9.. PCM variants (audio/x-raw). */
+ typedef enum {
+   ESPLUSPLAYER_AUDIO_MIME_TYPE_UNKNOWN = 0,
+   ESPLUSPLAYER_AUDIO_MIME_TYPE_AAC = 1,
+@@ -104,7 +124,8 @@ typedef enum {
+   ESPLUSPLAYER_AUDIO_MIME_TYPE_OPUS = 8,
+ } esplusplayer_audio_mime_type;
+ 
+-/* 24 bytes. */
++/* 24 bytes. Offsets confirmed by the dlog strings "from->bitrate/channels/
++ * sample_rate/codec_data_length" and loads [r1,#0..#20]  [ASM 0x342f8]. */
+ typedef struct {
+   char *codec_data;           /* +0  */
+   uint32_t codec_data_length; /* +4  */
+@@ -114,8 +135,11 @@ typedef struct {
+   uint32_t sample_rate;       /* +20 */
+ } esplusplayer_audio_stream_info;
+ 
+-/* buffer is copied (new[] + memcpy); the caller keeps ownership.
+- * buffer_size == 0 is handled as EOS for that track. */
++/* Reads [r1,#0] type, [r1,#4] buffer, [r1,#8] size, ldrd [r1,#16] pts,
++ * ldrd [r1,#24] duration [ASM 0x34070]. With EABI 8-byte alignment of
++ * uint64_t the natural C layout gives the same offsets (checked below).
++ * buffer is copied (new[] + memcpy), the caller keeps ownership.
++ * buffer_size == 0 is handled as EOS for that track [ASM 0x25902]. */
+ typedef struct {
+   uint32_t type;        /* +0  esplusplayer_stream_type */
+   char *buffer;         /* +4  */
+@@ -134,46 +158,48 @@ _Static_assert(__builtin_offsetof(esplusplayer_es_packet, pts) == 16, "layout");
+ _Static_assert(__builtin_offsetof(esplusplayer_es_packet, duration) == 24, "layout");
+ #endif
+ 
+-/* Callbacks take no user_data. */
+-typedef void (*esplusplayer_error_cb)(uint32_t plusplayer_error_type); /* raw value */
++/* Callbacks: no user_data. Offsets in the global listener_bridge: error +4,
++ * buffer_status +8, resource_conflicted +12, eos +16, ready_to_prepare +20,
++ * prepare_async_done +24  [ASM 0x33938..0x33c30, 0x350e8, 0x34fb8, 0x35168] */
++typedef void (*esplusplayer_error_cb)(uint32_t plusplayer_error_type); /* raw value, enum not mapped */
+ typedef void (*esplusplayer_buffer_status_cb)(uint32_t stream_type, uint32_t status);
+-typedef void (*esplusplayer_resource_conflicted_cb)(void);
+-typedef void (*esplusplayer_eos_cb)(void);
+-typedef void (*esplusplayer_ready_to_prepare_cb)(uint32_t stream_type);
+-typedef void (*esplusplayer_prepare_async_done_cb)(int result_bool);
++typedef void (*esplusplayer_resource_conflicted_cb)(void);              /* [ASM] no args seen; assumed */
++typedef void (*esplusplayer_eos_cb)(void);                              /* assumed */
++typedef void (*esplusplayer_ready_to_prepare_cb)(uint32_t stream_type); /* [ASM 0x34f94] */
++typedef void (*esplusplayer_prepare_async_done_cb)(int result_bool);    /* [ASM 0x35014] */
+ 
+-/* "int" returns below are a C++ bool (0/1) unless noted. */
++/* Return type "int" below is a C++ bool (0/1) unless noted. */
+ esplusplayer_handle esplusplayer_create(void);
+-int esplusplayer_open(esplusplayer_handle h);
++int esplusplayer_open(esplusplayer_handle h);    /* vtable[2] */
+ int esplusplayer_close(esplusplayer_handle h);
+-int esplusplayer_prepare_async(esplusplayer_handle h);
++int esplusplayer_prepare_async(esplusplayer_handle h); /* vtable[4] */
+ int esplusplayer_start(esplusplayer_handle h);
+ int esplusplayer_stop(esplusplayer_handle h);
+ int esplusplayer_pause(esplusplayer_handle h);
+ int esplusplayer_resume(esplusplayer_handle h);
+ 
+-/* Needs state > NONE (call after open) or returns 0. */
++/* Needs state > NONE (call after open) or returns 0  [ASM 0x23e54]. */
+ int esplusplayer_set_display(esplusplayer_handle h, esplusplayer_display_type type,
+                              void *evas_object);
+-/* window = Ecore_Wl2_Window*; only DISPLAY_TYPE_OVERLAY. Runs on the ecore main
+- * loop, so ecore must be initialised. */
++/* window = Ecore_Wl2_Window*; only DISPLAY_TYPE_OVERLAY. Uses
++ * ecore_thread_main_loop_begin/end, so ecore must be initialised. [ASM] */
+ int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type type,
+                                    void *ecore_wl2_window, int x, int y, int w, int h_);
+-int esplusplayer_set_display_mode(esplusplayer_handle h, esplusplayer_display_mode mode);
+-int esplusplayer_set_display_visible(esplusplayer_handle h, int visible);
++int esplusplayer_set_display_mode(esplusplayer_handle h, esplusplayer_display_mode mode); /* [PUB] */
++int esplusplayer_set_display_visible(esplusplayer_handle h, int visible);                 /* [PUB] */
+ 
+ int esplusplayer_add_video_stream_info(esplusplayer_handle h,
+-                                       const esplusplayer_video_stream_info *info);
++                                       const esplusplayer_video_stream_info *info); /* vtable[18] */
+ int esplusplayer_add_audio_stream_info(esplusplayer_handle h,
+                                        const esplusplayer_audio_stream_info *info);
+ 
+-/* Returns esplusplayer_submit_status (NOT bool). */
++/* Returns esplusplayer_submit_status (NOT bool). vtable[19]. */
+ int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *pkt);
+-int esplusplayer_submit_eos_packet(esplusplayer_handle h, esplusplayer_stream_type type);
++int esplusplayer_submit_eos_packet(esplusplayer_handle h, esplusplayer_stream_type type); /* [PUB] signature */
+ 
+-int esplusplayer_get_state(esplusplayer_handle h);
+-int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *time);
+-int esplusplayer_set_audio_mute(esplusplayer_handle h, int mute);
++int esplusplayer_get_state(esplusplayer_handle h);                        /* not analysed */
++int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *time); /* [PUB] signature, unit not checked */
++int esplusplayer_set_audio_mute(esplusplayer_handle h, int mute);         /* [PUB] */
+ 
+ void esplusplayer_set_error_cb(esplusplayer_handle h, esplusplayer_error_cb cb);
+ void esplusplayer_set_buffer_status_cb(esplusplayer_handle h, esplusplayer_buffer_status_cb cb);
+diff --git a/mlclient/build-engine-so.sh b/mlclient/build-engine-so.sh
+index 248dd64..0a7a862 100755
+--- a/mlclient/build-engine-so.sh
++++ b/mlclient/build-engine-so.sh
+@@ -23,11 +23,11 @@ done
+ 
+ # libmlengine.so: engine objects + the static deps (moonlight-common-c core,
+ # libgamestream, mbedcrypto) + the TV's shared libs, resolved into the .so.
+-# --hash-style=both: the .NET host loads the engine from memory (so downloaded
+-# engine updates apply without rewriting the app folder) and its fallback ELF
+-# loader resolves symbols via a SYSV DT_HASH. The engine is also built TLS-free
+-# (that loader can't do R_ARM_TLS_*); verified: no _Thread_local in the
+-# engine/moonlight-common-c.
++# --hash-style=both: the no-root .NET host's fallback ELF loader needs a SYSV
++# DT_HASH (Tizen 4/5 UEP blocks dlopen of a file, so the engine is loaded from
++# anonymous memory; the fallback loader resolves symbols via DT_HASH). See nuvio's
++# samsung-tpk-legacy design. The engine is also built TLS-free (that loader can't do
++# R_ARM_TLS_*); verified: no _Thread_local in the engine/moonlight-common-c.
+ "$GCC" --sysroot=$DEPS/sysroot $ARCH -O2 -shared -Wl,-soname,libmlengine.so \
+   -Wl,--hash-style=both \
+   -o "$OUT/libmlengine.so" \
+diff --git a/mlclient/engine_api.c b/mlclient/engine_api.c
+index 1969a00..34361b7 100644
+--- a/mlclient/engine_api.c
++++ b/mlclient/engine_api.c
+@@ -2,7 +2,7 @@
+  * engine_api.c - implements the libmlengine.so C ABI (mlengine.h).
+  *
+  * This is the former body of main.c, turned into a reusable, non-blocking engine
+- * so the .NET host and the CLI harness can both drive it.
++ * so a thin native exe (root path) or a .NET host (no-root path) can drive it.
+  */
+ #define _GNU_SOURCE
+ #include <stdarg.h>
+diff --git a/mlclient/input_evdev.c b/mlclient/input_evdev.c
+index def80a1..ea1eecb 100644
+--- a/mlclient/input_evdev.c
++++ b/mlclient/input_evdev.c
+@@ -175,7 +175,7 @@ int input_init(void) {
+     s_fds[s_nfds++] = fd;
+   }
+   closedir(d);
+-  if (!s_nfds) { fprintf(stderr, "[input] no readable devices (need input permissions)\n"); return -1; }
++  if (!s_nfds) { fprintf(stderr, "[input] no readable devices (need permissions / root)\n"); return -1; }
+   s_run = 1;
+   return pthread_create(&s_thread, NULL, reader, NULL);
+ }
+diff --git a/mlclient/main.c b/mlclient/main.c
+index af822e4..ca78ad2 100644
+--- a/mlclient/main.c
++++ b/mlclient/main.c
+@@ -1,9 +1,9 @@
+ /*
+- * main.c - native CLI over libmlengine.so (bring-up / test harness).
++ * main.c - thin native CLI over libmlengine.so (root path / bring-up harness).
+  *
+  * All the real work lives in the engine .so (mlengine.h / engine_api.c); this just
+  * parses argv, starts a session, waits, and stops cleanly on the host drop or a
+- * signal. The .NET host drives the same four ml_engine_* functions.
++ * signal. The no-root .NET host drives the same four ml_engine_* functions.
+  */
+ #include <signal.h>
+ #include <stdio.h>
+diff --git a/mlclient/mlengine.h b/mlclient/mlengine.h
+index aeee8af..d0ffec2 100644
+--- a/mlclient/mlengine.h
++++ b/mlclient/mlengine.h
+@@ -1,9 +1,10 @@
+ /*
+  * mlengine.h - public C ABI of libmlengine.so.
+  *
+- * One stable surface used by both the .NET (TizenFX) host and the CLI harness:
+- *   - the .NET host loads the .so and P/Invokes these symbols (1:1 DllImport);
+- *   - the CLI harness (main.c) links this .so directly for bring-up/testing.
++ * One stable surface used by BOTH delivery paths:
++ *   - root path: a thin native exe (main.c) links this .so directly;
++ *   - no-root path: a .NET (TizenFX) host loads the .so and P/Invokes these
++ *     same four symbols (1:1 DllImport).
+  * Keep this ABI additive: never change a signature, only append new functions.
+  */
+ #ifndef MLENGINE_H
+diff --git a/pkg/ARCHITECTURE.en.md b/pkg/ARCHITECTURE.en.md
+new file mode 100644
+index 0000000..99b77b4
+--- /dev/null
++++ b/pkg/ARCHITECTURE.en.md
+@@ -0,0 +1,76 @@
++# Hybrid Moonlight package for Tizen 5.0 (moonlight-tizen UI + native engine)
++
++*(Polish version: [ARCHITECTURE.md](ARCHITECTURE.md))*
++
++Goal: the **moonlight-tizen web UI** appears in the TV app bar, while streaming is
++done by **our native engine** through `libesplusplayer.so` (EMSS exists only from
++5.5). No NaCl, no WASM.
++
++## Tizen hybrid package
++
++One package contains two applications (a Tizen "hybrid app"):
++- **UI = wgt** (web): `wasm/platform/*.js` + `index.html` + `res/` from
++  moonlight-tizen, with unchanged logic. Only the `sendMessage`/`handleMessage`
++  transport layer is swapped.
++- **Service = tpk** (native, service-application): our engine + the bridge server.
++
++## UI ↔ service contract (11 functions, 1:1 with moonlight-tizen's embind exports)
++
++JS calls them via `sendMessage(name, args)`; results return via `handleMessage`.
++In the original they went to the WASM module; here they go over the bridge to the
++native service.
++
++| Function | Native equivalent (already have) |
++|---|---|
++| `makeCert` | mkcert / cert_init.c |
++| `httpInit(cert,key,uniqueId)` | ml_cert_init (cert_init.c) |
++| `openUrl(url,ppk,bin)` | http_request (libgamestream http.c) |
++| `pair(major,addr,port,pin)` | gs_pair (libgamestream pairing.c) |
++| `startStream([host,port,w,h,fps,bitrate,rikey,rikeyid,appVer,gfeVer,sessionUrl0,codecMode,...])` | LiStartConnection + video_esplus + audio_opus (esplus_player) |
++| `stopStream` | LiStopConnection + esplus_close |
++| `cancelRequest` | http_cancel_request |
++| `sendKeyboardEvent(key,action,mods)` | LiSendKeyboardEvent |
++| `stun` | LiFindExternalAddressIP4 |
++| `wakeOnLan` | magic packet |
++| `toggleStats` | local |
++
++Note: in the hybrid, JS does pairing/launch by calling `openUrl`/`pair`, then
++`startStream` with a ready `sessionUrl0` and `rikey` (as in the original — see
++index.js `sendMessage('startRequest', [...])`). So our gs_client.c orchestration
++(serverinfo→pair→launch) is here **split into `openUrl`/`pair` calls** driven by
++JS — or we keep gs_client whole and add a single `connect(host,appid,pin)`.
++Decided at bridge-implementation time.
++
++## Bridge: Tizen message-port (recommended)
++
++- JS: `tizen.messageport` (local message port); native: C `message_port` API.
++- No network/ports; native wgt↔tpk IPC within one package.
++- Large data (serverinfo XML, applist, box art) as byte messages.
++- Fallback: a localhost WebSocket (service = WS server, UI = client).
++
++## Video + input during streaming
++
++- The service renders via esplusplayer to the hardware overlay plane. The web UI
++  above it shows a transparent page during streaming so the overlay is visible.
++- Input: JS forwards keys via `sendKeyboardEvent` (as the original); evdev
++  (input_evdev.c) is an altersupplement (gamepad).
++- Exiting the stream via the shell (Back/Home) → the shell restores the source
++  (this resolves the "black screen" seen in CLI tests).
++
++## What the Docker builds (pkg/Dockerfile + build-package.sh)
++
++1. Native service: fetch-tizen-sources + fetch-backport-deps + build the engine
++   (reuses build-deps-lib.sh/build-client.sh) → service ELF + bridge.
++2. UI: copies `wasm/platform` + `index.html` + `res`, swaps the
++   sendMessage/handleMessage transport for the bridge client.
++3. Assembles the hybrid package (wgt UI + tpk service), signs with the `Moonlight`
++   profile (Tizen CLI + cert, mounted from the host or generated in-container).
++
++Mounted inputs (not in the repo): `tizen-deps/` (toolchain+sources), `tv-libs/`
++(the TV's `.so`), the Tizen CLI, the signing cert.
++
++## Status
++
++See the Polish `ARCHITECTURE.md` and `../BACKPORT.en.md` for the step-by-step
++state. The engine core (cert/http/pair/video/audio/input) works natively and is
++tested end-to-end against a host.
+diff --git a/pkg/ARCHITECTURE.md b/pkg/ARCHITECTURE.md
+new file mode 100644
+index 0000000..ab713fd
+--- /dev/null
++++ b/pkg/ARCHITECTURE.md
+@@ -0,0 +1,72 @@
++# Hybrydowy pakiet Moonlight dla Tizen 5.0 (UI z moonlight-tizen + natywny silnik)
++
++Cel: w pasku aplikacji TV pojawia się **UI moonlight-tizena** (web), a strumieniowanie
++robi **nasz natywny silnik** przez `libesplusplayer.so` (bo EMSS jest dopiero od 5.5).
++Bez NaCl, bez WASM.
++
++## Pakiet hybrydowy Tizen
++
++Jeden pakiet zawiera dwie aplikacje (Tizen "hybrid app"):
++- **UI = wgt** (web): `wasm/platform/*.js` + `index.html` + `res/` z moonlight-tizena,
++  bez zmian w logice. Zmieniamy TYLKO warstwę transportu `sendMessage`/`handleMessage`.
++- **Usługa = tpk** (natywna, service-application): nasz silnik + serwer mostka.
++
++## Kontrakt UI ↔ usługa (11 funkcji, 1:1 z eksportami embind moonlight-tizena)
++
++JS woła je przez `sendMessage(name, args)`; wyniki wracają przez `handleMessage`.
++W oryginale szły do modułu WASM; u nas idą przez mostek do natywnej usługi.
++
++| Funkcja | Natywny odpowiednik (już mamy) |
++|---|---|
++| `makeCert` | mkcert / cert_init.c |
++| `httpInit(cert,key,uniqueId)` | ml_cert_init (cert_init.c) |
++| `openUrl(url,ppk,bin)` | http_request (libgamestream http.c) |
++| `pair(major,addr,port,pin)` | gs_pair (libgamestream pairing.c) |
++| `startStream([host,port,w,h,fps,bitrate,rikey,rikeyid,appVer,gfeVer,sessionUrl0,codecMode,...])` | LiStartConnection + video_esplus + audio_opus (esplus_player) |
++| `stopStream` | LiStopConnection + esplus_close |
++| `cancelRequest` | http_cancel_request |
++| `sendKeyboardEvent(key,action,mods)` | LiSendKeyboardEvent |
++| `stun` | LiFindExternalAddressIP4 |
++| `wakeOnLan` | magic packet |
++| `toggleStats` | lokalne |
++
++Uwaga: w hybrydzie JS robi parowanie/launch wołając `openUrl`/`pair`, a potem
++`startStream` z gotowym `sessionUrl0` i `rikey` (jak w oryginale, patrz index.js
++`sendMessage('startRequest', [...])`). Czyli nasza orkiestracja z gs_client.c
++(serverinfo→pair→launch) jest tu **rozbita na wywołania `openUrl`/`pair`**, które
++steruje JS — albo zostawiamy gs_client jako całość i dodajemy jedną funkcję
++`connect(host,appid,pin)`. Decyzja na etapie implementacji mostka.
++
++## Mostek: Tizen message-port (rekomendacja)
++
++- JS: `tizen.messageport` (local message port), natyw: C `message_port` API.
++- Bez sieci/portów, natywne IPC wgt↔tpk w jednym pakiecie.
++- Duże dane (XML serverinfo, applist, box art) jako wiadomości bajtowe.
++- Zapas: WebSocket na localhost (usługa = serwer WS, UI = klient).
++
++## Wideo + wejście w trakcie streamingu
++
++- Usługa renderuje przez esplusplayer na plan sprzętowy (overlay). Web UI nad nim
++  pokazuje przy streamingu przezroczystą stronę → widać overlay.
++- Wejście: JS przekazuje klawisze przez `sendKeyboardEvent` (jak oryginał);
++  evdev (input_evdev.c) to alternatywa/uzupełnienie (pad).
++- Wyjście ze streamingu przez powłokę (Wstecz/Domek) → powłoka przywraca źródło
++  (rozwiązuje "czarny ekran" z testów CLI).
++
++## Co buduje Docker (pkg/Dockerfile + build-package.sh)
++
++1. Natywna usługa: fetch-tizen-sources + fetch-backport-deps + build silnika
++   (reużywa build-deps-lib.sh/build-client.sh) → ELF usługi + mostek.
++2. UI: kopiuje `wasm/platform` + `index.html` + `res`, podmienia transport
++   sendMessage/handleMessage na klienta mostka.
++3. Składa pakiet hybrydowy (wgt UI + tpk usługa), podpisuje profilem `Moonlight`
++   (Tizen CLI + cert, montowane z hosta).
++
++Wejścia montowane (nie w repo): `tizen-deps/` (toolchain+źródła), `tv-libs/`
++(biblioteki .so z TV), Tizen CLI, cert `Moonlight.p12`.
++
++## Status
++
++Scaffolding. Mostek (natyw+JS), service-application wrapper i hybrydowe pakowanie
++do implementacji. Rdzeń silnika (cert/http/pair/wideo/audio/wejście) DZIAŁA
++natywnie i jest przetestowany end-to-end z hostem (patrz BACKPORT.md).
+diff --git a/pkg/DEV-CERT-PATH.md b/pkg/DEV-CERT-PATH.md
+new file mode 100644
+index 0000000..7ccce46
+--- /dev/null
++++ b/pkg/DEV-CERT-PATH.md
+@@ -0,0 +1,106 @@
++# No-root install on a Samsung TV — the dev-certificate path
++
++Install the native Moonlight engine on a **stock (unrooted)** Tizen 5.0 TV, in
++**Developer Mode**, with a Samsung certificate bound to that TV. No root, no store.
++
++Why this shape (verified, see `../BACKPORT.md` + memory):
++- A retail TV installs only **Web (.wgt)** and **.NET (.tpk)** apps; there is no
++  native-app SDK/rootstrap for TV, so the installable unit is a **.NET host .tpk**.
++- Our C engine ships inside it as **`libmlengine.so`** and is driven over the stable
++  C ABI (`mlengine.h`) by P/Invoke — the host is `dotnet-host/`.
++- The TV **rejects** unsigned / generic / tizen-public-distributor signatures; it
++  needs a **Samsung distributor cert bound to the TV's DUID** (per-TV, dev mode).
++
++> Scope: this covers **your own + a few known TVs** (each TV's DUID registered). Free
++> distribution to anyone needs the Samsung Store + Seller partner status — out of
++> scope, and Samsung may reject a GPL GameStream client.
++
++## 0. Prerequisites
++- `libmlengine.so` built for the TV: `mlclient/build-engine-so.sh` →
++  copy `engine-build/libmlengine.so` to `dotnet-host/lib/`.
++- .NET SDK + Tizen workload (`dotnet workload install tizen`) **or** Tizen Studio
++  CLI with the .NET/`dotnet` packaging support. Not installed locally yet — do this
++  in the CI image or a dev box.
++- A **Samsung account** (free) for the certificate.
++
++## 1. Enable Developer Mode on the TV
++1. Apps → type `12345` on the remote → **Developer mode** ON.
++2. Enter your **host PC IP** (the machine that will run `sdb`/`tizen install`).
++3. Reboot the TV. It now accepts `sdb connect <TV-IP>`.
++
++## 2. Get the TV DUID
++- `sdb connect <TV-IP>` then `sdb devices` → or in Tizen Studio **Device Manager**.
++- The **DUID** (Device Unique ID) is shown per connected TV; copy it.
++
++## 3. Create the Samsung certificate profile (bound to the DUID)
++Tizen Studio **Certificate Manager** → new **Samsung** certificate:
++1. **Author** certificate (your Samsung account).
++2. **Distributor** certificate, privilege level **Public**, with the **DUID(s)** of
++   the target TV(s) entered. (This is what makes the TV accept the app; a Tizen
++   distributor cert will NOT work.)
++3. This yields a security **profile** (author.p12 + distributor.p12 + profile.xml).
++   Headless alternative: the `Apps2Samsung` tooling can mint the same per-DUID cert.
++
++## 4. Build the .tpk
++From `dotnet-host/` (after copying the engine .so into `lib/`):
++```
++dotnet build -c Release                 # or: tizen package -t tpk
++```
++This produces `MoonlightHost.tpk` containing `MoonlightHost.dll` + `lib/libmlengine.so`.
++
++> **TFM/runtime:** match the TV. Tizen 5.0 runs an older .NET (Tizen.NET 5.x). Before
++> building, inspect the **working** on-device app and copy its target:
++> `sdb pull /opt/usr/apps/dev.moonlight.tvshell` and read its `tizen-manifest.xml`
++> (api-version, type) + the `.dll` runtime. The `.csproj`/manifest here are
++> provisional until matched to it.
++
++## 5. Sign with the Samsung profile
++```
++tizen cli-config "profiles.path=<...>/profiles.xml"
++tizen package -t tpk -s <SamsungProfileName> -- MoonlightHost.tpk
++```
++
++## 6. Install + run
++```
++sdb connect <TV-IP>
++tizen install -n MoonlightHost.tpk -t <TV-IP>     # or: sdb install MoonlightHost.tpk
++sdb shell app_launcher -s org.moonlight.host.app
++sdb dlog MLHOST                                    # watch ml_engine_start rc + engine logs
++```
++
++## Tizen 4/5 UEP facts (verified from nuvio's shipping design)
++On 2018–2020 TVs the **UEP refuses `dlopen` of a `.so` FILE** — even one signed
++Public **or** Partner ("failed to map segment from shared object") — but **allows
++PROT_EXEC anonymous memory**. So loading the engine from memory is **mandatory**, not
++a fallback. Consequences, all applied to this repo:
++- `libmlengine.so` is built **TLS-free** (no `_Thread_local`) and with **DT_HASH**
++  (`--hash-style=both`) — the fallback ELF loader can't do `R_ARM_TLS_*` and needs
++  SYSV hash. (nuvio crash #180 was TLS in the first HTTPS call.)
++- `memfd_create` is called by **raw syscall 385** (ARM) — Tizen 4/5 libc doesn't
++  export the symbol.
++- The manifest must be **Public and must NOT declare `drminfo`** — with it,
++  Apps2Samsung signs Partner and some TVs refuse install with **`118014`**.
++- Host base for 4/5 is **`Tizen.TV.NUI.GLApplication`** (TVGLApplication), not the
++  6+ GLWindow. (For Moonlight the heavy GL UI may be unnecessary since video goes via
++  esplusplayer to the overlay — to be decided when the host is fleshed out.)
++
++## 7. In-memory .so loading (implemented)
++2018–2020 sets **block native code loaded from the app folder**, so the host does NOT
++`DllImport`/dlopen `libmlengine.so` from `res/lib/`. Instead `Program.cs`
++(`MemLoader`) reads the `.so` bytes and loads them from an anonymous in-memory fd:
++`memfd_create` → `write` → `dlopen("/proc/self/fd/N")` → `dlsym` the `ml_engine_*`
++symbols (the nuvio-native pattern). Only our `.so` is loaded from memory; its
++dependencies (esplusplayer, ssl, curl, ecore…) still resolve from the TV's `/usr/lib`.
++
++To verify on device: watch `sdb dlog MLHOST` for "engine loaded from memory" vs a
++`dlopen(memfd)`/`memfd_create` error. If the sandbox forbids `memfd_create` or
++`dlopen(/proc/self/fd)`, fall back to a tmpfs path under the app's data dir (still
++off the blocked app-code folder) or to a direct disk load if that set permits it.
++
++## Open items / verify against the device
++- Exact TFM + Tizen.NET version (from `dev.moonlight.tvshell`).
++- Whether direct `dlopen` from `lib/` works, or the memfd path is required.
++- Privilege set the engine actually needs (internet + display confirmed necessary;
++  trim the rest).
++- Whether the overlay/esplusplayer behaves the same under the .NET-hosted sandbox as
++  under root (it should — same SMACK app domain).
+diff --git a/pkg/Dockerfile b/pkg/Dockerfile
+index 6d6a925..920c8c9 100644
+--- a/pkg/Dockerfile
++++ b/pkg/Dockerfile
+@@ -22,10 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
+       git unzip cpio libarchive-tools \
+     && rm -rf /var/lib/apt/lists/*
+ 
+-# .NET SDK for the .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)
++# .NET SDK for the no-root .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)
+ # builds with the OLD Tizen.NET.Sdk delivered as a NuGet package + any modern .NET
+-# SDK; it needs NO `dotnet workload install tizen` (that is only for net6+/tizen7+).
+-# The vitalets Tizen CLI already present does the signing.
++# SDK; it needs NO `dotnet workload install tizen` (that is only for net6+/tizen7+ —
++# see nuvio tools/tpk.sh). The vitalets Tizen CLI already present does the signing.
+ ENV DOTNET_ROOT=/opt/dotnet \
+     PATH=/opt/dotnet:$PATH \
+     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+diff --git a/pkg/build-package.sh b/pkg/build-package.sh
+index f7914df..6c66471 100755
+--- a/pkg/build-package.sh
++++ b/pkg/build-package.sh
+@@ -1,19 +1,28 @@
+ #!/bin/sh
+-# Build the Moonlight Tizen 5.0 web UI package (.wgt): the moonlight-tizen
+-# front-end with its transport swapped to the Tizen message port (mlbridge.js).
+-# The native streaming engine ships separately as the .NET host .tpk (build-tpk.sh).
+-# Run inside the Docker image (pkg/Dockerfile) for a reproducible toolchain.
++# Build the hybrid Moonlight Tizen 5.0 package: native engine service (tpk) +
++# moonlight-tizen web UI (wgt) with the transport swapped to the message port.
++# Run inside the Docker image (pkg/Dockerfile) for a reproducible toolchain,
++# or on a host that has the same tools. Heavy/secret inputs come via env:
+ #
+-#   REPO           repo root (this checkout)
+-#   MLT            a moonlight-tizen checkout (web UI source)
+-#   TIZEN_PROFILE  signing profiles.xml path (optional; else a dev cert is generated)
+-#   SIGN_PROFILE   profile name in profiles.xml (default: Moonlight)
++#   REPO       repo root (this checkout)
++#   MLT        a moonlight-tizen checkout (web UI + moonlight-common-c)
++#   DEPS       tizen-deps dir (fetch-tizen-sources.sh output; path without spaces)
++#   BPD        backport-deps dir (fetch-backport-deps.sh output)
++#   DEPSBUILD  build-deps-lib.sh output (core/gs objs + libmbedcrypto_tv.a)
++#   TIZEN_CLI      Tizen Studio CLI dir (host ~/tizen-tmp/tools)      [phase 4]
++#   TIZEN_PROFILE  signing profiles.xml path                          [phase 4]
++#   SIGN_PROFILE   profile name in profiles.xml (default: Moonlight)  [phase 4]
+ set -e
+-: "${REPO:?}"; : "${MLT:?}"
++: "${REPO:?}"; : "${MLT:?}"; : "${DEPS:?}"; : "${BPD:?}"; : "${DEPSBUILD:?}"
+ HERE="$REPO/pkg"
+-OUT=${OUT:-$HERE/out}; rm -rf "$OUT"; mkdir -p "$OUT/ui"
++OUT=${OUT:-$HERE/out}; rm -rf "$OUT"; mkdir -p "$OUT/service/bin" "$OUT/ui"
+ 
+-echo "== phase 1: web UI (moonlight-tizen front-end + message-port transport) =="
++echo "== phase 1: native engine service =="
++OUT="$OUT/_sb" MLT="$MLT" DEPS="$DEPS" BPD="$BPD" DEPSBUILD="$DEPSBUILD" "$HERE/service/build-service.sh"
++cp "$OUT/_sb/moonlight-engine" "$OUT/service/bin/moonlight-engine"
++cp "$HERE/service/tizen-manifest.xml" "$OUT/service/tizen-manifest.xml"
++
++echo "== phase 2: web UI (moonlight-tizen front-end + message-port transport) =="
+ # Ship the web front-end, NOT the WASM module.
+ cp "$MLT/wasm/index.html" "$OUT/ui/index.html"
+ cp -r "$MLT/wasm/platform" "$OUT/ui/platform"
+@@ -27,12 +36,17 @@ sed -i '/src="platform\.js"/d' "$OUT/ui/index.html"
+ sed -i 's#<script type="text/javascript" src="platform/messages.js"></script>#&\n  <script type="text/javascript" src="platform/mlbridge.js"></script>#' "$OUT/ui/index.html"
+ echo "ui assembled -> $OUT/ui"
+ 
+-echo "== phase 2: package + sign =="
++echo "== phase 3: tpk service project ready, wgt ui project ready =="
++echo "service: $OUT/service   ui: $OUT/ui"
++
++echo "== phase 4: package + sign =="
+ # tizen CLI is on PATH inside the image; allow override for host runs.
+ TZ=$(command -v tizen || echo "${TIZEN_CLI:+$TIZEN_CLI/tizen}")
+ if [ -n "$TZ" ] && [ -x "$TZ" ]; then
+   P=${SIGN_PROFILE:-Moonlight}
+   PWD_=${CERT_PASS:-tizenpkpass}
++  # Use a mounted profile if given; otherwise generate a self-signed dev author
++  # cert + security profile in-container (distributor = bundled Tizen dev cert).
+   if [ -n "$TIZEN_PROFILE" ]; then
+     "$TZ" cli-config "default.profiles.path=$TIZEN_PROFILE/profile/profiles.xml" >/dev/null 2>&1 || true
+   elif ! "$TZ" security-profiles list 2>/dev/null | grep -q "^$P\b"; then
+@@ -41,9 +55,14 @@ if [ -n "$TZ" ] && [ -x "$TZ" ]; then
+     "$TZ" certificate -a "$P" -p "$PWD_" -c PL -n Moonlight -- "$OUT/certs"
+     "$TZ" security-profiles add -n "$P" -a "$OUT/certs/author.p12" -p "$PWD_"
+   fi
++  # web wgt (UI)
+   "$TZ" build-web -- "$OUT/ui" || true
+   "$TZ" package -t wgt -s "$P" -- "$OUT/ui"
+-  echo "package(s):"; ls "$OUT/ui"/*.wgt 2>/dev/null
++  # native tpk (engine)
++  "$TZ" package -t tpk -s "$P" -- "$OUT/service"
++  # hybrid: combine the signed wgt into the tpk package (-r = HybridApp reference)
++  "$TZ" package -t tpk -r "$(ls "$OUT"/ui/*.wgt 2>/dev/null | head -1)" -s "$P" -- "$OUT/service"
++  echo "package(s):"; ls "$OUT/service"/*.tpk "$OUT/ui"/*.wgt 2>/dev/null
+ else
+   echo "tizen CLI not found - run inside the Docker image (pkg/Dockerfile)."
+ fi
+diff --git a/pkg/build-tpk.sh b/pkg/build-tpk.sh
+index bd36497..e245896 100755
+--- a/pkg/build-tpk.sh
++++ b/pkg/build-tpk.sh
+@@ -1,12 +1,12 @@
+ #!/bin/sh
+-# Build the .NET host .tpk (dotnet-host/) around the native engine .so.
++# Build the no-root .NET host .tpk (dotnet-host/) around the native engine .so.
+ # Run inside the moonlight-tizen-build image (has .NET SDK + Tizen CLI), e.g.:
+ #   docker run --rm -v "$PWD:/work/repo" -v /tmp/claude-1000/engine-build:/work/eng \
+ #     moonlight-tizen-build sh /work/repo/pkg/build-tpk.sh /work/eng/libmlengine.so
+ #
+ # Arg 1: path to the prebuilt libmlengine.so (build-engine-so.sh output).
+ # tizen40 TFM builds with the OLD Tizen.NET.Sdk NuGet + a modern .NET SDK; no
+-# `dotnet workload install tizen` needed.
++# `dotnet workload install tizen` needed (nuvio tools/tpk.sh). See DEV-CERT-PATH.md.
+ set -e
+ SO=${1:?usage: build-tpk.sh <path-to-libmlengine.so>}
+ HERE=$(cd "$(dirname "$0")" && pwd)
+diff --git a/pkg/dotnet-host/MoonlightHost.csproj b/pkg/dotnet-host/MoonlightHost.csproj
+index 620191a..b6475b5 100644
+--- a/pkg/dotnet-host/MoonlightHost.csproj
++++ b/pkg/dotnet-host/MoonlightHost.csproj
+@@ -1,14 +1,15 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+   <!--
+-    Tizen 4.0-5.5 host (the legacy Tizen 4/5 .tpk shape):
++    Tizen 4.0-5.5 host, shape copied from nuvio's proven NuvioTpk40.csproj:
+       - TFM tizen40 runs on 4.0 through 5.5 (our TV is 5.0).
+       - The tizen40 TFM builds with the OLD Tizen.NET.Sdk delivered as a NuGet
+         package + a .NET SDK. It needs NO `dotnet workload install tizen` (that is
+         only for net6+/tizen7+). The Tizen CLI (from the vitalets base image) does
+         the .tpk packaging/signing.
+-      - Tizen.NET.TV brings TVGLApplication, the lifecycle base for 4/5
++      - Tizen.NET.TV brings TVGLApplication, the lifecycle base nuvio used on 4/5
+         (there is no GLWindow before API9). ExcludeAssets=Runtime: the TV already
+         has the assemblies; we ship only the reference.
++    See ../DEV-CERT-PATH.md and the moonlight-tpk-strategy memory.
+   -->
+   <PropertyGroup>
+     <OutputType>Exe</OutputType>
+diff --git a/pkg/dotnet-host/Program.cs b/pkg/dotnet-host/Program.cs
+index 01bd9d1..63f6aa3 100644
+--- a/pkg/dotnet-host/Program.cs
++++ b/pkg/dotnet-host/Program.cs
+@@ -1,18 +1,21 @@
+ /*
+- * MoonlightHost - Tizen .NET host for the dev-cert path.
++ * MoonlightHost - Tizen .NET host for the no-root dev-cert path.
+  *
+  * On a retail (unrooted) Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
+  * the installable unit is a dev-signed .NET .tpk; our native streaming engine ships
+  * inside it as libmlengine.so and is driven over the stable C ABI (mlengine.h).
+  *
+- * The engine is loaded from memory rather than from a file in the app folder: we
+- * read libmlengine.so's bytes and load them from an anonymous in-memory fd
+- * (memfd_create -> write -> dlopen /proc/self/fd/N). This is also how a downloaded
+- * engine update is applied without rewriting the app folder. Only OUR .so comes from
+- * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
+- * the TV's /usr/lib.
++ * KEY POINT (why not plain [DllImport]): 2018-2020 Samsung TVs block native code
++ * loaded from the application folder. So we do NOT let the loader dlopen
++ * libmlengine.so from lib/; instead we read its bytes and load it from an anonymous
++ * in-memory fd (memfd_create -> write -> dlopen /proc/self/fd/N), the nuvio-native
++ * pattern. Only OUR .so comes from memory; its dependencies (esplusplayer, ssl, curl,
++ * ecore...) still resolve normally from the TV's /usr/lib.
+  *
+  * STATUS: the loader + ABI are the real mechanism; lifecycle/UI are placeholders.
++ * Verify TFM/privileges against the on-device dev.moonlight.tvshell, and confirm the
++ * sandbox permits memfd_create + dlopen(/proc/self/fd) on the target. See
++ * ../DEV-CERT-PATH.md.
+  */
+ using System;
+ using System.IO;
+@@ -21,14 +24,13 @@ using Tizen.Applications;
+ 
+ namespace MoonlightHost
+ {
+-    // Loads a shared object from memory (lets downloaded engine updates apply
+-    // without rewriting the app folder).
++    // Loads a shared object from memory (bypasses app-folder native-code blocking).
+     internal static class MemLoader
+     {
+         private const uint MFD_CLOEXEC = 0x0001u;
+         private const int  RTLD_NOW    = 0x0002;
+         // Tizen 4/5 libc does NOT export memfd_create, so create the anonymous fd by
+-        // raw syscall. ARM (32-bit) __NR_memfd_create = 385.
++        // raw syscall. ARM (32-bit) __NR_memfd_create = 385. (nuvio samsung-tpk-legacy.)
+         private const long SYS_memfd_create_arm = 385;
+ 
+         [DllImport("libc", EntryPoint = "syscall", SetLastError = true)]
+@@ -40,10 +42,11 @@ namespace MoonlightHost
+ 
+         public static IntPtr LoadFromMemory(byte[] so)
+         {
+-            // Route 1 (preferred): memfd - load the engine image from an anonymous fd.
+-            // The fd must stay open for process life.
+-            // Route 2 (fallback): a C# ELF32-ARM loader for targets where memfd is
+-            // refused. NOT implemented here yet; add if a target returns an mmap error.
++            // Route 1 (preferred): memfd. UEP blocks dlopen of a FILE (even signed) but
++            // allows PROT_EXEC anonymous memory. The fd must stay open for process life.
++            // Route 2 (fallback, nuvio's): a C# ELF32-ARM loader for TVs where memfd is
++            // refused. NOT implemented here yet (memfd worked on 3 of nuvio's 4 test sets);
++            // add if a target returns an mmap/dlopen error.
+             int fd = syscall_memfd(SYS_memfd_create_arm, "mlengine", MFD_CLOEXEC);
+             if (fd < 0) throw new InvalidOperationException("memfd_create(syscall 385) failed: " + Marshal.GetLastWin32Error());
+ 
+diff --git a/pkg/dotnet-host/tizen-manifest.xml b/pkg/dotnet-host/tizen-manifest.xml
+index 4bb22ec..9515482 100644
+--- a/pkg/dotnet-host/tizen-manifest.xml
++++ b/pkg/dotnet-host/tizen-manifest.xml
+@@ -1,8 +1,10 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<!-- dev-cert path, Tizen 4.0-5.5 (api-version="4"); type="dotnet".
+-     Use PUBLIC privileges only - extra privileges force Partner signing, which
+-     recent 4/5 TVs reject at install. The engine is loaded from memory, not from
+-     a file in the app folder. -->
++<!-- No-root dev-cert path, shape proven by nuvio's NuvioTpk40 (Tizen 4.0-5.5):
++     api-version="4" runs on 4.0 through 5.5; type="dotnet"; PUBLIC privileges only.
++     MUST NOT declare http://developer.samsung.com/privilege/drminfo: on 4/5 that
++     makes Apps2Samsung sign Partner and the TV rejects install with 118014. Public
++     works (nuvio, since 2026-09-29) because the engine is loaded from memory (memfd),
++     not dlopen'd from a file, so UEP never sees a file .so. -->
+ <manifest xmlns="http://tizen.org/ns/packages" api-version="4" package="org.moonlight.host" version="0.0.1">
+     <profile name="tv"/>
+     <ui-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
+diff --git a/pkg/install-on-tv.sh b/pkg/install-on-tv.sh
+index 719f1a8..144976d 100755
+--- a/pkg/install-on-tv.sh
++++ b/pkg/install-on-tv.sh
+@@ -5,7 +5,7 @@
+ # `sdb connect` + `tizen install`. Also works on any host with sdb+tizen on PATH.
+ #
+ # Usage: install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
+-#   TV must be in Developer Mode with this host's IP allowed.
++#   TV must be in Developer Mode with this host's IP allowed (see DEV-CERT-PATH.md).
+ #   With [cert_password]: re-sign using /certificates/author.p12 +
+ #   /certificates/distributor.p12 (mount them). Needed on recent TVs that reject the
+ #   default Tizen cert with "Invalid certificate chain" [118,-12] — there the
+diff --git a/pkg/roottest/.gitignore b/pkg/roottest/.gitignore
+new file mode 100644
+index 0000000..b1a6cd6
+--- /dev/null
++++ b/pkg/roottest/.gitignore
+@@ -0,0 +1,3 @@
++ml_probe
++*.tpk
++pkgroot/
+diff --git a/pkg/roottest/README.md b/pkg/roottest/README.md
+new file mode 100644
+index 0000000..368d08e
+--- /dev/null
++++ b/pkg/roottest/README.md
+@@ -0,0 +1,17 @@
++# roottest — on-device install probe (diagnostic)
++
++`ml_probe.c` is a minimal native `capp` that logs its uid/SMACK and sleeps — used to
++test whether the TV installs + launchpad-starts a hand-assembled native `.tpk`.
++
++## ⚠️ Key finding (2026-11-02): do NOT `pkgcmd -i` an unsigned `.tpk` on the TV
++
++Installing an unsigned `.tpk` via `pkgcmd -i` made `tpk-backend` call into
++**TrustZone** for signature/UEP verification; that call hung, leaving `tpk-backend`
++in **D-state (unkillable)** holding the pkgmgr lock and wedging the secure-world RPC
++threads (`nsrpc`, `tzdev`, `tzlogd`). Load climbed to ~27 — the same signature that
++preceded an earlier freeze needing a power-cycle. `pkginfo --imd` is "Not supported"
++and the app user is **uid 5001**.
++
++**Therefore:** the root install path must NOT use pkgmgr/pkgcmd with an unsigned
++package. Reuse an already-registered package's dir (e.g. `ChqHQExU28`, the NaCl
++Moonlight), or sign properly for the dev-cert path. See `../../BACKPORT.md`.
+diff --git a/pkg/roottest/ml_probe.c b/pkg/roottest/ml_probe.c
+new file mode 100644
+index 0000000..70f088a
+--- /dev/null
++++ b/pkg/roottest/ml_probe.c
+@@ -0,0 +1,19 @@
++/* Minimal native capp probe: prove the TV installs + launchpad starts a
++ * hand-assembled dev/unsigned capp .tpk (root sideload). Logs who we run as. */
++#include <stdio.h>
++#include <unistd.h>
++#include <time.h>
++int main(int argc, char **argv) {
++    FILE *f = fopen("/tmp/ml_probe.log", "a");
++    time_t t = time(0);
++    char lbl[256] = ""; FILE *s = fopen("/proc/self/attr/current", "r");
++    if (s) { if (!fgets(lbl, sizeof lbl, s)) lbl[0]=0; fclose(s); }
++    char line[512];
++    int n = snprintf(line, sizeof line,
++        "ml_probe START %.24s pid=%d uid=%d gid=%d argv0=%s smack=[%s]\n",
++        ctime(&t), getpid(), getuid(), getgid(), argv[0], lbl);
++    if (f) { fwrite(line, 1, n, f); fclose(f); }
++    fwrite(line, 1, n, stdout); fflush(stdout);
++    sleep(30);           /* stay alive so launchpad sees a live process */
++    return 0;
++}
+diff --git a/pkg/roottest/tizen-manifest.installed.xml b/pkg/roottest/tizen-manifest.installed.xml
+new file mode 100644
+index 0000000..d4db171
+--- /dev/null
++++ b/pkg/roottest/tizen-manifest.installed.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns="http://tizen.org/ns/packages" api-version="5.0" package="org.moonlight.probe" version="0.0.1" install-location="internal-only">
++    <profile name="tv"/>
++    <ui-application appid="org.moonlight.probe.probe" exec="/opt/usr/apps/org.moonlight.probe/bin/probe" type="capp" multiple="false" nodisplay="false" taskmanage="true" launch_mode="single">
++        <label>MLProbe</label>
++        <icon>/opt/usr/apps/org.moonlight.probe/shared/res/icon.png</icon>
++    </ui-application>
++</manifest>
+diff --git a/pkg/roottest/tizen-manifest.xml b/pkg/roottest/tizen-manifest.xml
+new file mode 100644
+index 0000000..53f318e
+--- /dev/null
++++ b/pkg/roottest/tizen-manifest.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns="http://tizen.org/ns/packages" api-version="5.0" package="org.moonlight.probe" version="0.0.1">
++    <profile name="tv"/>
++    <ui-application appid="org.moonlight.probe.probe" exec="probe" type="capp" multiple="false" nodisplay="false" taskmanage="true" launch_mode="single">
++        <label>MLProbe</label>
++        <icon>icon.png</icon>
++    </ui-application>
++</manifest>
+diff --git a/pkg/service/build-service.sh b/pkg/service/build-service.sh
+new file mode 100755
+index 0000000..6d3a66f
+--- /dev/null
++++ b/pkg/service/build-service.sh
+@@ -0,0 +1,35 @@
++#!/bin/sh
++# Build the native streaming service ELF (moonlight-engine) for the hybrid package:
++# mlservice.c (service_app + message-port bridge) + the esplusplayer engine, linked
++# against the TV's appfw/message-port/bundle/esplusplayer/openssl/curl libs.
++#
++# Env: MLT, DEPS (no spaces), BPD (fetch-backport-deps.sh), DEPSBUILD (build-deps-lib.sh).
++set -e
++MLT=${MLT:?}; DEPS=${DEPS:?}; BPD=${BPD:?}; DEPSBUILD=${DEPSBUILD:?}
++HERE=$(cd "$(dirname "$0")" && pwd)
++MLC=$HERE/../../mlclient            # video_esplus.c, audio_opus.c, esplus_player.c, gs_client.c
++NAT=$HERE/../..                     # esplusplayer_tv50.h
++GCC=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-gcc
++OBJD=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-objdump
++C=$MLT/moonlight-common-c; TVL=$DEPS/tv-libs/usr/lib
++OUT=${OUT:-./service-build}; mkdir -p "$OUT"
++cp "$NAT/esplusplayer_tv50.h" "$OUT/"
++FLAGS="--sysroot=$DEPS/sysroot -mcpu=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=softfp -O2 -std=gnu11 -Wall -Wextra"
++INC="-I$C/src -I$OUT -I$MLT/libgamestream -I$BPD/ossl-inc -I$BPD/curl759/include -I$DEPS/sysroot/usr/include/appcore-agent -I$DEPS/sysroot/usr/include/appfw"
++
++"$GCC" $FLAGS $INC -c "$HERE/mlservice.c" -o "$OUT/mlservice.o"
++for s in video_esplus audio_opus esplus_player gs_client; do
++  "$GCC" $FLAGS -I$C/src -I$OUT -I$MLT/libgamestream -I$BPD/ossl-inc -I$BPD/curl759/include -c "$MLC/$s.c" -o "$OUT/$s.o"
++done
++
++"$GCC" --sysroot=$DEPS/sysroot -mcpu=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=softfp -O2 \
++  -o "$OUT/moonlight-engine" \
++  "$OUT"/mlservice.o "$OUT"/video_esplus.o "$OUT"/audio_opus.o "$OUT"/esplus_player.o "$OUT"/gs_client.o \
++  "$DEPSBUILD"/obj/*.o "$DEPSBUILD"/gs/*.o "$DEPSBUILD/libmbedcrypto_tv.a" \
++  -L"$TVL" -Wl,-rpath-link,"$TVL" -Wl,--allow-shlib-undefined \
++  -l:libesplusplayer.so -l:libecore_wl2.so.1 -l:libecore.so.1 \
++  -l:libappcore-agent.so.1 -l:libcapi-message-port.so.1 -l:libbundle.so.0 \
++  -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libcurl.so.4 -lpthread
++echo "built: $(file "$OUT/moonlight-engine" | cut -d, -f1-3)"
++bad=$("$OBJD" -T "$OUT/moonlight-engine" | grep -oE 'GLIBC_2\.(2[5-9]|[3-9][0-9])' | sort -u || true)
++[ -z "$bad" ] && echo "glibc symbols: all <= 2.24 OK" || { echo "TOO-NEW glibc: $bad"; exit 1; }
+diff --git a/pkg/service/mlservice.c b/pkg/service/mlservice.c
+new file mode 100644
+index 0000000..32e6139
+--- /dev/null
++++ b/pkg/service/mlservice.c
+@@ -0,0 +1,239 @@
++/*
++ * mlservice.c - native streaming service of the hybrid Moonlight Tizen 5.0 package.
++ *
++ * A Tizen service-application that registers a message port "moonlight" and
++ * implements the same function surface the moonlight-tizen web UI expects from
++ * the (WASM) native module, dispatched over the message port instead of embind:
++ *   makeCert, httpInit, openUrl, pair, startStream, stopStream, cancelRequest,
++ *   sendKeyboardEvent, stun, wakeOnLan, toggleStats
++ * Each maps to our native engine (gs_client http/pair, esplusplayer video/audio,
++ * input). The UI sends a bundle {cmd, id, arg0..argN}; we reply with a bundle
++ * {id, result|error} to the UI's reply port.
++ *
++ * Status: compiles+links against the TV's appfw/message-port/esplusplayer libs.
++ * On-device behaviour (message port round-trips, two-track prepare) is the next
++ * validation step - needs the hybrid package installed. See pkg/ARCHITECTURE.md.
++ */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include <pthread.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <service_app.h>
++#include <message_port.h>
++#include <bundle.h>
++#include <openssl/bio.h>
++#include <openssl/pem.h>
++#include <openssl/rand.h>
++#include <curl/curl.h>
++
++#include "Limelight.h"
++#include "mkcert.h"
++#include "http.h"
++
++/* ---- client cert state referenced by libgamestream (http.c/pairing.c) ---- */
++X509 *g_Cert;
++EVP_PKEY *g_PrivateKey;
++char *g_UniqueId;
++char *g_CertHex;
++
++/* ---- engine entry points (our other .c files) ---- */
++extern void VidEsplus_FillCallbacks(PDECODER_RENDERER_CALLBACKS);
++extern void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS);
++extern void esplus_close(void);
++extern int gs_pair(int, const char *, unsigned short, const char *, char **);
++extern void http_cancel_request(void);
++
++#define SLOG(...) fprintf(stderr, "[mlservice] " __VA_ARGS__)
++static int s_local_port = -1;
++
++/* ---- reply helper ---- */
++static void reply(const char *remote_app, const char *remote_port, const char *id,
++                  const char *key, const char *val) {
++  if (!remote_app || !remote_port) return;
++  bundle *b = bundle_create();
++  if (id) bundle_add_str(b, "id", id);
++  bundle_add_str(b, key, val ? val : "");
++  message_port_send_message_with_local_port(remote_app, remote_port, b, s_local_port);
++  bundle_free(b);
++}
++
++/* ---- cert: makeCert / httpInit (native equivalents of http.cpp) ---- */
++static int make_cert(char **certOut, char **keyOut) {
++  CERT_KEY_PAIR ck = mkcert_generate();
++  BIO *bc = BIO_new(BIO_s_mem());
++  PEM_write_bio_X509(bc, ck.x509);
++  BUF_MEM *m = NULL; BIO_get_mem_ptr(bc, &m);
++  *certOut = strndup(m->data, m->length); BIO_free(bc);
++  BIO *bk = BIO_new(BIO_s_mem());
++  PEM_write_bio_PrivateKey(bk, ck.pkey, NULL, NULL, 0, NULL, NULL);
++  BIO_get_mem_ptr(bk, &m); *keyOut = strndup(m->data, m->length); BIO_free(bk);
++  mkcert_free(ck);
++  return 0;
++}
++
++static int http_init(const char *certStr, const char *keyStr, const char *uniqueId) {
++  BIO *bio = BIO_new_mem_buf(certStr, -1);
++  g_Cert = PEM_read_bio_X509(bio, NULL, NULL, NULL); BIO_free_all(bio);
++  bio = BIO_new_mem_buf(keyStr, -1);
++  g_PrivateKey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL); BIO_free_all(bio);
++  if (!g_Cert || !g_PrivateKey) return -1;
++  size_t n = strlen(certStr);
++  g_CertHex = malloc(n * 2 + 1);
++  for (size_t i = 0; i < n; i++) sprintf(&g_CertHex[i * 2], "%02x", (unsigned char)certStr[i]);
++  g_UniqueId = strdup(uniqueId);
++  curl_global_init(CURL_GLOBAL_DEFAULT);
++  return 0;
++}
++
++static void hex_to_bytes(const char *hex, unsigned char *out, int n) {
++  for (int i = 0; i < n; i++) sscanf(hex + i * 2, "%2hhx", &out[i]);
++}
++
++/* ---- streaming ---- */
++static STREAM_CONFIGURATION s_sc;
++static SERVER_INFORMATION s_si;
++static char s_host[128], s_rtsp[512], s_appver[64], s_gfever[64];
++static pthread_t s_stream_th;
++static volatile int s_streaming;
++static char s_ui_app[128], s_ui_port[64];   /* for async callbacks back to UI */
++
++static void cl_stageFailed(int stage, int err) { SLOG("stage %d failed %d\n", stage, err); }
++static void cl_connTerminated(int err) {
++  SLOG("connection terminated %d\n", err);
++  s_streaming = 0;
++  reply(s_ui_app, s_ui_port, NULL, "event", "streamTerminated");
++}
++static void cl_logMessage(const char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); }
++
++static void *stream_thread(void *arg) {
++  (void)arg;
++  DECODER_RENDERER_CALLBACKS dr; VidEsplus_FillCallbacks(&dr);
++  AUDIO_RENDERER_CALLBACKS ar; AudEsplus_FillCallbacks(&ar);
++  CONNECTION_LISTENER_CALLBACKS cl; LiInitializeConnectionCallbacks(&cl);
++  cl.stageFailed = cl_stageFailed; cl.connectionTerminated = cl_connTerminated; cl.logMessage = cl_logMessage;
++  int err = LiStartConnection(&s_si, &s_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
++  if (err != 0) { SLOG("LiStartConnection failed %d\n", err); s_streaming = 0;
++    reply(s_ui_app, s_ui_port, NULL, "event", "streamFailed"); }
++  return NULL;
++}
++
++/* startStream args (subset of moonlight-tizen startRequest):
++   host, httpPort, w, h, fps, bitrate, rikeyHex, rikeyid, appVer, gfeVer, rtspUrl, codecMode */
++static int start_stream(bundle *b) {
++  if (s_streaming) return -1;
++  char *v;
++  #define G(k) (bundle_get_str(b, k, &v) == BUNDLE_ERROR_NONE ? v : NULL)
++  const char *host = G("host"); if (!host) return -1;
++  strncpy(s_host, host, sizeof s_host - 1);
++  LiInitializeStreamConfiguration(&s_sc);
++  s_sc.width = G("w") ? atoi(v) : 1280;
++  s_sc.height = G("h") ? atoi(v) : 720;
++  s_sc.fps = G("fps") ? atoi(v) : 60;
++  s_sc.bitrate = G("bitrate") ? atoi(v) : 20000;
++  s_sc.packetSize = 1024;
++  s_sc.supportedVideoFormats = VIDEO_FORMAT_H264;
++  s_sc.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
++  const char *rikey = G("rikey"); if (rikey && strlen(rikey) >= 32) hex_to_bytes(rikey, (unsigned char *)s_sc.remoteInputAesKey, 16);
++  memset(s_sc.remoteInputAesIv, 0, sizeof s_sc.remoteInputAesIv);
++  int rikeyid = G("rikeyid") ? atoi(v) : 0;
++  memcpy(s_sc.remoteInputAesIv, &rikeyid, sizeof rikeyid);
++  if (G("appVer")) strncpy(s_appver, v, sizeof s_appver - 1);
++  if (G("gfeVer")) strncpy(s_gfever, v, sizeof s_gfever - 1);
++  if (G("rtspUrl")) strncpy(s_rtsp, v, sizeof s_rtsp - 1);
++  LiInitializeServerInformation(&s_si);
++  s_si.address = s_host;
++  s_si.serverInfoAppVersion = s_appver;
++  s_si.serverInfoGfeVersion = s_gfever;
++  s_si.rtspSessionUrl = s_rtsp;
++  s_si.serverCodecModeSupport = G("codecMode") ? atoi(v) : SCM_H264;
++  #undef G
++  s_streaming = 1;
++  pthread_create(&s_stream_th, NULL, stream_thread, NULL);
++  return 0;
++}
++
++/* ---- message dispatch ---- */
++static void on_message(int local_port_id, const char *remote_app, const char *remote_port,
++                       bool trusted, bundle *msg, void *user_data) {
++  (void)local_port_id; (void)trusted; (void)user_data;
++  char *cmd = NULL, *id = NULL, *a0 = NULL, *a1 = NULL, *a2 = NULL;
++  bundle_get_str(msg, "cmd", &cmd);
++  bundle_get_str(msg, "id", &id);
++  if (!cmd) return;
++  if (remote_app) strncpy(s_ui_app, remote_app, sizeof s_ui_app - 1);
++  if (remote_port) strncpy(s_ui_port, remote_port, sizeof s_ui_port - 1);
++  SLOG("cmd=%s\n", cmd);
++
++  if (!strcmp(cmd, "makeCert")) {
++    char *c = NULL, *k = NULL; make_cert(&c, &k);
++    bundle *r = bundle_create();
++    if (id) bundle_add_str(r, "id", id);
++    bundle_add_str(r, "cert", c ? c : ""); bundle_add_str(r, "key", k ? k : "");
++    message_port_send_message_with_local_port(remote_app, remote_port, r, s_local_port);
++    bundle_free(r); free(c); free(k);
++  } else if (!strcmp(cmd, "httpInit")) {
++    bundle_get_str(msg, "cert", &a0); bundle_get_str(msg, "key", &a1); bundle_get_str(msg, "uniqueId", &a2);
++    reply(remote_app, remote_port, id, "result", http_init(a0, a1, a2) == 0 ? "ok" : "error");
++  } else if (!strcmp(cmd, "openUrl")) {
++    bundle_get_str(msg, "url", &a0); bundle_get_str(msg, "ppk", &a1);
++    PHTTP_DATA d = http_create_data();
++    int rc = http_request(a0, a1, d);
++    bundle *r = bundle_create();
++    if (id) bundle_add_str(r, "id", id);
++    if (rc == 0 && d->memory) bundle_add_byte(r, "data", d->memory, d->size + 1);
++    else bundle_add_str(r, "error", "http_request failed");
++    message_port_send_message_with_local_port(remote_app, remote_port, r, s_local_port);
++    bundle_free(r); http_free_data(d);
++  } else if (!strcmp(cmd, "pair")) {
++    bundle_get_str(msg, "addr", &a0); bundle_get_str(msg, "pin", &a1);
++    char *major = NULL, *port = NULL; bundle_get_str(msg, "major", &major); bundle_get_str(msg, "port", &port);
++    char *scert = NULL;
++    int rc = gs_pair(major ? atoi(major) : 7, a0, port ? atoi(port) : 47989, a1, &scert);
++    bundle *r = bundle_create();
++    if (id) bundle_add_str(r, "id", id);
++    bundle_add_str(r, rc == 0 ? "serverCert" : "error", rc == 0 && scert ? scert : "pair failed");
++    message_port_send_message_with_local_port(remote_app, remote_port, r, s_local_port);
++    bundle_free(r); free(scert);
++  } else if (!strcmp(cmd, "startStream")) {
++    reply(remote_app, remote_port, id, "result", start_stream(msg) == 0 ? "ok" : "error");
++  } else if (!strcmp(cmd, "stopStream")) {
++    if (s_streaming) { LiStopConnection(); s_streaming = 0; }
++    reply(remote_app, remote_port, id, "result", "ok");
++  } else if (!strcmp(cmd, "cancelRequest")) {
++    http_cancel_request();
++    reply(remote_app, remote_port, id, "result", "ok");
++  } else if (!strcmp(cmd, "sendKeyboardEvent")) {
++    char *kc = NULL, *ac = NULL, *md = NULL;
++    bundle_get_str(msg, "key", &kc); bundle_get_str(msg, "action", &ac); bundle_get_str(msg, "mods", &md);
++    if (kc && ac) LiSendKeyboardEvent((short)atoi(kc), (char)atoi(ac), md ? (char)atoi(md) : 0);
++  } else {
++    SLOG("unhandled cmd %s\n", cmd);   /* stun/wakeOnLan/toggleStats: TODO */
++  }
++}
++
++/* ---- service lifecycle ---- */
++static bool app_create(void *data) {
++  (void)data;
++  s_local_port = message_port_register_local_port("moonlight", on_message, NULL);
++  SLOG("local port 'moonlight' = %d\n", s_local_port);
++  return true;
++}
++static void app_terminate(void *data) {
++  (void)data;
++  if (s_streaming) { LiStopConnection(); s_streaming = 0; }
++  esplus_close();
++}
++static void app_control(app_control_h ac, void *data) { (void)ac; (void)data; }
++
++int main(int argc, char *argv[]) {
++  service_app_lifecycle_callback_s cb = {0};
++  cb.create = app_create;
++  cb.terminate = app_terminate;
++  cb.app_control = app_control;
++  return service_app_main(argc, argv, &cb, NULL);
++}
+diff --git a/pkg/service/tizen-manifest.xml b/pkg/service/tizen-manifest.xml
+new file mode 100644
+index 0000000..0a8f85d
+--- /dev/null
++++ b/pkg/service/tizen-manifest.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Native streaming service of the hybrid Moonlight package. Runs our engine
++     (esplusplayer video/audio + GameStream + input) and talks to the web UI over
++     a message port. The web UI (config.xml, ui-application) is the launchable
++     entry that appears in the app bar; this service runs in the background. -->
++<manifest xmlns="http://tizen.org/ns/packages" api-version="5" package="org.moonlight.tizen5" version="0.0.1">
++  <profile name="tv"/>
++  <service-application appid="org.moonlight.tizen5.engine" exec="moonlight-engine"
++                       type="capp" multiple="false" taskmanage="false" auto-restart="false" on-boot="false">
++    <label>Moonlight Engine</label>
++  </service-application>
++  <privileges>
++    <privilege>http://tizen.org/privilege/internet</privilege>
++    <privilege>http://tizen.org/privilege/network.get</privilege>
++    <privilege>http://tizen.org/privilege/mediastorage</privilege>
++    <privilege>http://tizen.org/privilege/externalstorage</privilege>
++    <privilege>http://tizen.org/privilege/datasharing</privilege>
++  </privileges>
++</manifest>
+diff --git a/pkg/ui/mlbridge.js b/pkg/ui/mlbridge.js
+index 721eb31..0dfa5c0 100644
+--- a/pkg/ui/mlbridge.js
++++ b/pkg/ui/mlbridge.js
+@@ -10,7 +10,7 @@
+  *
+  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
+  * and sendMessage. UNTESTED on device (tizen.messageport availability + round-trips)
+- * - validate once the hybrid package is installed.
++ * - validate once the hybrid package is installed. See pkg/ARCHITECTURE.md.
+  */
+ (function () {
+   var ENGINE_APPID = 'org.moonlight.tizen5.engine';

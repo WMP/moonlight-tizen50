@@ -1,0 +1,61 @@
+name: Sync from clean upstream
+
+# Pulls the clean upstream (moonlight-tizen50-core) into the repo root and re-applies
+# the device-integration overlay (patches/), then opens a PR with the result. Nothing
+# is merged automatically. If a patch no longer applies, the run fails on purpose so a
+# human refreshes the overlay (that is exactly the case worth a human's eyes).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CLEAN_REPO: https://github.com/WMP/moonlight-tizen50-core.git
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Fetch clean upstream
+        run: git clone --depth 1 "$CLEAN_REPO" /tmp/clean
+
+      - name: Lay down upstream at root + apply overlay
+        run: |
+          set -euo pipefail
+          # Upstream code replaces the tracked tree; this repo's own infra is kept:
+          # patches/, this workflow, FUNDING.yml, and .git. The upstream's own
+          # AGENTS.md (which forbids RE content) does NOT belong in this repo.
+          rsync -a --delete \
+            --exclude='/.git' \
+            --exclude='/AGENTS.md' \
+            --exclude='/patches' \
+            --exclude='/.github/workflows/sync-from-clean.yml' \
+            --exclude='/.github/FUNDING.yml' \
+            /tmp/clean/ ./
+          for p in patches/*.patch; do
+            echo "applying $p"
+            git apply --whitespace=nowarn "$p" \
+              || { echo "::error::$p no longer applies — the upstream changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
+          done
+
+      - name: Open PR with the synced tree
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: sync/from-clean
+          title: "Sync from clean upstream (moonlight-tizen50-core)"
+          commit-message: "sync: pull clean upstream + re-apply patches/"
+          body: |
+            Automated sync: clean upstream (`moonlight-tizen50-core`) laid down at the
+            repo root, then `patches/*.patch` re-applied.
+
+            Review the diff, then merge. If this PR is empty, the tree already matches
+            the upstream + overlay.
+          delete-branch: true
