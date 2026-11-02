@@ -102,12 +102,52 @@
     }
   }
 
+  // Tizen message ports reject a message over ~4 KB, so a large message is sent as
+  // ordered parts {id, seq, total, field, chunk} (pkg/ui/PROTOCOL.md). The limits
+  // leave room for the Bundle encoding overhead.
+  var MAX_SINGLE = 1536, CHUNK_CHARS = 512;   // 512 chars <= 1536 UTF-8 bytes
+  function utf8Len(v) { try { return unescape(encodeURIComponent(v)).length; } catch (e) { return v.length * 3; } }
+
+  // msg: [{key,value}] with cmd and id first. Returns the list of messages to send.
+  function split(msg) {
+    var size = 0, i;
+    for (i = 0; i < msg.length; i++) size += msg[i].key.length + utf8Len(msg[i].value);
+    if (size <= MAX_SINGLE) return [msg];
+    var parts = [];
+    for (i = 2; i < msg.length; i++) {
+      var v = msg[i].value, off = 0;
+      do { parts.push({ field: msg[i].key, chunk: v.substr(off, CHUNK_CHARS) }); off += CHUNK_CHARS; } while (off < v.length);
+    }
+    return parts.map(function (pt, seq) {
+      return [msg[0], msg[1], { key: 'seq', value: String(seq) }, { key: 'total', value: String(parts.length) },
+              { key: 'field', value: pt.field }, { key: 'chunk', value: pt.chunk }];
+    });
+  }
+
+  // Collects the parts of a chunked reply; returns the joined map once all arrived.
+  var partial = {};   // id -> {total, n, seqs: {seq: {field, chunk}}}
+  function join(m) {
+    var a = partial[m.id] || (partial[m.id] = { total: +m.total, n: 0, seqs: {} });
+    if (!a.seqs[m.seq]) { a.seqs[m.seq] = { field: m.field, chunk: m.chunk }; a.n++; }
+    if (a.n < a.total) return null;
+    delete partial[m.id];
+    var out = { id: m.id };
+    for (var i = 0; i < a.total; i++) {
+      var pt = a.seqs[i], prev = out[pt.field];
+      if (prev === undefined) out[pt.field] = pt.chunk;
+      else if (typeof prev === 'string') out[pt.field] = prev + pt.chunk;
+      else out[pt.field] = prev.concat(Array.prototype.slice.call(pt.chunk));   // byte chunks
+    }
+    trace('joined id=' + m.id, 'parts=' + a.total);
+    return out;
+  }
+
   // Send one pending command. Its timeout is armed only after sendMessage succeeded,
   // so time spent waiting for the host to start does not count against it.
   function sendNow(id) {
     var p = pending[id];
     if (!p) return;
-    try { remotePort.sendMessage(p.msg, localPort); }
+    try { for (var i = 0; i < p.msgs.length; i++) remotePort.sendMessage(p.msgs[i], localPort); }
     catch (e) {   // host gone: forget the port, keep the command first in the queue, reconnect
       trace('send failed id=' + id, e && (e.name || e.message || e));
       remotePort = null;
@@ -115,7 +155,7 @@
       scheduleRetry();
       return;
     }
-    trace('sent cmd=' + p.cmd, 'id=' + id);
+    trace('sent cmd=' + p.cmd, 'id=' + id, p.msgs.length > 1 ? 'parts=' + p.msgs.length : '');
     if (p.timeoutMs > 0) p.timer = setTimeout(function () { onTimeout(id); }, p.timeoutMs);
   }
 
@@ -154,6 +194,7 @@
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
+    if (m.total !== undefined) { m = join(m); if (!m) return; }
     trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
@@ -179,7 +220,7 @@
         msg.push({ key: k, value: String(fields[k]) });
         names.push(k);   // names only: cert/key/pin values must not be logged
       }
-      pending[id] = { resolve: resolve, reject: reject, timer: null, msg: msg, cmd: cmd,
+      pending[id] = { resolve: resolve, reject: reject, timer: null, msgs: split(msg), cmd: cmd,
                       timeoutMs: timeoutMs, cancelOnTimeout: cancelOnTimeout };
       trace('call cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
       if (remotePort && !queue.length) sendNow(id);

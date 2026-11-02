@@ -41,7 +41,9 @@
     try {
       var parts = [];
       for (var i = 0; i < args.length; i++) parts.push(fmt(args[i]));
-      buf.push([lvl, parts.join(' ')]);
+      var line = parts.join(' ');
+      if (line.length > 1000) line = line.substr(0, 1000) + ' [cut]';   // one message port message is ~4 KB max
+      buf.push([lvl, line]);
       if (buf.length > CAP) buf.shift();
       if (remote) flush();
     } catch (e) {}

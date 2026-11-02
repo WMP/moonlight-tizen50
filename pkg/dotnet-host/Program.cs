@@ -210,6 +210,7 @@ namespace MoonlightHost
                 string id = Item(b, "id");
                 string cmd = Item(b, "cmd");
                 if (id == null) { Tizen.Log.Error("MLHOST", "command without id ignored: " + cmd); return; }
+                if (Item(b, "total") != null) { b = Join(id, b); if (b == null) return; }   // not all parts yet
                 Log.Trace("cmd " + cmd + " id=" + id);
                 string replyApp = s_uiApp, replyPort = s_uiPort;
                 Task.Run(() => Run(b, cmd ?? "", id, replyApp, replyPort));
@@ -220,18 +221,12 @@ namespace MoonlightHost
         private static void Run(Tizen.Applications.Bundle b, string cmd, string id, string app, string port)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var reply = new Tizen.Applications.Bundle();
-            reply.AddItem("id", id);
+            var reply = new Dictionary<string, object>();
             string err;
             try { err = Execute(b, cmd, reply); }
             catch (Exception ex) { Tizen.Log.Error("MLHOST", "cmd " + cmd + " failed: " + ex); err = "exception"; }
-            if (err != null)
-            {
-                reply = new Tizen.Applications.Bundle();   // drop partial results
-                reply.AddItem("id", id);
-                reply.AddItem("error", err);
-            }
-            Send(reply, app, port);
+            if (err != null) { reply.Clear(); reply["error"] = err; }   // drop partial results
+            SendReply(id, reply, app, port);
             Log.Trace("reply " + id + (err == null ? " ok " : " err ") + sw.ElapsedMilliseconds + "ms");
 
             if (cmd == "startStream")
@@ -241,10 +236,111 @@ namespace MoonlightHost
             }
         }
 
-        private static void Send(Tizen.Applications.Bundle msg, string app, string port)
+        private static bool Send(Tizen.Applications.Bundle msg, string app, string port)
         {
-            try { s_port.Send(msg, app, port); }
-            catch (Exception ex) { Tizen.Log.Error("MLHOST", "send failed: " + ex.Message); }
+            try { s_port.Send(msg, app, port); return true; }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "send failed: " + ex.Message); return false; }
+        }
+
+        // A message port message is limited to ~4 KB, so a large message travels as
+        // ordered parts {id, seq, total, field, chunk} (pkg/ui/PROTOCOL.md). The sizes
+        // leave room for the Bundle encoding overhead.
+        private const int MaxSingle = 1536, ChunkBytes = 1536, ChunkChars = 512;   // 512 chars <= 1536 UTF-8 bytes
+
+        private static void SendReply(string id, Dictionary<string, object> r, string app, string port)
+        {
+            int size = 0;
+            foreach (var kv in r)
+                size += kv.Key.Length + (kv.Value is byte[] ? ((byte[])kv.Value).Length : Encoding.UTF8.GetByteCount((string)kv.Value));
+            if (size <= MaxSingle)
+            {
+                var m = new Tizen.Applications.Bundle();
+                m.AddItem("id", id);
+                foreach (var kv in r)
+                    if (kv.Value is byte[]) m.AddItem(kv.Key, (byte[])kv.Value); else m.AddItem(kv.Key, (string)kv.Value);
+                Send(m, app, port);
+                return;
+            }
+            var parts = new List<KeyValuePair<string, object>>();
+            foreach (var kv in r)
+            {
+                var bytes = kv.Value as byte[];
+                int off = 0;
+                if (bytes != null)
+                    do
+                    {
+                        int n = Math.Min(ChunkBytes, bytes.Length - off);
+                        var c = new byte[n];
+                        Array.Copy(bytes, off, c, 0, n);
+                        parts.Add(new KeyValuePair<string, object>(kv.Key, c));
+                        off += n;
+                    } while (off < bytes.Length);
+                else
+                {
+                    string str = (string)kv.Value;
+                    do
+                    {
+                        int n = Math.Min(ChunkChars, str.Length - off);
+                        if (n > 1 && off + n < str.Length && char.IsHighSurrogate(str[off + n - 1])) n--;   // keep pairs whole
+                        parts.Add(new KeyValuePair<string, object>(kv.Key, str.Substring(off, n)));
+                        off += n;
+                    } while (off < str.Length);
+                }
+            }
+            for (int seq = 0; seq < parts.Count; seq++)
+            {
+                var m = new Tizen.Applications.Bundle();
+                m.AddItem("id", id);
+                m.AddItem("seq", seq.ToString());
+                m.AddItem("total", parts.Count.ToString());
+                m.AddItem("field", parts[seq].Key);
+                if (parts[seq].Value is byte[]) m.AddItem("chunk", (byte[])parts[seq].Value);
+                else m.AddItem("chunk", (string)parts[seq].Value);
+                if (!Send(m, app, port)) return;   // the UI times out the command
+            }
+            Log.Trace("reply " + id + " sent in " + parts.Count + " parts");
+        }
+
+        private sealed class Partial
+        {
+            public int Total;
+            public readonly Dictionary<int, KeyValuePair<string, string>> Seqs = new Dictionary<int, KeyValuePair<string, string>>();
+        }
+        private static readonly Dictionary<string, Partial> s_partial = new Dictionary<string, Partial>();
+
+        // Collects the parts of a chunked command; returns the joined command once all arrived.
+        private static Tizen.Applications.Bundle Join(string id, Tizen.Applications.Bundle b)
+        {
+            int seq, total;
+            if (!int.TryParse(Item(b, "seq"), out seq) || !int.TryParse(Item(b, "total"), out total) ||
+                seq < 0 || seq >= total || Item(b, "field") == null)
+            {
+                Tizen.Log.Error("MLHOST", "bad command part for id=" + id);
+                return null;
+            }
+            Partial a;
+            lock (s_partial)
+            {
+                if (!s_partial.TryGetValue(id, out a)) { a = new Partial { Total = total }; s_partial[id] = a; }
+                if (!a.Seqs.ContainsKey(seq)) a.Seqs[seq] = new KeyValuePair<string, string>(Item(b, "field"), Item(b, "chunk") ?? "");
+                if (a.Seqs.Count < a.Total) return null;
+                s_partial.Remove(id);
+            }
+            var fieldsJoined = new Dictionary<string, StringBuilder>();
+            for (int i = 0; i < a.Total; i++)
+            {
+                KeyValuePair<string, string> pt;
+                if (!a.Seqs.TryGetValue(i, out pt)) { Tizen.Log.Error("MLHOST", "command part missing for id=" + id); return null; }
+                StringBuilder sb;
+                if (!fieldsJoined.TryGetValue(pt.Key, out sb)) { sb = new StringBuilder(); fieldsJoined[pt.Key] = sb; }
+                sb.Append(pt.Value);
+            }
+            var joined = new Tizen.Applications.Bundle();
+            joined.AddItem("cmd", Item(b, "cmd") ?? "");
+            joined.AddItem("id", id);
+            foreach (var kv in fieldsJoined) joined.AddItem(kv.Key, kv.Value.ToString());
+            Log.Trace("joined id=" + id + " parts=" + a.Total);
+            return joined;
         }
 
         private static void SendEvent(string ev)
@@ -265,7 +361,7 @@ namespace MoonlightHost
         private static string Rc(int rc) => rc == 0 ? null : rc.ToString();
 
         // Returns null on success (result fields in r) or the error string. Never logs secrets.
-        private static string Execute(Tizen.Applications.Bundle b, string cmd, Tizen.Applications.Bundle r)
+        private static string Execute(Tizen.Applications.Bundle b, string cmd, Dictionary<string, object> r)
         {
             if (!Engine.Loaded) return "engine not loaded";
             switch (cmd)
@@ -277,7 +373,7 @@ namespace MoonlightHost
                         int rc = Engine.MakeCert(out c, out k);
                         string cert = Take(c), key = Take(k);
                         if (rc != 0) return rc.ToString();
-                        r.AddItem("cert", cert ?? ""); r.AddItem("key", key ?? "");
+                        r.Add("cert", cert ?? ""); r.Add("key", key ?? "");
                         return null;
                     }
                 case "httpInit":
@@ -295,8 +391,8 @@ namespace MoonlightHost
                             Engine.Free(p);
                         }
                         if (rc != 0) return rc.ToString();
-                        if (Item(b, "binary") == "true") r.AddItem("data", data);
-                        else r.AddItem("data", Encoding.UTF8.GetString(data));
+                        if (Item(b, "binary") == "true") r.Add("data", data);
+                        else r.Add("data", Encoding.UTF8.GetString(data));
                         return null;
                     }
                 case "pair":
@@ -309,7 +405,7 @@ namespace MoonlightHost
                             int rc = Engine.Pair(major, Item(b, "addr"), port, Item(b, "pin"), out c);
                             string cert = Take(c);
                             if (rc != 0) return rc.ToString();
-                            r.AddItem("serverCert", cert ?? "");
+                            r.Add("serverCert", cert ?? "");
                             return null;
                         }
                     }
@@ -337,7 +433,7 @@ namespace MoonlightHost
                         return null;
                     }
                 case "toggleStats": return null;
-                case "stun": r.AddItem("result", ""); return null;
+                case "stun": r.Add("result", ""); return null;
                 case "wakeOnLan": return "not supported";
                 default: return "unknown cmd " + cmd;
             }

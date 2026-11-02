@@ -157,6 +157,41 @@ test('upstream update check is disabled', async function () {
   assert.strictEqual(called.length, 0, 'original update functions must not run: ' + called);
 });
 
+test('multi-part replies join; large commands are split', async function () {
+  sent.length = 0;
+  var xml = '<root>' + new Array(3000).join('x') + '</root>';
+  var p = win.sendMessage('openUrl', ['https://h/applist', null, false, 0]);
+  var id = fields(sent[0]).id;
+  var parts = [xml.slice(0, 1000), xml.slice(1000, 2000), xml.slice(2000)];
+  [2, 0, 1].forEach(function (seq) {          // out of order, plus one duplicate
+    listener([{ key: 'id', value: id }, { key: 'seq', value: String(seq) }, { key: 'total', value: '3' },
+              { key: 'field', value: 'data' }, { key: 'chunk', value: parts[seq] }]);
+  });
+  assert.strictEqual(await p, xml);
+  var pb = win.sendMessage('openUrl', ['https://h/appasset', null, true, 0]);
+  var idb = fields(sent[1]).id;
+  listener([{ key: 'id', value: idb }, { key: 'seq', value: '0' }, { key: 'total', value: '2' }, { key: 'field', value: 'data' }, { key: 'chunk', value: [1, 2] }]);
+  listener([{ key: 'id', value: idb }, { key: 'seq', value: '1' }, { key: 'total', value: '2' }, { key: 'field', value: 'data' }, { key: 'chunk', value: [3] }]);
+  var r = await pb;
+  assert.ok(r instanceof Uint8Array); assert.strictEqual(Array.prototype.join.call(r, ','), '1,2,3');
+
+  sent.length = 0;                             // UI -> host: a ~3 KB httpInit is split
+  var cert = new Array(1400).join('C'), key = new Array(1700).join('K');
+  var q = win.sendMessage('httpInit', [cert, key, 'uid']);
+  assert.ok(sent.length > 1, 'split into parts');
+  var got = {};
+  sent.forEach(function (m) {
+    var f = fields(m);
+    assert.strictEqual(f.cmd, 'httpInit'); assert.strictEqual(f.total, String(sent.length));
+    var bytes = m.reduce(function (n, kv) { return n + kv.key.length + String(kv.value).length; }, 0);
+    assert.ok(bytes <= 2048, 'part size ' + bytes);
+    got[f.field] = (got[f.field] || '') + f.chunk;
+  });
+  assert.strictEqual(got.cert, cert); assert.strictEqual(got.key, key); assert.strictEqual(got.uniqueId, 'uid');
+  reply(fields(sent[0]).id, {});
+  await q;
+});
+
 test('event passes string', async function () {
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   assert.strictEqual(handled.join('|'), 'streamTerminated: 0');
