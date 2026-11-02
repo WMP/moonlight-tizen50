@@ -77,6 +77,10 @@ jobs:
             VER=$(git rev-parse --short HEAD)
           fi
           echo "VER=$VER" >> "$GITHUB_ENV"
+          # package version (x.y.z) from the tag; other builds keep the manifests' version
+          APP_VERSION=$(echo "$VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || true)   # v0.0.6-debug -> 0.0.6
+          [ -z "$APP_VERSION" ] || echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
       - name: Build packages
         if: steps.gate.outputs.have_libs == 'true'
@@ -87,7 +91,7 @@ jobs:
             -v "$PWD/tdeps:/work/tdeps" \
             -v "$PWD/out:/work/out" \
             -e HOME=/home/developer \
-            -e VER \
+            -e VER -e APP_VERSION -e BUILD_COMMIT \
             moonlight-tizen-build bash -euo pipefail -c '
               cd /work
               REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen

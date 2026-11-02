@@ -10,8 +10,11 @@ message ports. The host calls the engine (`libmlengine.so`, `mlclient/mlengine.h
 | host → UI (replies, events) | `Moonlight5.ui` | `moonlightui` | no |
 | UI → host (debug console relay) | `org.moonlight.host.app` | `mllog` | no |
 
-The UI starts the host with `tizen.application.launch` when the `moonlight` port is
-missing, then retries with backoff. Commands sent before the port exists are queued.
+When the `moonlight` port is missing, the UI starts the host with
+`tizen.application.launchAppControl` (operation `default`, explicit app id; fallback
+`tizen.application.launch`) and retries with backoff; it asks again every 8 missed
+connects. Commands sent before the port exists are queued. A command's timeout starts
+when it is sent, not when it is queued.
 
 ## Message shape
 
@@ -23,6 +26,19 @@ are strings, except the binary `data` of an `openUrl` reply (bytes).
 - Event: `event` (string, no `id`). The UI passes it to `handleMessage(event)` of
   moonlight-tizen's `messages.js`, which expects the same strings as the WASM build,
   for example `streamTerminated: 0` or `Connection Established`.
+
+### Large messages (parts)
+
+A Tizen message port rejects a message over about 4 KB. A message whose fields
+together exceed 1536 bytes is sent as ordered parts, in both directions:
+
+- each part: `id` (and `cmd`, UI → host), `seq` (0-based), `total`, `field` (the field
+  name), `chunk` (up to 512 characters of a string, or up to 1536 bytes of binary data);
+- the receiver collects the parts of an `id` (duplicates are ignored), joins the
+  chunks of each field in `seq` order, and then handles the joined message as usual;
+- small messages stay one message, without `seq`/`total`.
+
+This covers `openUrl` replies (serverinfo, applist, box art) and `httpInit` (cert + key).
 
 The host runs `openUrl`, `pair`, `makeCert` and `httpInit` one at a time (libgamestream
 uses one global cancel flag). `cancelRequest` does not wait for that queue.

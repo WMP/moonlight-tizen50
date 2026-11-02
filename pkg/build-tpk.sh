@@ -22,9 +22,19 @@ mkdir -p "$HOST/lib"
 cp "$SO" "$HOST/lib/libmlengine.so"
 echo "engine: $(file "$HOST/lib/libmlengine.so" | cut -d, -f1-3)"
 
+# APP_VERSION (x.y.z, CI: the release tag) goes into a generated copy of the manifest.
+MANIFEST="$HOST/tizen-manifest.xml"
+if [ -n "$APP_VERSION" ]; then
+  echo "$APP_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "APP_VERSION must be x.y.z, got: $APP_VERSION" >&2; exit 1; }
+  mkdir -p "$HOST/obj"
+  sed "s/\(<manifest[^>]* version=\"\)[^\"]*\"/\1$APP_VERSION\"/" "$MANIFEST" > "$HOST/obj/tizen-manifest.xml"
+  MANIFEST="$HOST/obj/tizen-manifest.xml"
+fi
+echo "host version: $(sed -n 's/.*<manifest[^>]* version="\([^"]*\)".*/\1/p' "$MANIFEST")"
+
 cd "$HOST"
 dotnet build MoonlightHost.csproj -c "$CFG" -nologo \
-  -p:TizenManifestFile="$HOST/tizen-manifest.xml"
+  -p:TizenManifestFile="$MANIFEST"
 
 TPK=$(find "$HOST/bin/$CFG" -name '*.tpk' | head -1)
 [ -n "$TPK" ] || { echo "no .tpk produced" >&2; exit 1; }
