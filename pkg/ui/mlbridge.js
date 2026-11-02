@@ -49,8 +49,8 @@
   } catch (e) { console.error('[mlbridge] webapis guard failed:', e); }
 
   var localPort = null, remotePort = null, nextId = 1;
-  var pending = {};   // id -> {resolve, reject, timer}
-  var queue = [];     // messages waiting for the remote port
+  var pending = {};   // id -> {resolve, reject, timer, msg, cmd, timeoutMs, cancelOnTimeout}
+  var queue = [];     // ids waiting for the remote port, in send order
   var launched = false, retryTimer = null, retryDelay = 250;
   var DEFAULT_TIMEOUT = 15000, PAIR_TIMEOUT = 120000, RETRY_MAX = 4000;
 
@@ -83,32 +83,46 @@
     }
   }
 
-  function rawSend(msg) {
-    try { remotePort.sendMessage(msg, localPort); return null; }
-    catch (e) { remotePort = null; launched = false; return e; }   // host gone: reconnect (and relaunch) on the next call
+  // Send one pending command. Its timeout is armed only after sendMessage succeeded,
+  // so time spent waiting for the host to start does not count against it.
+  function sendNow(id) {
+    var p = pending[id];
+    if (!p) return;
+    try { remotePort.sendMessage(p.msg, localPort); }
+    catch (e) {   // host gone: forget the port, keep the command first in the queue, reconnect
+      trace('send failed id=' + id, e && (e.name || e.message || e));
+      remotePort = null;
+      queue.unshift(id);
+      scheduleRetry();
+      return;
+    }
+    trace('sent cmd=' + p.cmd, 'id=' + id);
+    if (p.timeoutMs > 0) p.timer = setTimeout(function () { onTimeout(id); }, p.timeoutMs);
+  }
+
+  function onTimeout(id) {
+    var p = pending[id];
+    if (!p) return;
+    delete pending[id];
+    trace('timeout cmd=' + p.cmd, 'id=' + id);
+    if (p.cancelOnTimeout) bridgeCall('cancelRequest', {}, 0).then(null, function () {});
+    p.reject('timeout');
   }
 
   function flush() {
     trace('flush queued=' + queue.length);
-    while (queue.length) {
-      var q = queue.shift();
-      var err = rawSend(q.msg);
-      if (err) failPending(q.id, err);
-    }
-  }
-
-  function failPending(id, err) {
-    var p = pending[id];
-    if (!p) return;
-    delete pending[id];
-    if (p.timer) clearTimeout(p.timer);
-    p.reject(err);
+    while (queue.length && remotePort) sendNow(queue.shift());
   }
 
   // Connect now, or retry with backoff (250 ms doubling up to 4 s); one timer at a time.
   function connect() {
     if (retryTimer) return;
     if (ensurePorts()) { retryDelay = 250; flush(); return; }
+    scheduleRetry();
+  }
+
+  function scheduleRetry() {
+    if (retryTimer) return;
     trace('retry in ' + retryDelay + ' ms');
     retryTimer = setTimeout(function () {
       retryTimer = null;
@@ -146,23 +160,11 @@
         msg.push({ key: k, value: String(fields[k]) });
         names.push(k);   // names only: cert/key/pin values must not be logged
       }
-      var p = pending[id] = { resolve: resolve, reject: reject, timer: null };
-      if (timeoutMs > 0) p.timer = setTimeout(function () {
-        if (!pending[id]) return;
-        delete pending[id];
-        trace('timeout cmd=' + cmd, 'id=' + id);
-        if (cancelOnTimeout) bridgeCall('cancelRequest', {}, 0).then(null, function () {});
-        reject('timeout');
-      }, timeoutMs);
-      if (remotePort) {
-        trace('send cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
-        var err = rawSend(msg);
-        if (err) failPending(id, err);
-      } else {
-        trace('queue cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
-        queue.push({ id: id, msg: msg });
-        connect();
-      }
+      pending[id] = { resolve: resolve, reject: reject, timer: null, msg: msg, cmd: cmd,
+                      timeoutMs: timeoutMs, cancelOnTimeout: cancelOnTimeout };
+      trace('call cmd=' + cmd, 'id=' + id, 'fields=' + names.join(','));
+      if (remotePort && !queue.length) sendNow(id);
+      else { trace('queue id=' + id); queue.push(id); connect(); }
     });
   }
 
