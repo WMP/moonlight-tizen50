@@ -15,7 +15,7 @@
  * STATUS: the loader + ABI are the real mechanism; lifecycle/UI are placeholders.
  * Verify TFM/privileges against the on-device dev.moonlight.tvshell, and confirm the
  * sandbox permits memfd_create + dlopen(/proc/self/fd) on the target. See
- * ../DEV-CERT-PATH.md.
+ * docs/DEV-CERT-PATH.md.
  */
 using System;
 using System.IO;

@@ -9,7 +9,7 @@
       - Tizen.NET.TV brings TVGLApplication, the lifecycle base nuvio used on 4/5
         (there is no GLWindow before API9). ExcludeAssets=Runtime: the TV already
         has the assemblies; we ship only the reference.
-    See ../DEV-CERT-PATH.md and the moonlight-tpk-strategy memory.
+    See docs/DEV-CERT-PATH.md.
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

@@ -5,7 +5,7 @@
 # `sdb connect` + `tizen install`. Also works on any host with sdb+tizen on PATH.
 #
 # Usage: install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
-#   TV must be in Developer Mode with this host's IP allowed (see DEV-CERT-PATH.md).
+#   TV must be in Developer Mode with this host's IP allowed (see docs/DEV-CERT-PATH.md).
 #   With [cert_password]: re-sign using /certificates/author.p12 +
 #   /certificates/distributor.p12 (mount them). Needed on recent TVs that reject the
 #   default Tizen cert with "Invalid certificate chain" [118,-12] — there the

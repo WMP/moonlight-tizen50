@@ -6,7 +6,7 @@
 #
 # Arg 1: path to the prebuilt libmlengine.so (build-engine-so.sh output).
 # tizen40 TFM builds with the OLD Tizen.NET.Sdk NuGet + a modern .NET SDK; no
-# `dotnet workload install tizen` needed (nuvio tools/tpk.sh). See DEV-CERT-PATH.md.
+# `dotnet workload install tizen` needed (nuvio tools/tpk.sh). See docs/DEV-CERT-PATH.md.
 set -e
 SO=${1:?usage: build-tpk.sh <path-to-libmlengine.so>}
 HERE=$(cd "$(dirname "$0")" && pwd)

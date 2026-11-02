@@ -14,4 +14,4 @@ and the app user is **uid 5001**.
 
 **Therefore:** the root install path must NOT use pkgmgr/pkgcmd with an unsigned
 package. Reuse an already-registered package's dir (e.g. `ChqHQExU28`, the NaCl
-Moonlight), or sign properly for the dev-cert path. See `../../BACKPORT.md`.
+Moonlight), or sign properly for the dev-cert path. See `../../docs/BACKPORT.md`.

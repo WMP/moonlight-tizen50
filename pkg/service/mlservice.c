@@ -12,7 +12,7 @@
  *
  * Status: compiles+links against the TV's appfw/message-port/esplusplayer libs.
  * On-device behaviour (message port round-trips, two-track prepare) is the next
- * validation step - needs the hybrid package installed. See pkg/ARCHITECTURE.md.
+ * validation step - needs the hybrid package installed. See docs/ARCHITECTURE.md.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE

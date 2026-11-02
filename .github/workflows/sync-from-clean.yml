@@ -35,6 +35,8 @@ jobs:
           # AGENTS.md (which forbids RE content) does NOT belong in this repo.
           rsync -a --delete \
             --exclude='/.git' \
+            --exclude='/.gitmodules' \
+            --exclude='/third_party' \
             --exclude='/AGENTS.md' \
             --exclude='/patches' \
             --exclude='/.github/workflows/sync-from-clean.yml' \

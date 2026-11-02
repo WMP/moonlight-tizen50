@@ -24,5 +24,6 @@ touches — the sync run fails on purpose so a human can refresh the patch.
 
 Regenerate after intentionally changing the tracked tree:
 
-    # base = clean upstream (minus AGENTS.md) ; target = this repo (minus patches/,
-    # sync-from-clean.yml, FUNDING.yml). Diff base -> target into the patch.
+    # base = clean upstream (minus AGENTS.md, .gitmodules, third_party/);
+    # target = this repo (minus patches/, sync-from-clean.yml, FUNDING.yml,
+    # .gitmodules, third_party/). Diff base -> target into the patch.

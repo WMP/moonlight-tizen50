@@ -10,7 +10,7 @@
  *
  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
  * and sendMessage. UNTESTED on device (tizen.messageport availability + round-trips)
- * - validate once the hybrid package is installed. See pkg/ARCHITECTURE.md.
+ * - validate once the hybrid package is installed. See docs/ARCHITECTURE.md.
  */
 (function () {
   var ENGINE_APPID = 'org.moonlight.tizen5.engine';

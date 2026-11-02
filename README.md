@@ -11,7 +11,7 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 > Status: **experimental / work in progress.** The streaming engine is verified
 > end-to-end on real hardware (pairing → launch → RTSP → hardware decode, 2–3
 > frame player latency). The hybrid app package (UI + service) is still being
-> brought up. See [BACKPORT.md](BACKPORT.md) for the step-by-step state.
+> brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state.
 
 ## Why this exists
 
@@ -25,7 +25,7 @@ This project backports the fast path to 5.0 by reusing moonlight-tizen's
 reusable parts and replacing the EMSS video/audio path with a native engine built
 on `libesplusplayer.so`. That library is **internal / not in the public SDK**, so
 its ABI was reverse-engineered from the device binary — see
-[PROVENANCE.md](PROVENANCE.md).
+[PROVENANCE](docs/PROVENANCE.en.md).
 
 ## What is reused vs. new
 
@@ -35,8 +35,8 @@ its ABI was reverse-engineered from the device binary — see
 | **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c`, WASM embind transport → a message-port bridge, cert handling → native |
 | **New** | the reverse-engineered `esplusplayer_tv50.h`, the message-port service + JS bridge, `esplus_player.c`, `input_evdev.c`, `gs_client.c` (+ own `xml_search`), the whole build/packaging |
 
-Full map and attribution in [PROVENANCE.md](PROVENANCE.md); design in
-[pkg/ARCHITECTURE.md](pkg/ARCHITECTURE.md).
+Full map and attribution in [PROVENANCE](docs/PROVENANCE.en.md); design in
+[ARCHITECTURE](docs/ARCHITECTURE.en.md).
 
 ## Architecture (hybrid package)
 
@@ -77,9 +77,10 @@ ssh root@<TV> 'cd / && tar cf - lib usr/lib' | tar xf - -C tizen-deps/tv-libs
 docker build -t moonlight-tizen-build pkg
 
 # 3. build the engine .so + the web .wgt inside the container
-docker run --rm -v "$PWD":/work/repo -v <moonlight-tizen>:/work/mlt \
+#    (first: git submodule update --init --depth 1 third_party/moonlight-tizen)
+docker run --rm -v "$PWD":/work/repo \
   moonlight-tizen-build bash -lc '
-    REPO=/work/repo MLT=/work/mlt DEPS=/work/repo/tizen-deps \
+    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps \
       /work/repo/pkg/build-package.sh'
 ```
 
@@ -94,7 +95,7 @@ docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
 > **Packaging status.** The web `.wgt` builds, signs and installs headless on the
 > vitalets image (the Tizen-Studio-install problem is gone). The native engine ships
 > as `libmlengine.so` driven by a thin exe (root path) or a **.NET host `.tpk`**
-> (no-root dev-cert path — see `pkg/DEV-CERT-PATH.md`). The `.tpk` uses the `tizen40`
+> (no-root dev-cert path — see `docs/DEV-CERT-PATH.md`). The `.tpk` uses the `tizen40`
 > TFM, built with a plain .NET SDK + the `Tizen.NET.Sdk` NuGet (NO `dotnet workload
 > install tizen`); the vitalets Tizen CLI does the packaging/signing. End users
 > install with Apps2Samsung (per-DUID signing); developers can use `install-on-tv.sh`
@@ -140,10 +141,10 @@ only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
 esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
 mlclient/             native engine + CLI harness (video, audio, input, pairing)
 pkg/                  hybrid package: Dockerfile, service (tpk), ui (wgt), build
+tests/                esppplay probe + host self-tests used during bring-up
+docs/                 BACKPORT / PROVENANCE / ARCHITECTURE / DEV-CERT (EN + PL)
+third_party/          moonlight-tizen (web UI + moonlight-common-c), git submodule
 fetch-*.sh build-*.sh reproducible build scripts
-esppplay.c            minimal H.264→esplusplayer probe used during bring-up
-BACKPORT.md           milestone-by-milestone status
-PROVENANCE.md         code origins + reverse-engineering results
 ```
 
 ## Credits & license
@@ -155,7 +156,7 @@ This project stands on several others. What came from where:
 | [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) (moonlight-stream) | The streaming core — RTSP, control stream, FEC, the decoder/audio callback ABI. Used unchanged. |
 | [moonlight-embedded](https://github.com/moonlight-embedded/moonlight-embedded) (irtimmer) | `libgamestream` (pairing + GameStream HTTP) and its `client.c` as the reference for our native pairing/launch orchestration (`gs_client.c`). |
 | [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) (brightcraft) | The web UI — host list, pairing, app grid, settings — reused as-is, with the WASM/EMSS video transport swapped for our message-port bridge. The WASM port we backport the fast path *from*. |
-| [moonlight-chrome](https://github.com/moonlight-stream/moonlight-chrome) → [moonlight-tizen-nacl](https://github.com/OneLiberty/moonlight-tizen-nacl) (OneLiberty) | The original NaCl Tizen lineage this repo forked (see the top-level README); the pre-5.5 UI and gamepad fixes. |
+| [moonlight-chrome](https://github.com/moonlight-stream/moonlight-chrome) → [moonlight-tizen-nacl](https://github.com/OneLiberty/moonlight-tizen-nacl) (OneLiberty) | The original NaCl Tizen lineage this repo forked; the pre-5.5 UI and gamepad fixes. |
 | [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) (iqui27) | The **native `.tpk` design for Tizen 4/5**: loading the engine `.so` from memory via `memfd` (UEP blocks file `dlopen`), the `tizen40`/`TVGLApplication` host shape, **PUBLIC / no-`drminfo`** signing, per-DUID install, and the self-update-by-downloaded-`.so` idea. We aligned our host/engine to it; no code copied. |
 | [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) | The end-user install tool — reads the TV DUID, signs each package for it, installs. |
 | [vitalets/docker-tizen-webos-sdk](https://github.com/vitalets/docker-tizen-webos-sdk) + the [Jellyfin](https://github.com/jellyfin/jellyfin-tizen) / [georift](https://github.com/Georift/install-jellyfin-tizen) install flow | The headless build+install toolchain (Tizen CLI + `sdb`), the pattern our Docker image and `install-on-tv.sh` follow. |
@@ -163,7 +164,7 @@ This project stands on several others. What came from where:
 **New / our own:** the reverse-engineered `libesplusplayer.so` ABI
 (`esplusplayer_tv50.h`), the native engine (`esplus_player.c`, `video_esplus.c`,
 `audio_opus.c`, `input_evdev.c`), the message-port bridge, and the build/packaging.
-Full file-level map and attribution in [PROVENANCE.md](PROVENANCE.md).
+Full file-level map and attribution in [PROVENANCE](docs/PROVENANCE.en.md).
 
 **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
 **GPLv3**.
