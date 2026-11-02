@@ -12,6 +12,27 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 > frame player latency). The app package (UI + engine host) is still being
 > brought up.
 
+## Install (no build needed)
+
+CI builds the packages on every release
+(`.github/workflows/build-packages.yml`); download them from the
+[Releases](../../releases) page and install with
+**[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
+
+1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
+   reboot).
+2. Download the package for your TV from Releases:
+   - `org.moonlight.host-*.tpk` — the native engine host (Tizen 4.0–5.5).
+   - `Moonlight-*.wgt` — the web UI.
+3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
+   each package for that DUID, and installs it. Packages ship signed only with a
+   sample dev cert; Apps2Samsung re-signs per-DUID, which is what the TV accepts.
+   No Samsung certificate to create by hand, no `sdb` commands.
+
+> Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
+> does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
+> you supply. Apps2Samsung is the same step, automated.
+
 ## Why this exists
 
 The WebAssembly [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen)
@@ -77,27 +98,6 @@ docker run --rm -v "$PWD":/work/repo \
     pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk
     REPO=$REPO MLT=$MLT pkg/build-package.sh     # -> the web .wgt'
 ```
-
-## Install (no build needed)
-
-CI builds the packages on every release
-(`.github/workflows/build-packages.yml`); download them from the
-[Releases](../../releases) page and install with
-**[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
-
-1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
-   reboot).
-2. Download the package for your TV from Releases:
-   - `org.moonlight.host-*.tpk` — the native engine host (Tizen 4.0–5.5).
-   - `Moonlight-*.wgt` — the web UI.
-3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
-   each package for that DUID, and installs it. Packages ship signed only with a
-   sample dev cert; Apps2Samsung re-signs per-DUID, which is what the TV accepts.
-   No Samsung certificate to create by hand, no `sdb` commands.
-
-> Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
-> does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
-> you supply. Apps2Samsung is the same step, automated.
 
 ## Requirements
 
