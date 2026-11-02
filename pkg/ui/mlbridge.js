@@ -311,6 +311,16 @@
     window.fetchLatestRelease = function () { return Promise.reject(new Error('update check disabled')); };
   }
 
+  // Settings > About shows "Moonlight v<version> (<build>)": which fork, variant,
+  // commit and base UI version (build-package.sh fills ML_BUILD). index.js would show
+  // only the version, or the base UI's commit in debug.
+  var ML_BUILD = '__ML_BUILD__';
+  function showBuild() {
+    window.getBuildVersion = function (version) {
+      return version + ' (' + (ML_BUILD.indexOf('__') === 0 ? 'tizen50-core dev' : ML_BUILD) + ')';
+    };
+  }
+
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -320,6 +330,7 @@
   // common.domContentLoaded to skip the WASM load and fire moduleDidLoad() ourselves.
   document.addEventListener('DOMContentLoaded', function () {
     disableUpdateCheck();   // index.js is loaded now; runs before attachListeners binds the button
+    showBuild();
     trace('DOMContentLoaded: common.domContentLoaded exists =',
           !!(window.common && typeof window.common.domContentLoaded === 'function'));
     if (window.common && typeof window.common.domContentLoaded === 'function') {
