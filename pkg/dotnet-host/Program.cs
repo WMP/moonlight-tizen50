@@ -91,7 +91,7 @@ namespace MoonlightHost
         // number is C long = 32-bit on ARM; a C# long (64-bit) shifts name/flags into the wrong registers -> EINVAL.
         private static extern int syscall_memfd(int number, string name, uint flags);
         [DllImport("libc", SetLastError = true)]  private static extern IntPtr write(int fd, IntPtr buf, UIntPtr count);
-        [DllImport("libdl.so.2")]                       private static extern IntPtr dlopen(string filename, int flags);
+        [DllImport("libdl.so.2", SetLastError = true)]  private static extern IntPtr dlopen(string filename, int flags);
         [DllImport("libdl.so.2")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
         [DllImport("libdl.so.2")]                       private static extern IntPtr dlerror();
 
@@ -121,13 +121,21 @@ namespace MoonlightHost
             finally { pin.Free(); }
             Log.Trace("wrote " + so.Length + " bytes to memfd " + fd);
 
-            IntPtr h = dlopen("/proc/self/fd/" + fd, RTLD_NOW);
+            return Open("/proc/self/fd/" + fd, "memfd");
+        }
+
+        // dlopen with the reason on failure: dlerror() text and errno, read right away.
+        public static IntPtr Open(string path, string what)
+        {
+            IntPtr h = dlopen(path, RTLD_NOW);
             if (h == IntPtr.Zero)
             {
+                int errno = Marshal.GetLastWin32Error();
                 IntPtr err = dlerror();
-                throw new InvalidOperationException("dlopen(memfd) failed: " + (err != IntPtr.Zero ? Marshal.PtrToStringAnsi(err) : "?"));
+                throw new InvalidOperationException("dlopen(" + what + ") failed: " +
+                    (err != IntPtr.Zero ? Marshal.PtrToStringAnsi(err) : "no dlerror") + " (errno " + errno + ")");
             }
-            Log.Trace("dlopen handle=0x" + h.ToInt64().ToString("x"));
+            Log.Trace("dlopen(" + what + ") handle=0x" + h.ToInt64().ToString("x"));
             return h;
         }
 
@@ -190,7 +198,16 @@ namespace MoonlightHost
         {
             byte[] bytes = File.ReadAllBytes(soPath);
             Log.Trace("engine .so " + soPath + " (" + bytes.Length + " bytes)");
-            IntPtr h = MemLoader.LoadFromMemory(bytes);
+            IntPtr h;
+            try { h = MemLoader.LoadFromMemory(bytes); }
+            catch (Exception memErr)
+            {
+                // The standard way: dlopen the packaged file itself. Report both reasons
+                // if this fails too.
+                Log.Error("engine from memory failed: " + memErr.Message + "; trying the packaged file");
+                try { h = MemLoader.Open(soPath, "file"); }
+                catch (Exception fileErr) { throw new InvalidOperationException(memErr.Message + "; " + fileErr.Message); }
+            }
             Start   = MemLoader.GetDelegate<StartDelegate>(h,   "ml_engine_start");
             Running = MemLoader.GetDelegate<RunningDelegate>(h, "ml_engine_running");
             Wait    = MemLoader.GetDelegate<WaitDelegate>(h,    "ml_engine_wait");
@@ -553,7 +570,7 @@ namespace MoonlightHost
                 if (soPath == null) throw new FileNotFoundException("libmlengine.so not found in: " + string.Join(", ", tried));
                 Engine.Load(soPath);
                 // No session starts here: the web UI drives the engine over the message port.
-                Log.Info("engine loaded from memory: " + soPath);
+                Log.Info("engine loaded: " + soPath);
             }
             catch (Exception e)
             {
