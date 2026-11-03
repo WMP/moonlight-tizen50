@@ -31,7 +31,7 @@
     } catch (e) {
       remote = null;   // host not running yet: keep buffer, retry
       if (!launched && typeof tizen !== 'undefined' && tizen.application) {
-        launched = true;   // the host is a service app with no launcher icon: start it once
+        launched = true;   // the host has no launcher icon: start it once
         try { tizen.application.launch(HOST_APPID); } catch (e2) {}
       }
     }

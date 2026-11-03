@@ -2,14 +2,19 @@
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], warns = [], timers = [], now = 0, tid = 1;
-var domReady = null, remoteUp = false, hostDead = false, sentAt = 0, sent = [], listener = null, handled = [];
+var domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
   ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
   application: {
     launchAppControl: function () { throw new Error('the UI must never start the host'); },
-    launch: function () { throw new Error('the UI must never start the host'); },
+    launch: function (id, ok) {
+      assert.strictEqual(id, 'org.moonlight.host.app');
+      launches++;
+      if (!launchFails) remoteUp = true;   // the host starts and opens its port
+      ok();
+    },
     getAppInfo: function (id) { return { id: id, version: '9.9.9', packageId: 'org.moonlight.host' }; },
     getAppsContext: function (ok) { ok([{ appId: 'Moonlight5.ui' }]); }
   },
@@ -54,11 +59,11 @@ function test(n, f) { tests.push([n, f]); }
 test('queue while host is down, send after it comes up', async function () {
   var p = win.sendMessage('makeCert', []);
   assert.strictEqual(sent.length, 0);
-  advance(250);                       // a second miss must not report again
+  assert.strictEqual(launches, 1);    // the first miss starts the host
+  advance(250);                       // first retry connects and sends
   assert.deepStrictEqual(warns, ['[mlbridge] host org.moonlight.host.app installed (version 9.9.9, package org.moonlight.host), not running']);
-  remoteUp = true;                    // host started by the TV
-  advance(500);                       // next retry (backoff doubled) connects
   assert.strictEqual(sent.length, 1);
+  assert.strictEqual(launches, 1);
   var f = fields(sent[0]);
   assert.strictEqual(f.cmd, 'makeCert');
   reply(f.id, { cert: 'CERTPEM', key: 'KEYPEM' });
@@ -121,7 +126,7 @@ test('timeouts and late reply', async function () {
 
 test('timeout starts at send, queue re-sends on reconnect, pending reply resolves', async function () {
   sent.length = 0;
-  hostDead = true; remoteUp = false;           // host died: next send fails, port is gone
+  hostDead = true; remoteUp = false; launchFails = true;   // host died: next send fails, port is gone
   var done = null;
   var p = win.sendMessage('httpInit', ['c', 'k', 'u']);
   p.then(function () { done = 'ok'; }, function (e) { done = 'err ' + e; });
@@ -129,7 +134,7 @@ test('timeout starts at send, queue re-sends on reconnect, pending reply resolve
   advance(60000);                              // much longer than 15 s, but never sent
   await tick();
   assert.strictEqual(done, null, 'must not time out while queued');
-  hostDead = false; remoteUp = true;           // host is back
+  hostDead = false; remoteUp = true; launchFails = false;  // host is back
   advance(4000);                               // next retry reconnects and flushes
   assert.strictEqual(sent.length, 1);
   var f = fields(sent[0]);
@@ -145,6 +150,24 @@ test('timeout starts at send, queue re-sends on reconnect, pending reply resolve
   assert.strictEqual(sentAt, now);             // connected: sent at once
   advance(15000);                              // armed at send: 15 s after it -> timeout
   await assert.rejects(q, function (e) { return e === 'timeout'; });
+});
+
+test('a failing launch is repeated on the 9th miss, not before', async function () {
+  sent.length = 0;
+  hostDead = true; remoteUp = false; launchFails = true;
+  var l0 = launches;
+  var p = win.sendMessage('httpInit', ['c', 'k', 'u']);
+  p.then(null, function () {});
+  advance(250);                                // miss 1
+  assert.strictEqual(launches, l0 + 1);
+  advance(19500);                              // misses 2..8 (backoff 250, 500, ... 4 s)
+  assert.strictEqual(launches, l0 + 1);
+  advance(4000);                               // miss 9
+  assert.strictEqual(launches, l0 + 2);
+  hostDead = false; remoteUp = true; launchFails = false;
+  advance(4000);                               // connects, sends
+  reply(fields(sent[0]).id, {});
+  await p;
 });
 
 test('upstream update check is disabled', async function () {

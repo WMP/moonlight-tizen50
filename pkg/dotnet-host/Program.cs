@@ -12,8 +12,9 @@
  * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
  * the TV's /usr/lib.
  *
- * The host is a background service app: a second UI app would be closed when the
- * web UI comes to the foreground. It serves the UI command port "moonlight" (see
+ * The host is a UI app with no window (nodisplay), so the web UI, which is another
+ * package, can start it. It keeps running in the background. It serves the UI
+ * command port "moonlight" (see
  * pkg/ui/PROTOCOL.md): commands from the web UI are run on the engine and answered
  * on the UI port "moonlightui".
  */
@@ -555,7 +556,7 @@ namespace MoonlightHost
         }
     }
 
-    internal sealed class App : ServiceApplication
+    internal sealed class App : CoreUIApplication
     {
 #if DEBUG
         // Relays the web UI console (mltrace.js) to dlog tag MLUI. Kept for process life.
