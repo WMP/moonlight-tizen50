@@ -66,15 +66,16 @@ Android). It shows the web UI console, and on request the host and engine log to
    *Moonlight host*, older builds show it as *Moonlight* too) has no console.
 2. **⋯ → Debug**. The UI restarts on the TV in debug mode and the console opens
    (desktop: Chrome `chrome://inspect`; Android: the app's own console).
-3. To get the host and engine log in the same console, type:
+3. **Debug packages:** the host and engine log appear in the same console by
+   themselves (`[MLHOST]` / `[MLENGINE]`). On start the host first sends its last
+   100 lines (start-up, engine load), then new lines as they come.
+   **Normal packages** (host lines only, the engine has no trace there), or to turn it
+   off or on again; the choice is remembered:
 
    ```js
-   mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
-   mlDebug(false)   // turn it off again
+   mlDebug(true)    // host (+ engine) lines in this console
+   mlDebug(false)   // turn it off
    ```
-
-   After `mlDebug(true)` the host first sends its last 100 lines (start-up, engine
-   load), then new lines as they come. Engine lines exist only in the debug packages.
 4. Do what fails (add a host, pair, start a stream), then save the console to a
    file (desktop Chrome: right-click in the console → *Save as…*; Android: share).
 
@@ -90,8 +91,8 @@ The console also shows the base UI's own lines (`[index.js, …]`, `[utils.js, �
 |--------|--------|------|
 | `[mlbridge]` | UI ↔ host bridge (`pkg/ui/mlbridge.js`): commands, replies, host start | always; details in debug packages |
 | `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`) | debug packages |
-| `[MLHOST]` | .NET host | after `mlDebug(true)` |
-| `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | after `mlDebug(true)`, debug packages |
+| `[MLHOST]` | .NET host | debug packages; normal ones after `mlDebug(true)` |
+| `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | debug packages |
 
 The `App Version` line names the build: `Moonlight v<ver> (tizen50-core <variant>
 <commit>, UI <base UI version>)`. Check it first: it tells which package was tested.

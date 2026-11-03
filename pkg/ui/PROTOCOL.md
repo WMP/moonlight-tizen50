@@ -69,8 +69,8 @@ After `setLog on=true` the host sends log lines to the UI port: `log` (the line,
 most 1000 characters) and `tag` (`MLHOST` or `MLENGINE`), no `id`. It first sends its
 last 100 `MLHOST` lines, then new ones as they are written. Engine lines exist only in
 debug builds. `mlbridge.js` prints them with `console.log('[<tag>] <line>')`. The UI
-sends `setLog` from `mlDebug(true|false)` and again at start-up when it is remembered
-on. The dlog output (`MLHOST`, `MLENGINE`, `MLUI`) does not change.
+sends `setLog` from `mlDebug(true|false)` and at start-up when it is on: remembered
+on, or not set and this is a debug package (`ML_TRACE`). The dlog output (`MLHOST`, `MLENGINE`, `MLUI`) does not change.
 
 ## Events
 
