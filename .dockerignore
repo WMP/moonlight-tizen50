@@ -1,0 +1,5 @@
+# Build context for pkg/Dockerfile = repo root; send only what the image needs.
+*
+!fetch-tizen-sources.sh
+!fetch-backport-deps.sh
+!pkg/dotnet-host/MoonlightHost.csproj

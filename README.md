@@ -165,42 +165,52 @@ menu/launcher.
 
 ## Build (headless, Docker)
 
-Everything builds in a container. Heavy or device-specific inputs are
-**mounted**, never committed:
+Everything builds in one **self-contained image** (`pkg/Dockerfile`): Tizen Studio
+CLI + `sdb` (base `vitalets/docker-tizen-webos-sdk`), .NET SDK 8 with the host's
+NuGet packages, the Tizen 5.0 cross toolchain + sysroot (`/opt/tizen-deps`) and the
+crypto/http deps (`/opt/backport-deps`). A build downloads nothing; CI runs it with
+`--network none`. CI publishes the image to GitHub Container Registry
+(`.github/workflows/build-image.yml`):
 
-- `tizen-deps/` — cross toolchain + Tizen 5.0 sysroot/sources (`fetch-tizen-sources.sh`)
-- `tv-libs/` — `.so` libraries copied from **your** TV (never redistribute these)
+```
+ghcr.io/<owner>/moonlight-tizen-build:deps-<hash>   # hash of the inputs: pkg/image-tag.sh
+ghcr.io/<owner>/moonlight-tizen-build:latest
+```
 
-The build image is based on **`vitalets/docker-tizen-webos-sdk`** — the same
-headless Tizen CLI image the Jellyfin community installer uses (Tizen Studio CLI,
-`sdb`, a sample dev cert) plus a .NET SDK for the `.tpk` host.
+The one thing **not** in the image: `tv-libs/` — the `.so` libraries copied from
+**your** TV (Samsung's, never redistribute them). Mount them at
+`/opt/tizen-deps/tv-libs`.
 
 ```bash
-# 1. one-time: get moonlight-tizen (submodule) + toolchain/sysroot
+# 1. one-time: get the web UI + moonlight-common-c (submodule)
 git submodule update --init --depth 1 third_party/moonlight-tizen
-fetch-tizen-sources.sh ./tizen-deps
-# then provide your TV's /lib and /usr/lib under tizen-deps/tv-libs/
-# (your device's own files — used only locally, never redistributed)
 
-# 2. build the image
-docker build -t moonlight-tizen-build pkg
+# 2. get the image (private package: docker login ghcr.io first), or build it
+docker pull ghcr.io/<owner>/moonlight-tizen-build:latest
+#   docker build -f pkg/Dockerfile -t ghcr.io/<owner>/moonlight-tizen-build:latest .
 
-# 3. build the engine .so, the .NET host .tpk, and the web .wgt in the container
-#    BUILD_VARIANT=release (default) or debug (trace build) is read by all three scripts
-docker run --rm -v "$PWD":/work/repo \
-  moonlight-tizen-build bash -lc '
+# 3. build the engine .so, the .NET host .tpk, the web .wgt and the hybrid .wgt
+#    BUILD_VARIANT=release (default) or debug (trace build)
+docker run --rm --network none -v "$PWD":/work/repo \
+  -v /path/to/tv-libs:/opt/tizen-deps/tv-libs:ro \
+  ghcr.io/<owner>/moonlight-tizen-build:latest bash -lc '
     export BUILD_VARIANT=debug                   # omit for a normal release build
-    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps
-    mlclient/build-engine-so.sh                 # -> libmlengine.so
-    pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk
-    REPO=$REPO MLT=$MLT pkg/build-package.sh     # -> the web .wgt'
+    cd /work/repo; REPO=$PWD MLT=$PWD/third_party/moonlight-tizen
+    DEPS=/opt/tizen-deps BPD=/opt/backport-deps DEPSBUILD=/work/depsbuild
+    MLT=$MLT DEPS=$DEPS BPD=$BPD OUT=$DEPSBUILD ./build-deps-lib.sh
+    MLT=$MLT DEPS=$DEPS BPD=$BPD DEPSBUILD=$DEPSBUILD OUT=/work/engine mlclient/build-engine-so.sh
+    pkg/build-tpk.sh /work/engine/libmlengine.so | tee /tmp/tpk.log   # -> the .NET host .tpk
+    REPO=$REPO MLT=$MLT SIGN_PROFILE=dev pkg/build-package.sh || true  # -> the web .wgt
+    pkg/build-hybrid.sh "$(sed -n "s/^built: //p" /tmp/tpk.log)" pkg/out/ui /work/repo/pkg/out/Moonlight-hybrid.wgt'
 ```
+
+`.github/workflows/build-packages.yml` is the reference for the full sequence.
 
 ## Requirements
 
 - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
 - A GameStream host on the LAN (Sunshine / GeForce Experience / Wolf).
-- To build: Linux with Docker/podman, and the TV's `/lib` + `/usr/lib` (copied once).
+- To build: Linux with Docker/podman, the build image, and the TV's `/lib` + `/usr/lib` (copied once).
 
 ## Repository layout
 
