@@ -2,18 +2,14 @@
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], timers = [], now = 0, tid = 1;
-var domReady = null, remoteUp = false, hostDead = false, sentAt = 0, launches = 0, sent = [], listener = null, handled = [];
+var domReady = null, remoteUp = false, hostDead = false, sentAt = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
   ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
   application: {
-    launchAppControl: function (ctl, id, ok) {
-      launches++; assert.strictEqual(id, 'org.moonlight.host.app');
-      assert.strictEqual(ctl.operation, 'http://tizen.org/appcontrol/operation/default');
-      remoteUp = true; ok();
-    },
-    launch: function () { throw new Error('launch() must not be used when launchAppControl works'); }
+    launchAppControl: function () { throw new Error('the UI must never start the host'); },
+    launch: function () { throw new Error('the UI must never start the host'); }
   },
   messageport: {
     requestLocalMessagePort: function () { return { addMessagePortListener: function (f) { listener = f; } }; },
@@ -53,12 +49,11 @@ sandbox.window = win;
 var tests = [];
 function test(n, f) { tests.push([n, f]); }
 
-test('queue, launch once, send after connect', async function () {
+test('queue while host is down, send after it comes up', async function () {
   var p = win.sendMessage('makeCert', []);
-  assert.strictEqual(launches, 1);
   assert.strictEqual(sent.length, 0);
-  advance(250);                       // retry connects (host is up after launch)
-  assert.strictEqual(launches, 1);
+  remoteUp = true;                    // host started by the TV
+  advance(250);                       // retry connects
   assert.strictEqual(sent.length, 1);
   var f = fields(sent[0]);
   assert.strictEqual(f.cmd, 'makeCert');

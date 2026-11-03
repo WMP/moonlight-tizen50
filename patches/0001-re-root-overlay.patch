@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 2e1937b..1797059 100644
+index a84357a..3ea5ee4 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -38,9 +38,9 @@ index 2e1937b..1797059 100644
  (`.github/workflows/build-packages.yml`); download them from the
  [Releases](../../releases) page and install with
  **[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
-@@ -30,18 +38,24 @@ CI builds the packages on every release
-      a host from another package, so the host must be started by hand
-      (Apps2Samsung → *On the TV* → **Moonlight host** → *Run*).
+@@ -27,18 +35,24 @@ CI builds the packages on every release
+    only connects to it. After the first install, reboot the TV once or start the
+    host by hand (Apps2Samsung → *On the TV* → **Moonlight host** → *Run*).
  3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
 -   each package for that DUID, and installs it. Apps2Samsung re-signs per-DUID,
 -   which is what the TV accepts. No Samsung certificate to create by hand, no
@@ -54,10 +54,10 @@ index 2e1937b..1797059 100644
 +required** (the esplusplayer path runs under a `User::Pkg` SMACK label). Root is
 +only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
  
- > **Pair → hybrid:** uninstall the old host first (Apps2Samsung → *On the TV* →
- > the Moonlight entry with id `org.moonlight.host.app` → *Uninstall*). The hybrid
- > has the same host app id in another package, so the TV refuses it while the old
- > host package is installed. The UI keeps its data (same package `Moonlight5`).
+ > **Moving back from the hybrid package:** uninstall the hybrid Moonlight package
+ > first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
+ > `org.moonlight.host.app`, so the TV refuses the host `.tpk` while it is installed.
+ > Then install the two packages above.
  
 -> Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
 -> does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
@@ -69,7 +69,7 @@ index 2e1937b..1797059 100644
  
  ## Debug vs release packages
  
-@@ -131,38 +145,44 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
+@@ -128,38 +142,44 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
  
  ## Why this exists
  
@@ -134,7 +134,7 @@ index 2e1937b..1797059 100644
  
  ## Build (headless, Docker)
  
-@@ -207,6 +227,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
+@@ -203,6 +223,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
  
  `.github/workflows/build-packages.yml` is the reference for the full sequence.
  
@@ -168,7 +168,7 @@ index 2e1937b..1797059 100644
  ## Requirements
  
  - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
-@@ -216,25 +263,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
+@@ -212,25 +259,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
  ## Repository layout
  
  ```
@@ -210,7 +210,7 @@ index 2e1937b..1797059 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -245,5 +300,6 @@ device.
+@@ -241,5 +296,6 @@ device.
  
  ## Disclaimer
  

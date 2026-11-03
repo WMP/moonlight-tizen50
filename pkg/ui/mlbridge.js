@@ -1,17 +1,18 @@
 /* eslint-disable */
 /*
- * mlbridge.js - transport shim for the hybrid Moonlight Tizen 5.0 package.
+ * mlbridge.js - transport shim for the Moonlight Tizen 5.0 web UI.
  *
  * moonlight-tizen's UI (platform/messages.js) calls the native WASM module via
  * `Module.makeCert/httpInit/openUrl/pair/startStream/...`. On Tizen 5.0 there is
  * no WASM/EMSS; the native work runs in the .NET host service app
- * (org.moonlight.host.app), reachable over the "moonlight" message port. This
- * file replaces the Module-based transport with message-port calls, keeping
+ * (org.moonlight.host.app), reachable over the "moonlight" message port. The host
+ * (a separate .tpk) is started by the TV at boot; the UI only connects and retries.
+ * This file replaces the Module-based transport with message-port calls, keeping
  * messages.js's sendMessage() contract. Wire format: see pkg/ui/PROTOCOL.md.
  *
  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
- * and sendMessage. Note: needs validation on a device (tizen.messageport and
- * application.launch behaviour); host-side tests only cover tests/mlbridge_test.js.
+ * and sendMessage. Note: needs validation on a device (tizen.messageport
+ * behaviour); host-side tests only cover tests/mlbridge_test.js.
  */
 (function () {
   var ENGINE_APPID = 'org.moonlight.host.app';
@@ -66,30 +67,8 @@
   var localPort = null, remotePort = null, nextId = 1;
   var pending = {};   // id -> {resolve, reject, timer, msg, cmd, timeoutMs, cancelOnTimeout}
   var queue = [];     // ids waiting for the remote port, in send order
-  var misses = 0, LAUNCH_EVERY = 8, retryTimer = null, retryDelay = 250;
+  var retryTimer = null, retryDelay = 250;
   var DEFAULT_TIMEOUT = 15000, PAIR_TIMEOUT = 120000, RETRY_MAX = 4000;
-
-  function errText(e) { return e ? (e.name || '') + ' ' + (e.message || e) : '?'; }
-
-  // The host is a service app. application.launch() does not start it on Tizen 5.0
-  // TVs, so ask with an explicit app control first (the way Samsung's guides start
-  // a background service) and fall back to launch(). Results are logged (MLUI).
-  function startHost() {
-    function ok(how) { return function () { console.log('[mlbridge] host start requested (' + how + ')'); }; }
-    function viaLaunch(why) {
-      console.warn('[mlbridge] launchAppControl failed: ' + why + '; trying application.launch');
-      try { tizen.application.launch(ENGINE_APPID, ok('launch'),
-              function (e) { console.error('[mlbridge] application.launch failed: ' + errText(e)); }); }
-      catch (e) { console.error('[mlbridge] application.launch threw: ' + errText(e)); }
-    }
-    trace('startHost', ENGINE_APPID);
-    try {
-      var ctl = new tizen.ApplicationControl('http://tizen.org/appcontrol/operation/default', null, null, null,
-                  [new tizen.ApplicationControlData('caller', ['Moonlight5.ui'])]);
-      tizen.application.launchAppControl(ctl, ENGINE_APPID, ok('appcontrol'),
-                                         function (e) { viaLaunch(errText(e)); }, null);
-    } catch (e) { viaLaunch('threw ' + errText(e)); }
-  }
 
   function ensurePorts() {
     if (localPort && remotePort) return true;
@@ -110,9 +89,6 @@
       return true;
     } catch (e) {
       trace('ensurePorts: remote port missing', e && (e.name || e.message || e));
-      // Start the host on the first miss, then again every LAUNCH_EVERY misses
-      // (about every 30 s at the 4 s backoff) in case a launch was lost.
-      if (misses++ % LAUNCH_EVERY === 0) startHost();
       return false;
     }
   }
@@ -304,7 +280,7 @@
   // Some UI code calls Module.<fn> directly (not via sendMessage), notably
   // Module.sendKeyboardEvent during streaming. Provide a shim so the UI needs no
   // WASM module. HEAPF* (Emscripten perf-stats heap access) is stubbed - the
-  // in-stream stats overlay that reads WASM memory is not available in hybrid.
+  // in-stream stats overlay that reads WASM memory is not available here.
   window.Module = {
     sendKeyboardEvent: function (keyCode, keyAction, modifiers) {
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });

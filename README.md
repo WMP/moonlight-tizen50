@@ -29,14 +29,11 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 
 1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
    reboot).
-2. Download the package for your TV from Releases. Two forms, install ONE:
-   - **Hybrid (one file, being tested):** `Moonlight-*-hybrid.wgt` — the web UI and
-     the native engine host in one package. The UI starts the host by itself.
-     It is not signed; Apps2Samsung signs it (*Install → Custom WGT*).
-   - **Pair (as before):** `org.moonlight.host-*.tpk` (the native engine host,
-     Tizen 4.0–5.5) and `Moonlight-*.wgt` (the web UI). On Tizen the UI cannot start
-     a host from another package, so the host must be started by hand
-     (Apps2Samsung → *On the TV* → **Moonlight host** → *Run*).
+2. Download the packages for your TV from Releases and install both:
+   `org.moonlight.host-*.tpk` (the native engine host, Tizen 4.0–5.5) and
+   `Moonlight-*.wgt` (the web UI). The host starts with the TV (on boot); the UI
+   only connects to it. After the first install, reboot the TV once or start the
+   host by hand (Apps2Samsung → *On the TV* → **Moonlight host** → *Run*).
 3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
    each package for that DUID, and installs it. Packages are shipped signed only
    with a sample dev cert on purpose — Apps2Samsung re-signs per-DUID, which is
@@ -47,10 +44,10 @@ The hardware video path runs from this sandboxed, dev-signed app — **root is n
 required** (the esplusplayer path runs under a `User::Pkg` SMACK label). Root is
 only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
 
-> **Pair → hybrid:** uninstall the old host first (Apps2Samsung → *On the TV* →
-> the Moonlight entry with id `org.moonlight.host.app` → *Uninstall*). The hybrid
-> has the same host app id in another package, so the TV refuses it while the old
-> host package is installed. The UI keeps its data (same package `Moonlight5`).
+> **Moving back from the hybrid package:** uninstall the hybrid Moonlight package
+> first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
+> `org.moonlight.host.app`, so the TV refuses the host `.tpk` while it is installed.
+> Then install the two packages above.
 
 > Developer alternative (no Apps2Samsung): `pkg/install-on-tv.sh <TV_IP>
 > <package> [cert_password]` does `sdb connect` + `tizen install`, re-signing with
@@ -61,7 +58,7 @@ only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
 
 Each package exists twice:
 
-- **Normal** (`Moonlight-*-hybrid.wgt`, or `Moonlight-*.wgt` + `org.moonlight.host-*.tpk`):
+- **Normal** (`Moonlight-*.wgt` + `org.moonlight.host-*.tpk`):
   for daily use.
 - **Debug** (the same names ending in `-debug`): download these to report a problem.
   They are debug builds (no optimisation, symbols kept) with verbose logs from the
@@ -210,7 +207,7 @@ git submodule update --init --depth 1 third_party/moonlight-tizen
 docker pull ghcr.io/<owner>/moonlight-tizen-build:latest
 #   docker build -f pkg/Dockerfile -t ghcr.io/<owner>/moonlight-tizen-build:latest .
 
-# 3. build the engine .so, the .NET host .tpk, the web .wgt and the hybrid .wgt
+# 3. build the engine .so, the .NET host .tpk, and the web .wgt
 #    BUILD_VARIANT=release (default) or debug (trace build)
 docker run --rm --network none -v "$PWD":/work/repo \
   -v /path/to/tv-libs:/opt/tizen-deps/tv-libs:ro \
@@ -221,8 +218,7 @@ docker run --rm --network none -v "$PWD":/work/repo \
     MLT=$MLT DEPS=$DEPS BPD=$BPD OUT=$DEPSBUILD ./build-deps-lib.sh
     MLT=$MLT DEPS=$DEPS BPD=$BPD DEPSBUILD=$DEPSBUILD OUT=/work/engine mlclient/build-engine-so.sh
     pkg/build-tpk.sh /work/engine/libmlengine.so | tee /tmp/tpk.log   # -> the .NET host .tpk
-    REPO=$REPO MLT=$MLT SIGN_PROFILE=dev pkg/build-package.sh || true  # -> the web .wgt
-    pkg/build-hybrid.sh "$(sed -n "s/^built: //p" /tmp/tpk.log)" pkg/out/ui /work/repo/pkg/out/Moonlight-hybrid.wgt'
+    REPO=$REPO MLT=$MLT SIGN_PROFILE=dev pkg/build-package.sh || true  # -> the web .wgt'
 ```
 
 `.github/workflows/build-packages.yml` is the reference for the full sequence.
