@@ -196,6 +196,10 @@
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
     if (m.total !== undefined) { m = join(m); if (!m) return; }
     trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
+    if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug)
+      console.log('[' + (m.tag || 'host') + '] ' + m.log);
+      return;
+    }
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
@@ -321,6 +325,18 @@
     };
   }
 
+  // On-demand host/engine log in this console (for example Apps2Samsung's debug
+  // console): mlDebug(true) / mlDebug(false). Remembered across restarts. The dlog
+  // tags (MLHOST, MLENGINE, MLUI) are written as before either way.
+  var DEBUG_KEY = 'mlDebug';
+  function debugStored() { try { return localStorage.getItem(DEBUG_KEY) === '1'; } catch (e) { return false; } }
+  window.mlDebug = function (on) {
+    on = !!on;
+    try { localStorage.setItem(DEBUG_KEY, on ? '1' : '0'); } catch (e) {}
+    call('setLog', { on: String(on) }).then(null, function (e) { console.warn('[mlbridge] setLog failed:', e); });
+    return 'host/engine log in this console: ' + (on ? 'on' : 'off');
+  };
+
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -337,6 +353,7 @@
       window.common.domContentLoaded = function () {
         try { if (window.common.attachDefaultListeners) window.common.attachDefaultListeners(); } catch (e) {}
         connect();   // start/connect the host service (commands queue until connected)
+        if (debugStored()) window.mlDebug(true);
         trace('boot: moduleDidLoad found =', typeof window.moduleDidLoad === 'function');
         if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad();
       };

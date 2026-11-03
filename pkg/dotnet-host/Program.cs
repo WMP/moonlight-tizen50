@@ -29,10 +29,52 @@ using Tizen.Applications;
 namespace MoonlightHost
 {
     // Verbose host trace: compiled out of release builds ([Conditional] drops the calls).
+    // Host log: dlog tag MLHOST as before, plus the on-demand forward to the UI console.
     internal static class Log
     {
         [System.Diagnostics.Conditional("DEBUG")]
-        public static void Trace(string m) => Tizen.Log.Debug("MLHOST", m);
+        public static void Trace(string m) { Tizen.Log.Debug("MLHOST", m); UiLog.Add("MLHOST", m); }
+        public static void Info(string m)  { Tizen.Log.Info("MLHOST", m);  UiLog.Add("MLHOST", m); }
+        public static void Error(string m) { Tizen.Log.Error("MLHOST", m); UiLog.Add("MLHOST", "ERROR " + m); }
+    }
+
+    // On-demand forward of host/engine log lines to the UI console (mlbridge.js prints
+    // them), so one web console (for example Apps2Samsung's) shows every layer. Off by
+    // default; the UI turns it on with the setLog command. The host keeps its last
+    // lines so the start-up (engine load) is visible when it is turned on later.
+    internal static class UiLog
+    {
+        private const int Keep = 100, MaxLine = 1000;   // one message port message is ~4 KB max
+        private static readonly Queue<KeyValuePair<string, string>> s_recent = new Queue<KeyValuePair<string, string>>();
+        private static volatile bool s_on;
+        private static readonly Engine.LogCbDelegate s_engineCb = OnEngineLine;   // kept alive for native code
+
+        public static void Add(string tag, string line)
+        {
+            if (line.Length > MaxLine) line = line.Substring(0, MaxLine) + " [cut]";
+            lock (s_recent)
+            {
+                if (tag == "MLHOST") { s_recent.Enqueue(new KeyValuePair<string, string>(tag, line)); if (s_recent.Count > Keep) s_recent.Dequeue(); }
+                if (s_on) CommandPort.SendLog(tag, line);
+            }
+        }
+
+        public static void Enable(bool on)
+        {
+            lock (s_recent)
+            {
+                s_on = on;
+                if (on) foreach (var kv in s_recent) CommandPort.SendLog(kv.Key, kv.Value);
+            }
+            try { if (Engine.SetLogCb != null) Engine.SetLogCb(on ? s_engineCb : null); }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "engine log forward failed: " + ex.Message); }
+            Tizen.Log.Info("MLHOST", "UI log forward " + (on ? "on" : "off"));
+        }
+
+        private static void OnEngineLine(IntPtr line)
+        {
+            try { Add("MLENGINE", Marshal.PtrToStringAnsi(line) ?? ""); } catch { }   // never throw into native code
+        }
     }
 
     // Loads a shared object from memory (lets downloaded engine updates apply
@@ -138,6 +180,9 @@ namespace MoonlightHost
         public static StartSessionDelegate  StartSession;
         public static SendKeyDelegate       SendKey;
         public static FreeDelegate          Free;
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void LogCbDelegate(IntPtr line);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetLogCbDelegate(LogCbDelegate cb);
+        public static SetLogCbDelegate      SetLogCb;   // null with an engine that lacks it
         public static volatile bool         Loaded;
 
         public static void Load(string soPath)
@@ -157,6 +202,8 @@ namespace MoonlightHost
             StartSession  = MemLoader.GetDelegate<StartSessionDelegate>(h,  "ml_engine_start_session");
             SendKey       = MemLoader.GetDelegate<SendKeyDelegate>(h,       "ml_engine_send_key");
             Free          = MemLoader.GetDelegate<FreeDelegate>(h,          "ml_engine_free");
+            try { SetLogCb = MemLoader.GetDelegate<SetLogCbDelegate>(h, "ml_engine_set_log_cb"); }
+            catch (EntryPointNotFoundException) { SetLogCb = null; }
             Loaded = true;
         }
     }
@@ -193,7 +240,7 @@ namespace MoonlightHost
                     SendEvent("streamTerminated: 0");
                 }
             }
-            catch (Exception ex) { Tizen.Log.Error("MLHOST", "monitor failed: " + ex.Message); }
+            catch (Exception ex) { Log.Error("monitor failed: " + ex.Message); }
         }
 
         private static string Item(Tizen.Applications.Bundle b, string k)
@@ -209,13 +256,13 @@ namespace MoonlightHost
                 if (!string.IsNullOrEmpty(port)) s_uiPort = port;
                 string id = Item(b, "id");
                 string cmd = Item(b, "cmd");
-                if (id == null) { Tizen.Log.Error("MLHOST", "command without id ignored: " + cmd); return; }
+                if (id == null) { Log.Error("command without id ignored: " + cmd); return; }
                 if (Item(b, "total") != null) { b = Join(id, b); if (b == null) return; }   // not all parts yet
                 Log.Trace("cmd " + cmd + " id=" + id);
                 string replyApp = s_uiApp, replyPort = s_uiPort;
                 Task.Run(() => Run(b, cmd ?? "", id, replyApp, replyPort));
             }
-            catch (Exception ex) { Tizen.Log.Error("MLHOST", "command receive failed: " + ex.Message); }
+            catch (Exception ex) { Log.Error("command receive failed: " + ex.Message); }
         }
 
         private static void Run(Tizen.Applications.Bundle b, string cmd, string id, string app, string port)
@@ -224,7 +271,7 @@ namespace MoonlightHost
             var reply = new Dictionary<string, object>();
             string err;
             try { err = Execute(b, cmd, reply); }
-            catch (Exception ex) { Tizen.Log.Error("MLHOST", "cmd " + cmd + " failed: " + ex); err = "exception"; }
+            catch (Exception ex) { Log.Error("cmd " + cmd + " failed: " + ex); err = "exception"; }
             if (err != null) { reply.Clear(); reply["error"] = err; }   // drop partial results
             SendReply(id, reply, app, port);
             Log.Trace("reply " + id + (err == null ? " ok " : " err ") + sw.ElapsedMilliseconds + "ms");
@@ -239,7 +286,7 @@ namespace MoonlightHost
         private static bool Send(Tizen.Applications.Bundle msg, string app, string port)
         {
             try { s_port.Send(msg, app, port); return true; }
-            catch (Exception ex) { Tizen.Log.Error("MLHOST", "send failed: " + ex.Message); return false; }
+            catch (Exception ex) { Log.Error("send failed: " + ex.Message); return false; }
         }
 
         // A message port message is limited to ~4 KB, so a large message travels as
@@ -315,7 +362,7 @@ namespace MoonlightHost
             if (!int.TryParse(Item(b, "seq"), out seq) || !int.TryParse(Item(b, "total"), out total) ||
                 seq < 0 || seq >= total || Item(b, "field") == null)
             {
-                Tizen.Log.Error("MLHOST", "bad command part for id=" + id);
+                Log.Error("bad command part for id=" + id);
                 return null;
             }
             Partial a;
@@ -330,7 +377,7 @@ namespace MoonlightHost
             for (int i = 0; i < a.Total; i++)
             {
                 KeyValuePair<string, string> pt;
-                if (!a.Seqs.TryGetValue(i, out pt)) { Tizen.Log.Error("MLHOST", "command part missing for id=" + id); return null; }
+                if (!a.Seqs.TryGetValue(i, out pt)) { Log.Error("command part missing for id=" + id); return null; }
                 StringBuilder sb;
                 if (!fieldsJoined.TryGetValue(pt.Key, out sb)) { sb = new StringBuilder(); fieldsJoined[pt.Key] = sb; }
                 sb.Append(pt.Value);
@@ -341,6 +388,20 @@ namespace MoonlightHost
             foreach (var kv in fieldsJoined) joined.AddItem(kv.Key, kv.Value.ToString());
             Log.Trace("joined id=" + id + " parts=" + a.Total);
             return joined;
+        }
+
+        // Log forward: errors go straight to dlog (never back through Log, no loop).
+        public static void SendLog(string tag, string line)
+        {
+            if (s_port == null) return;
+            try
+            {
+                var m = new Tizen.Applications.Bundle();
+                m.AddItem("log", line);
+                m.AddItem("tag", tag);
+                s_port.Send(m, s_uiApp, s_uiPort);
+            }
+            catch (Exception ex) { Tizen.Log.Error("MLHOST", "log forward send failed: " + ex.Message); }
         }
 
         private static void SendEvent(string ev)
@@ -363,6 +424,7 @@ namespace MoonlightHost
         // Returns null on success (result fields in r) or the error string. Never logs secrets.
         private static string Execute(Tizen.Applications.Bundle b, string cmd, Dictionary<string, object> r)
         {
+            if (cmd == "setLog") { UiLog.Enable(Item(b, "on") == "true"); return null; }   // works without the engine too
             if (!Engine.Loaded) return "engine not loaded";
             switch (cmd)
             {
@@ -472,7 +534,7 @@ namespace MoonlightHost
             base.OnCreate();
 #if DEBUG
             try { StartUiLog(); }
-            catch (Exception e) { Tizen.Log.Error("MLHOST", "ui log listener failed: " + e); }
+            catch (Exception e) { Log.Error("ui log listener failed: " + e); }
 #endif
             Log.Trace("OnCreate start");
             try
@@ -483,15 +545,15 @@ namespace MoonlightHost
                                              "res", "lib", "libmlengine.so");
                 Engine.Load(soPath);
                 // No session starts here: the web UI drives the engine over the message port.
-                Tizen.Log.Info("MLHOST", "engine loaded from memory: " + soPath);
+                Log.Info("engine loaded from memory: " + soPath);
             }
             catch (Exception e)
             {
-                Tizen.Log.Error("MLHOST", "engine load failed: " + e);
+                Log.Error("engine load failed: " + e);
             }
             // Also after a failed load: every command then answers "engine not loaded".
             try { CommandPort.Start(); }
-            catch (Exception e) { Tizen.Log.Error("MLHOST", "command port failed: " + e); }
+            catch (Exception e) { Log.Error("command port failed: " + e); }
         }
 
         protected override void OnTerminate()
