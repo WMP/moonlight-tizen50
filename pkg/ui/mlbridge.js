@@ -4,9 +4,9 @@
  *
  * moonlight-tizen's UI (platform/messages.js) calls the native WASM module via
  * `Module.makeCert/httpInit/openUrl/pair/startStream/...`. On Tizen 5.0 there is
- * no WASM/EMSS; the native work runs in the .NET host service app
- * (org.moonlight.host.app), reachable over the "moonlight" message port. The host
- * (a separate .tpk) is started by the TV at boot; the UI only connects and retries.
+ * no WASM/EMSS; the native work runs in the .NET host
+ * (org.moonlight.host.app), reachable over the "moonlight" message port. The host is
+ * a no-display UI app in its own .tpk: the UI starts it and connects to its port.
  * This file replaces the Module-based transport with message-port calls, keeping
  * messages.js's sendMessage() contract. Wire format: see pkg/ui/PROTOCOL.md.
  *
@@ -88,6 +88,16 @@
     } catch (e) { console.warn(what + ', running state unknown (' + (e && (e.name || e.message || e)) + ')'); }
   }
 
+  // Start the host (a no-display UI app) on the first miss, then every LAUNCH_EVERY-th.
+  var LAUNCH_EVERY = 8, misses = 0;
+  function startHost() {
+    try {
+      tizen.application.launch(ENGINE_APPID,
+        function () { console.log('[mlbridge] host start requested'); },
+        function (e) { console.error('[mlbridge] host start failed: ' + (e && (e.name || e.message || e))); });
+    } catch (e) { console.error('[mlbridge] host start failed: ' + (e && (e.name || e.message || e))); }
+  }
+
   function ensurePorts() {
     if (localPort && remotePort) return true;
     trace('ensurePorts: connecting', ENGINE_APPID, ENGINE_PORT);
@@ -103,11 +113,13 @@
     }
     try {
       remotePort = tizen.messageport.requestRemoteMessagePort(ENGINE_APPID, ENGINE_PORT);
+      misses = 0;   // connected: a later loss starts the host again at once
       trace('ensurePorts: ok');
       return true;
     } catch (e) {
       trace('ensurePorts: remote port missing', e && (e.name || e.message || e));
       reportHost();
+      if (misses++ % LAUNCH_EVERY === 0) startHost();
       return false;
     }
   }
@@ -368,7 +380,7 @@
     if (window.common && typeof window.common.domContentLoaded === 'function') {
       window.common.domContentLoaded = function () {
         try { if (window.common.attachDefaultListeners) window.common.attachDefaultListeners(); } catch (e) {}
-        connect();   // start/connect the host service (commands queue until connected)
+        connect();   // start/connect the host (commands queue until connected)
         if (debugStored()) window.mlDebug(true);
         trace('boot: moduleDidLoad found =', typeof window.moduleDidLoad === 'function');
         if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad();
