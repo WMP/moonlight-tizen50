@@ -70,6 +70,24 @@
   var retryTimer = null, retryDelay = 250;
   var DEFAULT_TIMEOUT = 15000, PAIR_TIMEOUT = 120000, RETRY_MAX = 4000;
 
+  // Once, on the first miss: say in the console whether the host is installed and
+  // running, so a UI log alone tells "not installed" from "installed, not started".
+  var hostReported = false;
+  function reportHost() {
+    if (hostReported) return;
+    hostReported = true;
+    var info;
+    try { info = tizen.application.getAppInfo(ENGINE_APPID); }
+    catch (e) { console.warn('[mlbridge] host ' + ENGINE_APPID + ' is not installed (' + (e && (e.name || e.message || e)) + ')'); return; }
+    var what = '[mlbridge] host ' + ENGINE_APPID + ' installed (version ' + info.version + ', package ' + info.packageId + ')';
+    try {
+      tizen.application.getAppsContext(function (ctx) {
+        var up = ctx.some(function (c) { return c.appId === ENGINE_APPID; });
+        console.warn(what + (up ? ', running, but its port is not open' : ', not running'));
+      }, function (e) { console.warn(what + ', running state unknown (' + (e && (e.name || e.message || e)) + ')'); });
+    } catch (e) { console.warn(what + ', running state unknown (' + (e && (e.name || e.message || e)) + ')'); }
+  }
+
   function ensurePorts() {
     if (localPort && remotePort) return true;
     trace('ensurePorts: connecting', ENGINE_APPID, ENGINE_PORT);
@@ -89,6 +107,7 @@
       return true;
     } catch (e) {
       trace('ensurePorts: remote port missing', e && (e.name || e.message || e));
+      reportHost();
       return false;
     }
   }
