@@ -74,6 +74,17 @@ buffered (up to 500) and not shown in `dlog`. For the web inspector run
 `sdb forward tcp:<port> tcp:<port>` with the printed port, then open `chrome://inspect`
 in Chrome.
 
+Without a PC, a web console on the phone (for example the debug console of the
+Apps2Samsung Android app, which restarts the app when it attaches) shows the UI
+console. To see the host and engine log there too, type this in that console:
+
+```js
+mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
+mlDebug(false)   // turn it off again
+```
+
+Engine lines exist only in the debug packages. The dlog output does not change.
+
 ## Why this exists
 
 [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) is a
