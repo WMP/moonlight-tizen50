@@ -80,15 +80,16 @@ Android). It shows the web UI console, and on request the host and engine log to
    *Moonlight host*, older builds show it as *Moonlight* too) has no console.
 2. **⋯ → Debug**. The UI restarts on the TV in debug mode and the console opens
    (desktop: Chrome `chrome://inspect`; Android: the app's own console).
-3. To get the host and engine log in the same console, type:
+3. **Debug packages:** the host and engine log appear in the same console by
+   themselves (`[MLHOST]` / `[MLENGINE]`). On start the host first sends its last
+   100 lines (start-up, engine load), then new lines as they come.
+   **Normal packages** (host lines only, the engine has no trace there), or to turn it
+   off or on again; the choice is remembered:
 
    ```js
-   mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
-   mlDebug(false)   // turn it off again
+   mlDebug(true)    // host (+ engine) lines in this console
+   mlDebug(false)   // turn it off
    ```
-
-   After `mlDebug(true)` the host first sends its last 100 lines (start-up, engine
-   load), then new lines as they come. Engine lines exist only in the debug packages.
 4. Do what fails (add a host, pair, start a stream), then save the console to a
    file (desktop Chrome: right-click in the console → *Save as…*; Android: share).
 
@@ -104,8 +105,8 @@ The console also shows the base UI's own lines (`[index.js, …]`, `[utils.js, �
 |--------|--------|------|
 | `[mlbridge]` | UI ↔ host bridge (`pkg/ui/mlbridge.js`): commands, replies, host start | always; details in debug packages |
 | `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`) | debug packages |
-| `[MLHOST]` | .NET host | after `mlDebug(true)` |
-| `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | after `mlDebug(true)`, debug packages |
+| `[MLHOST]` | .NET host | debug packages; normal ones after `mlDebug(true)` |
+| `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | debug packages |
 
 The `App Version` line names the build: `Moonlight v<ver> (tizen50-core <variant>
 <commit>, UI <base UI version>)`. Check it first: it tells which package was tested.
@@ -185,51 +186,46 @@ is the menu/launcher.
 
 ## Build (headless, Docker)
 
-Everything builds in a container — no GUI, no host Tizen install needed. Heavy or
-device-specific inputs are **mounted**, never committed:
+Everything builds in one **self-contained image** (`pkg/Dockerfile`): Tizen Studio
+CLI + `sdb` (base `vitalets/docker-tizen-webos-sdk`), .NET SDK 8 with the host's
+NuGet packages, the Tizen 5.0 cross toolchain + sysroot (`/opt/tizen-deps`) and the
+crypto/http deps (`/opt/backport-deps`). A build downloads nothing; CI runs it with
+`--network none`. CI publishes the image to GitHub Container Registry
+(`.github/workflows/build-image.yml`):
 
-- `tizen-deps/` — cross toolchain + Tizen 5.0 sysroot/sources (`fetch-tizen-sources.sh`)
-- `tv-libs/` — `.so` libraries copied from **your** TV (never redistribute these)
-
-The build image is based on **`vitalets/docker-tizen-webos-sdk`** — the same
-headless Tizen CLI image the Jellyfin community installer uses. It ships the Tizen
-Studio CLI (installed non-interactively via the web-cli installer), `sdb`, and a
-sample dev author cert + `profiles.xml`, so there is no GUI installer and no
-Tizen-Studio install step of our own.
-
-```bash
-# 1. one-time: fetch toolchain + Tizen 5.0 sources, copy the TV's libraries
-fetch-tizen-sources.sh ./tizen-deps
-ssh root@<TV> 'cd / && tar cf - lib usr/lib' | tar xf - -C tizen-deps/tv-libs
-
-# 2. build the image (vitalets base + a few build tools)
-docker build -t moonlight-tizen-build pkg
-
-# 3. build the engine .so + the web .wgt inside the container
-#    (first: git submodule update --init --depth 1 third_party/moonlight-tizen)
-docker run --rm -v "$PWD":/work/repo \
-  moonlight-tizen-build bash -lc '
-    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps \
-      /work/repo/pkg/build-package.sh'
+```
+ghcr.io/<owner>/moonlight-tizen-build:deps-<hash>   # hash of the inputs: pkg/image-tag.sh
+ghcr.io/<owner>/moonlight-tizen-build:latest
 ```
 
-Then install on the TV exactly like Jellyfin — `sdb` + `tizen install`, in
-Developer Mode:
+The one thing **not** in the image: `tv-libs/` — the `.so` libraries copied from
+**your** TV (Samsung's, never redistribute them). Mount them at
+`/opt/tizen-deps/tv-libs`.
 
 ```bash
-docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
-  /work/repo/pkg/install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
+# 1. one-time: get the web UI + moonlight-common-c (submodule)
+git submodule update --init --depth 1 third_party/moonlight-tizen
+
+# 2. get the image (private package: docker login ghcr.io first), or build it
+docker pull ghcr.io/<owner>/moonlight-tizen-build:latest
+#   docker build -f pkg/Dockerfile -t ghcr.io/<owner>/moonlight-tizen-build:latest .
+
+# 3. build the engine .so, the .NET host .tpk, the web .wgt and the hybrid .wgt
+#    BUILD_VARIANT=release (default) or debug (trace build)
+docker run --rm --network none -v "$PWD":/work/repo \
+  -v /path/to/tv-libs:/opt/tizen-deps/tv-libs:ro \
+  ghcr.io/<owner>/moonlight-tizen-build:latest bash -lc '
+    export BUILD_VARIANT=debug                   # omit for a normal release build
+    cd /work/repo; REPO=$PWD MLT=$PWD/third_party/moonlight-tizen
+    DEPS=/opt/tizen-deps BPD=/opt/backport-deps DEPSBUILD=/work/depsbuild
+    MLT=$MLT DEPS=$DEPS BPD=$BPD OUT=$DEPSBUILD ./build-deps-lib.sh
+    MLT=$MLT DEPS=$DEPS BPD=$BPD DEPSBUILD=$DEPSBUILD OUT=/work/engine mlclient/build-engine-so.sh
+    pkg/build-tpk.sh /work/engine/libmlengine.so | tee /tmp/tpk.log   # -> the .NET host .tpk
+    REPO=$REPO MLT=$MLT SIGN_PROFILE=dev pkg/build-package.sh || true  # -> the web .wgt
+    pkg/build-hybrid.sh "$(sed -n "s/^built: //p" /tmp/tpk.log)" pkg/out/ui /work/repo/pkg/out/Moonlight-hybrid.wgt'
 ```
 
-> **Packaging status.** The web `.wgt` builds, signs and installs headless on the
-> vitalets image (the Tizen-Studio-install problem is gone). The native engine ships
-> as `libmlengine.so` driven by a thin exe (root path) or a **.NET host `.tpk`**
-> (no-root dev-cert path — see `docs/DEV-CERT-PATH.md`). The `.tpk` uses the `tizen40`
-> TFM, built with a plain .NET SDK + the `Tizen.NET.Sdk` NuGet (NO `dotnet workload
-> install tizen`); the vitalets Tizen CLI does the packaging/signing. End users
-> install with Apps2Samsung (per-DUID signing); developers can use `install-on-tv.sh`
-> with a Samsung DUID cert, since recent TVs reject the default Tizen cert
-> ("Invalid certificate chain").
+`.github/workflows/build-packages.yml` is the reference for the full sequence.
 
 ## Releasing
 
@@ -262,7 +258,7 @@ Actions to create and approve pull requests*.
 
 - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
 - A GameStream host on the LAN (Sunshine / GeForce Experience / Wolf).
-- To build: Linux with `podman`, and the TV's `/lib` + `/usr/lib` (copied once).
+- To build: Linux with Docker/podman, the build image, and the TV's `/lib` + `/usr/lib` (copied once).
 
 ## Repository layout
 
