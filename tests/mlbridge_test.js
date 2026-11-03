@@ -1,7 +1,7 @@
 // Host self-test for pkg/ui/mlbridge.js: node tests/mlbridge_test.js
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
-var logs = [], timers = [], now = 0, tid = 1;
+var logs = [], warns = [], timers = [], now = 0, tid = 1;
 var domReady = null, remoteUp = false, hostDead = false, sentAt = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
@@ -9,7 +9,9 @@ var tizen = {
   ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
   application: {
     launchAppControl: function () { throw new Error('the UI must never start the host'); },
-    launch: function () { throw new Error('the UI must never start the host'); }
+    launch: function () { throw new Error('the UI must never start the host'); },
+    getAppInfo: function (id) { return { id: id, version: '9.9.9', packageId: 'org.moonlight.host' }; },
+    getAppsContext: function (ok) { ok([{ appId: 'Moonlight5.ui' }]); }
   },
   messageport: {
     requestLocalMessagePort: function () { return { addMessagePortListener: function (f) { listener = f; } }; },
@@ -23,7 +25,7 @@ var sandbox = {
   window: win, tizen: tizen, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
   localStorage: { _d: {}, getItem: function (k) { return this._d[k] === undefined ? null : this._d[k]; }, setItem: function (k, v) { this._d[k] = String(v); } },
   document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') domReady = f; } },
-  console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () {}, error: function () {} },
+  console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () { warns.push([].join.call(arguments, ' ')); }, error: function () {} },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
   clearTimeout: function (id) { timers = timers.filter(function (t) { return t.id !== id; }); }
 };
@@ -52,8 +54,10 @@ function test(n, f) { tests.push([n, f]); }
 test('queue while host is down, send after it comes up', async function () {
   var p = win.sendMessage('makeCert', []);
   assert.strictEqual(sent.length, 0);
+  advance(250);                       // a second miss must not report again
+  assert.deepStrictEqual(warns, ['[mlbridge] host org.moonlight.host.app installed (version 9.9.9, package org.moonlight.host), not running']);
   remoteUp = true;                    // host started by the TV
-  advance(250);                       // retry connects
+  advance(500);                       // next retry (backoff doubled) connects
   assert.strictEqual(sent.length, 1);
   var f = fields(sent[0]);
   assert.strictEqual(f.cmd, 'makeCert');
