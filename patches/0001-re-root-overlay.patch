@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 72cc06d..f20f602 100644
+index 2e1937b..1797059 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -69,7 +69,7 @@ index 72cc06d..f20f602 100644
  
  ## Debug vs release packages
  
-@@ -130,100 +144,156 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
+@@ -131,38 +145,44 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
  
  ## Why this exists
  
@@ -134,68 +134,10 @@ index 72cc06d..f20f602 100644
  
  ## Build (headless, Docker)
  
--Everything builds in a container. Heavy or device-specific inputs are
--**mounted**, never committed:
-+Everything builds in a container — no GUI, no host Tizen install needed. Heavy or
-+device-specific inputs are **mounted**, never committed:
+@@ -207,6 +227,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
  
- - `tizen-deps/` — cross toolchain + Tizen 5.0 sysroot/sources (`fetch-tizen-sources.sh`)
- - `tv-libs/` — `.so` libraries copied from **your** TV (never redistribute these)
+ `.github/workflows/build-packages.yml` is the reference for the full sequence.
  
- The build image is based on **`vitalets/docker-tizen-webos-sdk`** — the same
--headless Tizen CLI image the Jellyfin community installer uses (Tizen Studio CLI,
--`sdb`, a sample dev cert) plus a .NET SDK for the `.tpk` host.
-+headless Tizen CLI image the Jellyfin community installer uses. It ships the Tizen
-+Studio CLI (installed non-interactively via the web-cli installer), `sdb`, and a
-+sample dev author cert + `profiles.xml`, so there is no GUI installer and no
-+Tizen-Studio install step of our own.
- 
- ```bash
--# 1. one-time: get moonlight-tizen (submodule) + toolchain/sysroot
--git submodule update --init --depth 1 third_party/moonlight-tizen
-+# 1. one-time: fetch toolchain + Tizen 5.0 sources, copy the TV's libraries
- fetch-tizen-sources.sh ./tizen-deps
--# then provide your TV's /lib and /usr/lib under tizen-deps/tv-libs/
--# (your device's own files — used only locally, never redistributed)
-+ssh root@<TV> 'cd / && tar cf - lib usr/lib' | tar xf - -C tizen-deps/tv-libs
- 
--# 2. build the image
-+# 2. build the image (vitalets base + a few build tools)
- docker build -t moonlight-tizen-build pkg
- 
--# 3. build the engine .so, the .NET host .tpk, and the web .wgt in the container
--#    BUILD_VARIANT=release (default) or debug (trace build) is read by all three scripts
-+# 3. build the engine .so + the web .wgt inside the container
-+#    (first: git submodule update --init --depth 1 third_party/moonlight-tizen)
- docker run --rm -v "$PWD":/work/repo \
-   moonlight-tizen-build bash -lc '
--    export BUILD_VARIANT=debug                   # omit for a normal release build
--    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps
--    mlclient/build-engine-so.sh                 # -> libmlengine.so
--    pkg/build-tpk.sh /work/engine/libmlengine.so # -> the .NET host .tpk
--    REPO=$REPO MLT=$MLT pkg/build-package.sh     # -> the web .wgt'
-+    REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen DEPS=/work/repo/tizen-deps \
-+      /work/repo/pkg/build-package.sh'
- ```
- 
-+Then install on the TV exactly like Jellyfin — `sdb` + `tizen install`, in
-+Developer Mode:
-+
-+```bash
-+docker run --rm --network host -v "$PWD":/work/repo moonlight-tizen-build \
-+  /work/repo/pkg/install-on-tv.sh <TV_IP> <package.wgt|.tpk> [cert_password]
-+```
-+
-+> **Packaging status.** The web `.wgt` builds, signs and installs headless on the
-+> vitalets image (the Tizen-Studio-install problem is gone). The native engine ships
-+> as `libmlengine.so` driven by a thin exe (root path) or a **.NET host `.tpk`**
-+> (no-root dev-cert path — see `docs/DEV-CERT-PATH.md`). The `.tpk` uses the `tizen40`
-+> TFM, built with a plain .NET SDK + the `Tizen.NET.Sdk` NuGet (NO `dotnet workload
-+> install tizen`); the vitalets Tizen CLI does the packaging/signing. End users
-+> install with Apps2Samsung (per-DUID signing); developers can use `install-on-tv.sh`
-+> with a Samsung DUID cert, since recent TVs reject the default Tizen cert
-+> ("Invalid certificate chain").
-+
 +## Releasing
 +
 +CI (`.github/workflows/build-packages.yml`) builds the `.tpk` + `.wgt` and attaches
@@ -226,10 +168,7 @@ index 72cc06d..f20f602 100644
  ## Requirements
  
  - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
- - A GameStream host on the LAN (Sunshine / GeForce Experience / Wolf).
--- To build: Linux with Docker/podman, and the TV's `/lib` + `/usr/lib` (copied once).
-+- To build: Linux with `podman`, and the TV's `/lib` + `/usr/lib` (copied once).
- 
+@@ -216,25 +263,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
  ## Repository layout
  
  ```
@@ -271,7 +210,7 @@ index 72cc06d..f20f602 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -234,5 +304,6 @@ device.
+@@ -245,5 +300,6 @@ device.
  
  ## Disclaimer
  
