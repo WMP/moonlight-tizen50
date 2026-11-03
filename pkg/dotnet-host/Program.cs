@@ -184,6 +184,7 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetLogCbDelegate(LogCbDelegate cb);
         public static SetLogCbDelegate      SetLogCb;   // null with an engine that lacks it
         public static volatile bool         Loaded;
+        public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
         public static void Load(string soPath)
         {
@@ -425,7 +426,7 @@ namespace MoonlightHost
         private static string Execute(Tizen.Applications.Bundle b, string cmd, Dictionary<string, object> r)
         {
             if (cmd == "setLog") { UiLog.Enable(Item(b, "on") == "true"); return null; }   // works without the engine too
-            if (!Engine.Loaded) return "engine not loaded";
+            if (!Engine.Loaded) return "engine not loaded: " + Engine.LoadError;
             switch (cmd)
             {
                 case "makeCert":
@@ -539,16 +540,24 @@ namespace MoonlightHost
             Log.Trace("OnCreate start");
             try
             {
-                // The SDK packs the csproj Link "res/lib/..." next to the assembly (bin/res/lib/),
-                // not under the app's res/ directory, so resolve it from the assembly folder.
-                string soPath = Path.Combine(Path.GetDirectoryName(typeof(App).Assembly.Location),
-                                             "res", "lib", "libmlengine.so");
+                // The SDK packs the csproj Link "res/lib/..." next to the assembly (bin/res/lib/)
+                // and also into lib/; the hybrid package keeps that layout at its root. Take the
+                // first that exists and name every path tried when none does.
+                string bin = Path.GetDirectoryName(typeof(App).Assembly.Location);
+                string[] tried = {
+                    Path.Combine(bin, "res", "lib", "libmlengine.so"),
+                    Path.Combine(bin, "..", "lib", "libmlengine.so"),
+                    Path.Combine(DirectoryInfo.Resource, "lib", "libmlengine.so"),
+                };
+                string soPath = Array.Find(tried, File.Exists);
+                if (soPath == null) throw new FileNotFoundException("libmlengine.so not found in: " + string.Join(", ", tried));
                 Engine.Load(soPath);
                 // No session starts here: the web UI drives the engine over the message port.
                 Log.Info("engine loaded from memory: " + soPath);
             }
             catch (Exception e)
             {
+                Engine.LoadError = e.GetType().Name + ": " + e.Message;
                 Log.Error("engine load failed: " + e);
             }
             // Also after a failed load: every command then answers "engine not loaded".
