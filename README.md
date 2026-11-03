@@ -21,13 +21,23 @@ CI builds the packages on every release
 
 1. On the TV: enable **Developer Mode** (Apps → `12345` → on, enter your PC's IP,
    reboot).
-2. Download the package for your TV from Releases:
-   - `org.moonlight.host-*.tpk` — the native engine host (Tizen 4.0–5.5).
-   - `Moonlight-*.wgt` — the web UI.
+2. Download the package for your TV from Releases. Two forms, install ONE:
+   - **Hybrid (one file, being tested):** `Moonlight-*-hybrid.wgt` — the web UI and
+     the native engine host in one package. The UI starts the host by itself.
+     It is not signed; Apps2Samsung signs it (*Install → Custom WGT*).
+   - **Pair (as before):** `org.moonlight.host-*.tpk` (the native engine host,
+     Tizen 4.0–5.5) and `Moonlight-*.wgt` (the web UI). On Tizen the UI cannot start
+     a host from another package, so the host must be started by hand
+     (Apps2Samsung → *On the TV* → **Moonlight host** → *Run*).
 3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
-   each package for that DUID, and installs it. Packages ship signed only with a
-   sample dev cert; Apps2Samsung re-signs per-DUID, which is what the TV accepts.
-   No Samsung certificate to create by hand, no `sdb` commands.
+   each package for that DUID, and installs it. Apps2Samsung re-signs per-DUID,
+   which is what the TV accepts. No Samsung certificate to create by hand, no
+   `sdb` commands.
+
+> **Pair → hybrid:** uninstall the old host first (Apps2Samsung → *On the TV* →
+> the Moonlight entry with id `org.moonlight.host.app` → *Uninstall*). The hybrid
+> has the same host app id in another package, so the TV refuses it while the old
+> host package is installed. The UI keeps its data (same package `Moonlight5`).
 
 > Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
 > does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
@@ -35,41 +45,88 @@ CI builds the packages on every release
 
 ## Debug vs release packages
 
-Each release has two pairs of packages:
+Each package exists twice:
 
-- **Normal** (`Moonlight-*.wgt` + `org.moonlight.host-*.tpk`): for daily use.
-- **Debug** (`*-debug.wgt` + `*-debug.tpk`): download these to report a problem.
-  They are debug builds (no optimisation, symbols kept) with verbose logs: the
-  engine (`MLENGINE`), the .NET host (`MLHOST`) and the web UI console (`MLUI`).
+- **Normal** (`Moonlight-*-hybrid.wgt`, or `Moonlight-*.wgt` + `org.moonlight.host-*.tpk`):
+  for daily use.
+- **Debug** (the same names ending in `-debug`): download these to report a problem.
+  They are debug builds (no optimisation, symbols kept) with verbose logs from the
+  web UI, the .NET host and the native engine.
 
-Both pairs use the same package and app ids. Install one pair, not both:
-uninstall the other first, or install over it.
+Normal and debug use the same package and app ids: install one, not both
+(install over it, or uninstall the other first).
 
-Read the logs from a PC (with `sdb` connected to the TV):
+### Getting the logs (Apps2Samsung)
+
+Use the debug console of the Apps2Samsung app (desktop: Linux/Windows/macOS, or
+Android). It shows the web UI console, and on request the host and engine log too.
+
+1. **On the TV** → find **Moonlight**. Hover over **⋯** and use the entry whose id
+   is **`Moonlight5.ui`**. The host (`org.moonlight.host.app`, shown as
+   *Moonlight host*, older builds show it as *Moonlight* too) has no console.
+2. **⋯ → Debug**. The UI restarts on the TV in debug mode and the console opens
+   (desktop: Chrome `chrome://inspect`; Android: the app's own console).
+3. To get the host and engine log in the same console, type:
+
+   ```js
+   mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
+   mlDebug(false)   // turn it off again
+   ```
+
+   After `mlDebug(true)` the host first sends its last 100 lines (start-up, engine
+   load), then new lines as they come. Engine lines exist only in the debug packages.
+4. Do what fails (add a host, pair, start a stream), then save the console to a
+   file (desktop Chrome: right-click in the console → *Save as…*; Android: share).
+
+Private keys from the pairing certificate are shown as `[redacted]`. The file still
+holds host addresses and ids: share it only with the people who need it.
+
+### Which lines are ours
+
+The console also shows the base UI's own lines (`[index.js, …]`, `[utils.js, …]`,
+`[productinfo.js] …`) and TV/browser noise. Lines from this project start with:
+
+| Prefix | Source | When |
+|--------|--------|------|
+| `[mlbridge]` | UI ↔ host bridge (`pkg/ui/mlbridge.js`): commands, replies, host start | always; details in debug packages |
+| `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`) | debug packages |
+| `[MLHOST]` | .NET host | after `mlDebug(true)` |
+| `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | after `mlDebug(true)`, debug packages |
+
+The `App Version` line names the build: `Moonlight v<ver> (tizen50-core <variant>
+<commit>, UI <base UI version>)`. Check it first: it tells which package was tested.
+
+### Filtering the logs
+
+**In the console** (Chrome DevTools, the *Filter* box; a `/…/` value is a regular
+expression, a leading `-` hides matches):
+
+| Show | Filter |
+|------|--------|
+| only this project's lines | `/\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core/` |
+| only host + engine | `/\[(MLHOST|MLENGINE)\]/` |
+| the bridge round-trips | `/\[mlbridge\] (call|sent|reply|timeout|joined|startHost)/` |
+| one command (e.g. id 28) | `/id=28\b/` |
+| hide the base UI's chatter | `-/\[(index|utils|productinfo|AvInfo)\.js/` |
+
+Set the level menu to *Errors* + *Warnings* to see only problems.
+
+**In a saved console file** (one line per entry: `time LEVEL message (source)`):
 
 ```bash
-sdb shell dlogutil MLUI:* *:S                  # UI console (needs the debug host .tpk installed)
-sdb shell dlogutil MLHOST:* MLENGINE:* *:S     # host + engine trace
-sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
-sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
+F=tv-console-Moonlight5.ui-*.txt
+# this project's lines, without the "(file:///…)" source suffix
+grep -E '\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core' $F | sed 's/   (file:[^)]*)$//'
+# only errors and warnings
+grep -E '^[0-9:]+ (ERROR|WARNING) ' $F
+# host + engine only
+grep -E '\[(MLHOST|MLENGINE)\]' $F
+# what happened to one command (e.g. startStream id=28) and the lines around it
+grep -n -E '\bid=28\b' $F
 ```
 
-The UI console reaches `dlog` only through the debug host, which relays it. The
-host is a background service; the debug UI starts it. If it does not start, UI
-lines are buffered (up to 500) and not shown in `dlog`. For the web
-inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
-open `chrome://inspect` in Chrome.
-
-Without a PC, a web console on the phone (for example the debug console of the
-Apps2Samsung Android app, which restarts the app when it attaches) shows the UI
-console. To see the host and engine log there too, type this in that console:
-
-```js
-mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
-mlDebug(false)   // turn it off again
-```
-
-Engine lines exist only in the debug packages. The dlog output does not change.
+The base UI's lines carry CSS noise (`%c[index.js, …] color: green;`); to keep
+them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
 
 ## Why this exists
 

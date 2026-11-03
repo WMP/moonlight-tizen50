@@ -48,6 +48,21 @@
     }
   } catch (e) { console.error('[mlbridge] webapis guard failed:', e); }
 
+  // index.js logs stored values, including the pairing private key ("cert" in the DB).
+  // Mask PEM private keys in every console line (inspector, debug relay to dlog).
+  // mlbridge.js loads before index.js, so this wrapper sees all of its logging.
+  var PEM_KEY = /-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g;
+  function redact(v) { return typeof v === 'string' ? v.replace(PEM_KEY, '-----BEGIN $1----- [redacted] -----END $1-----') : v; }
+  ['log', 'info', 'warn', 'error', 'debug'].forEach(function (lvl) {
+    var orig = console[lvl];
+    if (typeof orig !== 'function') return;
+    console[lvl] = function () {
+      var a = [];
+      for (var i = 0; i < arguments.length; i++) a.push(redact(arguments[i]));
+      return orig.apply(console, a);
+    };
+  });
+
   var localPort = null, remotePort = null, nextId = 1;
   var pending = {};   // id -> {resolve, reject, timer, msg, cmd, timeoutMs, cancelOnTimeout}
   var queue = [];     // ids waiting for the remote port, in send order

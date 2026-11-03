@@ -8,13 +8,17 @@
     <!-- service-application: runs in the background, so it stays alive while the
          web UI (Moonlight5.ui) is in the foreground. -->
     <service-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
-                         auto-restart="false" on-boot="false">
-        <label>Moonlight</label>
+                         auto-restart="false" on-boot="false" taskmanage="false" multiple="false">
+        <label>Moonlight host</label>
         <icon>icon.png</icon>
+        <!-- keeps running while the web UI is in front -->
+        <metadata key="http://samsung.com/tv/metadata/background.execution.support" value="true"/>
+        <!-- in the hybrid package (pkg/build-hybrid.sh) the TV reads the app
+             metadata from the web part -->
+        <metadata key="http://samsung.com/tv/metadata/application/read.metadata.from.hybrid.webapp"/>
     </service-application>
     <privileges>
         <privilege>http://tizen.org/privilege/internet</privilege>
         <privilege>http://tizen.org/privilege/network.get</privilege>
-        <privilege>http://tizen.org/privilege/display</privilege>
     </privileges>
 </manifest>
