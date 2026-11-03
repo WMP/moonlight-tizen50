@@ -31,9 +31,8 @@ hardware video plane through the vendor library `libesplusplayer.so`.
    reboot).
 2. Download the packages for your TV from Releases and install both:
    `org.moonlight.host-*.tpk` (the native engine host, Tizen 4.0–5.5) and
-   `Moonlight-*.wgt` (the web UI). The host starts with the TV (on boot); the UI
-   only connects to it. After the first install, reboot the TV once or start the
-   host by hand (Apps2Samsung → *On the TV* → **Moonlight host** → *Run*).
+   `Moonlight-*.wgt` (the web UI). The UI starts the host by itself: no reboot and
+   no manual start.
 3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
    each package for that DUID, and installs it. Packages are shipped signed only
    with a sample dev cert on purpose — Apps2Samsung re-signs per-DUID, which is

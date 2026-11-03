@@ -164,4 +164,4 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: out/*
-          body: "Pair: Moonlight-${{ env.VER }}.wgt (web UI) + org.moonlight.host-${{ env.VER }}.tpk (host). The host starts with the TV: install both with Apps2Samsung, then start the host once by hand or reboot the TV after the first install. Debug (trace) builds: the -debug files."
+          body: "Pair: Moonlight-${{ env.VER }}.wgt (web UI) + org.moonlight.host-${{ env.VER }}.tpk (host). Install both with Apps2Samsung. The UI starts the host by itself. Debug (trace) builds: the -debug files."
