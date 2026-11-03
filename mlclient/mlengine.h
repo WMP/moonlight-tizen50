@@ -47,6 +47,12 @@ int  ml_engine_start_session(const char *host, int width, int height, int fps, i
 void ml_engine_send_key(int key_code, int key_action, int modifiers);
 void ml_engine_free(void *p);
 
+/* On-demand log forwarding: when cb is set, each engine trace line (MLT, debug
+ * builds) is also passed to cb, from any engine thread. NULL turns it off. The
+ * dlog/stderr output is unchanged. Release builds have no trace lines. */
+typedef void (*ml_engine_log_cb)(const char *line);
+void ml_engine_set_log_cb(ml_engine_log_cb cb);
+
 #ifdef __cplusplus
 }
 #endif

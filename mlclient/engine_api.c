@@ -30,6 +30,13 @@ static volatile int g_started;   /* 1 once LiStartConnection succeeded (needs Li
 static char g_host[256];         /* si.address is held by moonlight-common-c for the
                                     session, so the host string must outlive the call */
 
+void (*volatile ml_log_cb)(const char *line);   /* see mltrace.h */
+
+void ml_engine_set_log_cb(ml_engine_log_cb cb) {
+  ml_log_cb = cb;
+  MLT("log forwarding %s", cb ? "on" : "off");
+}
+
 static STREAM_CONFIGURATION g_sc;  /* static: held by moonlight-common-c for the session */
 static SERVER_INFORMATION g_si;
 

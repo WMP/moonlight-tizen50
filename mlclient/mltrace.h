@@ -6,6 +6,8 @@
  * .NET host it is NOT in the global symbol scope (the runtime loads libdlog with
  * RTLD_LOCAL and the engine comes from a memfd), so RTLD_DEFAULT alone finds nothing:
  * open libdlog by name and look it up there. Each TU keeps its own cached pointer.
+ * ml_log_cb (set with ml_engine_set_log_cb) also receives each line, on demand. It is
+ * weak so test programs that do not link engine_api.c still build.
  */
 #ifndef MLTRACE_H
 #define MLTRACE_H
@@ -18,6 +20,8 @@
 #ifndef RTLD_DEFAULT
 #define RTLD_DEFAULT ((void *)0)
 #endif
+
+extern void (*volatile ml_log_cb)(const char *line) __attribute__((weak));
 
 static void mlt_log(const char *fmt, ...) __attribute__((unused, format(printf, 1, 2)));
 static void mlt_log(const char *fmt, ...) {
@@ -38,6 +42,7 @@ static void mlt_log(const char *fmt, ...) {
     if (!dlog) fprintf(stderr, "[mlt] dlog_print not found: %s\n", dlerror());
   }
   if (dlog) dlog(3 /* DLOG_DEBUG */, "MLENGINE", "%s", buf);
+  if (&ml_log_cb) { void (*cb)(const char *) = ml_log_cb; if (cb) cb(buf); }
 }
 #define MLT(...) mlt_log(__VA_ARGS__)
 #else

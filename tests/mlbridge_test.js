@@ -25,6 +25,7 @@ var tizen = {
 };
 var sandbox = {
   window: win, tizen: tizen, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
+  localStorage: { _d: {}, getItem: function (k) { return this._d[k] === undefined ? null : this._d[k]; }, setItem: function (k, v) { this._d[k] = String(v); } },
   document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') domReady = f; } },
   console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () {}, error: function () {} },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
@@ -190,6 +191,23 @@ test('multi-part replies join; large commands are split', async function () {
   assert.strictEqual(got.cert, cert); assert.strictEqual(got.key, key); assert.strictEqual(got.uniqueId, 'uid');
   reply(fields(sent[0]).id, {});
   await q;
+});
+
+test('mlDebug toggles host log forward; log lines go to the console', async function () {
+  sent.length = 0;
+  var r = win.mlDebug(true);
+  assert.ok(/on/.test(r));
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'setLog'); assert.strictEqual(f.on, 'true');
+  assert.strictEqual(sandbox.localStorage.getItem('mlDebug'), '1');
+  reply(f.id, {});
+  var before = handled.length;
+  listener([{ key: 'log', value: 'engine loaded from memory' }, { key: 'tag', value: 'MLHOST' }]);
+  assert.ok(logs.indexOf('[MLHOST] engine loaded from memory') >= 0, 'printed with tag');
+  assert.strictEqual(handled.length, before, 'not an event');
+  win.mlDebug(false);
+  assert.strictEqual(fields(sent[1]).on, 'false');
+  assert.strictEqual(sandbox.localStorage.getItem('mlDebug'), '0');
 });
 
 test('event passes string', async function () {
