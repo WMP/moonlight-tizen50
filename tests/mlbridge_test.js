@@ -210,6 +210,13 @@ test('mlDebug toggles host log forward; log lines go to the console', async func
   assert.strictEqual(sandbox.localStorage.getItem('mlDebug'), '0');
 });
 
+test('private keys are masked in console output', async function () {
+  var n = logs.length;
+  sandbox.console.log('DB key: cert with value: {"privateKey":"-----BEGIN PRIVATE KEY-----\\nMIIEvQ\\nSECRETKEY\\n-----END PRIVATE KEY-----\\n"}');
+  var line = logs.slice(n).join('\n');
+  assert.ok(line.indexOf('SECRETKEY') < 0 && line.indexOf('[redacted]') >= 0, line);
+});
+
 test('event passes string', async function () {
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   assert.strictEqual(handled.join('|'), 'streamTerminated: 0');
