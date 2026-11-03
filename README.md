@@ -39,70 +39,83 @@ Each release has two pairs of packages:
 
 - **Normal** (`Moonlight-*.wgt` + `org.moonlight.host-*.tpk`): for daily use.
 - **Debug** (`*-debug.wgt` + `*-debug.tpk`): download these to report a problem.
-  They are debug builds (no optimisation, symbols kept) with verbose logs: the
-  engine (`MLENGINE`), the .NET host (`MLHOST`) and the web UI console (`MLUI`).
+  They are debug builds (no optimisation, symbols kept) with verbose logs from the
+  web UI, the .NET host and the native engine.
 
 Both pairs use the same package and app ids. Install one pair, not both:
 uninstall the other first, or install over it.
 
-Read the logs from a PC (with `sdb` connected to the TV):
+### Getting the logs (Apps2Samsung)
 
-```bash
-sdb shell dlogutil MLUI:* *:S                  # UI console (needs the debug host .tpk installed)
-sdb shell dlogutil MLHOST:* MLENGINE:* *:S     # host + engine trace
-sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
-sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
-```
-
-The UI console reaches `dlog` only through the debug host, which relays it. The
-host is a background service; the debug UI starts it. If it does not start, UI
-lines are buffered (up to 500) and not shown in `dlog`. For the web
-inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
-open `chrome://inspect` in Chrome.
-
-### Logs with the Apps2Samsung app (no `sdb` needed)
-
-The Apps2Samsung desktop app (Linux/Windows/macOS) and its Android app can open the
-web console of the installed UI:
+Use the debug console of the Apps2Samsung app (desktop: Linux/Windows/macOS, or
+Android). It shows the web UI console, and on request the host and engine log too.
 
 1. **On the TV** → find **Moonlight**. It is listed twice: the web UI and the
-   background host. Hover over **⋯** — use the entry whose id is **`Moonlight5.ui`**
-   (the other one is the host, `org.moonlight.host.app`, which has no web console).
+   background host. Hover over **⋯** and use the entry whose id is **`Moonlight5.ui`**
+   (the other one is the host, `org.moonlight.host.app`, which has no console).
 2. **⋯ → Debug**. The UI restarts on the TV in debug mode and the console opens
-   (desktop: Chrome `chrome://inspect`; Android: the app's own console). The console
-   can be saved as a text file.
-3. To see the host and engine log in the same console, type:
+   (desktop: Chrome `chrome://inspect`; Android: the app's own console).
+3. To get the host and engine log in the same console, type:
 
-```js
-mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
-mlDebug(false)   // turn it off again
-```
+   ```js
+   mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
+   mlDebug(false)   // turn it off again
+   ```
 
-After `mlDebug(true)` the host first sends its last 100 lines (start-up, engine
-load). Engine lines exist only in the debug packages. The dlog output does not change.
-Private keys from the pairing certificate are shown as `[redacted]`.
+   After `mlDebug(true)` the host first sends its last 100 lines (start-up, engine
+   load), then new lines as they come. Engine lines exist only in the debug packages.
+4. Do what fails (add a host, pair, start a stream), then save the console to a
+   file (desktop Chrome: right-click in the console → *Save as…*; Android: share).
 
-### Which lines are ours, and how to filter them
+Private keys from the pairing certificate are shown as `[redacted]`. The file still
+holds host addresses and ids: share it only with the people who need it.
+
+### Which lines are ours
 
 The console also shows the base UI's own lines (`[index.js, …]`, `[utils.js, …]`,
-`[productinfo.js] …`). Lines from this project start with:
+`[productinfo.js] …`) and TV/browser noise. Lines from this project start with:
 
-| Prefix | Source |
-|--------|--------|
-| `[mlbridge]` | UI ↔ host bridge (`pkg/ui/mlbridge.js`) |
-| `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`, debug packages) |
-| `[MLHOST]` | .NET host (after `mlDebug(true)`) |
-| `[MLENGINE]` | native engine (after `mlDebug(true)`, debug packages) |
+| Prefix | Source | When |
+|--------|--------|------|
+| `[mlbridge]` | UI ↔ host bridge (`pkg/ui/mlbridge.js`): commands, replies, host start | always; details in debug packages |
+| `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`) | debug packages |
+| `[MLHOST]` | .NET host | after `mlDebug(true)` |
+| `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | after `mlDebug(true)`, debug packages |
 
 The `App Version` line names the build: `Moonlight v<ver> (tizen50-core <variant>
-<commit>, UI <base UI version>)`.
+<commit>, UI <base UI version>)`. Check it first: it tells which package was tested.
 
-- Chrome DevTools console, Filter box: `/\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core/`
-- A saved console file:
-  ```bash
-  grep -E '\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core' tv-console-Moonlight5.ui-*.txt
-  ```
-- dlog over `sdb`: `sdb shell dlogutil -v time MLUI:D MLHOST:D MLENGINE:D '*:S'`
+### Filtering the logs
+
+**In the console** (Chrome DevTools, the *Filter* box; a `/…/` value is a regular
+expression, a leading `-` hides matches):
+
+| Show | Filter |
+|------|--------|
+| only this project's lines | `/\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core/` |
+| only host + engine | `/\[(MLHOST|MLENGINE)\]/` |
+| the bridge round-trips | `/\[mlbridge\] (call|sent|reply|timeout|joined|startHost)/` |
+| one command (e.g. id 28) | `/id=28\b/` |
+| hide the base UI's chatter | `-/\[(index|utils|productinfo|AvInfo)\.js/` |
+
+Set the level menu to *Errors* + *Warnings* to see only problems.
+
+**In a saved console file** (one line per entry: `time LEVEL message (source)`):
+
+```bash
+F=tv-console-Moonlight5.ui-*.txt
+# this project's lines, without the "(file:///…)" source suffix
+grep -E '\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core' $F | sed 's/   (file:[^)]*)$//'
+# only errors and warnings
+grep -E '^[0-9:]+ (ERROR|WARNING) ' $F
+# host + engine only
+grep -E '\[(MLHOST|MLENGINE)\]' $F
+# what happened to one command (e.g. startStream id=28) and the lines around it
+grep -n -E '\bid=28\b' $F
+```
+
+The base UI's lines carry CSS noise (`%c[index.js, …] color: green;`); to keep
+them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
 
 ## Why this exists
 
