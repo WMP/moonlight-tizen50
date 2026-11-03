@@ -124,16 +124,51 @@ namespace MoonlightHost
             return Open("/proc/self/fd/" + fd, "memfd");
         }
 
-        // dlopen with the reason on failure: dlerror() text and errno, read right away.
+        // The runtime binds a P/Invoke (and PtrToStringAnsi's helper) on first use with its
+        // own dlsym, which overwrites the dlerror() state. Bind both before any dlopen whose
+        // error we want to read, or the message is lost or garbled.
+        private static bool s_warm;
+        private static void Warm()
+        {
+            if (s_warm) return;
+            IntPtr x = Marshal.StringToHGlobalAnsi("x");
+            try { Marshal.PtrToStringAnsi(x); dlerror(); } finally { Marshal.FreeHGlobal(x); }
+            s_warm = true;
+        }
+
+        // dlopen; null + reason (dlerror() text and errno) on failure.
+        public static IntPtr TryOpen(string path, out string why)
+        {
+            Warm();
+            dlerror();                                   // clear a stale error
+            IntPtr h = dlopen(path, RTLD_NOW);
+            int errno = Marshal.GetLastWin32Error();
+            IntPtr err = h == IntPtr.Zero ? dlerror() : IntPtr.Zero;
+            why = h != IntPtr.Zero ? null
+                : (err != IntPtr.Zero ? Marshal.PtrToStringAnsi(err) : "no dlerror") + " (errno " + errno + ")";
+            return h;
+        }
+
+        // The engine's own libraries (build-engine-so.sh link line): when the engine does
+        // not load, name the first of them that does not load by itself.
+        private static readonly string[] EngineDeps = {
+            "libesplusplayer.so", "libecore_wl2.so.1", "libecore.so.1",
+            "libcrypto.so.1.0.0", "libssl.so.1.0.0", "libcurl.so.4",
+        };
+
         public static IntPtr Open(string path, string what)
         {
-            IntPtr h = dlopen(path, RTLD_NOW);
+            string why;
+            IntPtr h = TryOpen(path, out why);
             if (h == IntPtr.Zero)
             {
-                int errno = Marshal.GetLastWin32Error();
-                IntPtr err = dlerror();
-                throw new InvalidOperationException("dlopen(" + what + ") failed: " +
-                    (err != IntPtr.Zero ? Marshal.PtrToStringAnsi(err) : "no dlerror") + " (errno " + errno + ")");
+                string deps = "";
+                foreach (var d in EngineDeps)
+                {
+                    string dwhy;
+                    if (TryOpen(d, out dwhy) == IntPtr.Zero) { deps = "; dependency " + d + ": " + dwhy; break; }
+                }
+                throw new InvalidOperationException("dlopen(" + what + ") failed: " + why + (deps == "" ? "; all dependencies load" : deps));
             }
             Log.Trace("dlopen(" + what + ") handle=0x" + h.ToInt64().ToString("x"));
             return h;
