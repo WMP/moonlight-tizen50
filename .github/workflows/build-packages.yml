@@ -7,8 +7,10 @@ name: Build Moonlight packages (.tpk + .wgt)
 # Without that secret the native packages cannot be built; the job then exits
 # cleanly with a note, so forks without the libs don't see red builds.
 #
-# Everything else (cross toolchain, sysroot, crypto/http deps, moonlight-common-c,
-# the web UI) is public and fetched at build time.
+# Everything else is in the self-contained build image (pkg/Dockerfile, published by
+# build-image.yml to ghcr.io): Tizen CLI, .NET + NuGet packages, cross toolchain,
+# sysroot, crypto/http deps. The web UI and moonlight-common-c come from the
+# submodule checkout. The build itself runs with --network none.
 
 on:
   workflow_dispatch:
@@ -21,6 +23,7 @@ on:
 
 permissions:
   contents: write   # attach packages to the GitHub Release on a tag
+  packages: read    # pull the build image from ghcr.io
 
 jobs:
   packages:
@@ -41,9 +44,20 @@ jobs:
             echo "::notice::TV_LIBS_URL / TV_LIBS_TOKEN not set — skipping native package build."
           fi
 
-      - name: Build toolchain image
+      - name: Build image (self-contained; from ghcr.io, see build-image.yml)
         if: steps.gate.outputs.have_libs == 'true'
-        run: docker build -t moonlight-tizen-build pkg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/moonlight-tizen-build:$(sh pkg/image-tag.sh)"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # the tag is the hash of this checkout's Dockerfile/fetch scripts/NuGet pins;
+          # not published yet (build-image.yml still running) -> build it here
+          if ! docker pull "$IMAGE"; then
+            echo "::warning::$IMAGE not on ghcr.io yet, building it locally"
+            docker build -f pkg/Dockerfile -t "$IMAGE" .
+          fi
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Fetch TV libraries (proprietary, from a private store)
         if: steps.gate.outputs.have_libs == 'true'
@@ -86,21 +100,20 @@ jobs:
         if: steps.gate.outputs.have_libs == 'true'
         run: |
           mkdir -p out
-          docker run --rm \
+          # --network none: the image holds every dependency; the TV libraries are
+          # mounted read-only where the image expects them. Nothing is downloaded.
+          docker run --rm --network none \
             -v "$PWD:/work/repo" \
-            -v "$PWD/tdeps:/work/tdeps" \
+            -v "$PWD/tdeps/tv-libs:/opt/tizen-deps/tv-libs:ro" \
             -v "$PWD/out:/work/out" \
             -e HOME=/home/developer \
             -e VER -e APP_VERSION -e BUILD_COMMIT \
-            moonlight-tizen-build bash -euo pipefail -c '
+            "$IMAGE" bash -euo pipefail -c '
               cd /work
               REPO=/work/repo MLT=/work/repo/third_party/moonlight-tizen
-              DEPS=/work/tdeps BPD=/work/bpd DEPSBUILD=/work/depsbuild
+              DEPS=/opt/tizen-deps BPD=/opt/backport-deps DEPSBUILD=/work/depsbuild
 
-              # 1. public toolchain + sysroot (tv-libs already injected under $DEPS)
-              "$REPO/fetch-tizen-sources.sh" "$DEPS"
-              # 2. crypto/http deps (headers + mbedTLS/curl sources)
-              OUT="$BPD" "$REPO/fetch-backport-deps.sh"
+              # 1-2. toolchain, sysroot and crypto/http deps are baked into the image
               # 3. core/crypto/gamestream objects + libmbedcrypto_tv.a
               MLT="$MLT" DEPS="$DEPS" BPD="$BPD" OUT="$DEPSBUILD" "$REPO/build-deps-lib.sh"
 

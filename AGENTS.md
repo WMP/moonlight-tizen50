@@ -30,7 +30,10 @@ The point of this repo is to improve the client itself:
 ## Build & test
 
 - Initialize the moonlight-tizen submodule first: `git submodule update --init`.
-- Build everything in the Docker image: `docker build -t moonlight-tizen-build pkg`.
+- Build everything in the self-contained image `pkg/Dockerfile` (context = repo root:
+  `docker build -f pkg/Dockerfile .`; published to ghcr.io by `build-image.yml`, tag from
+  `pkg/image-tag.sh`). It must hold every build dependency: builds run with
+  `--network none`. Never add the TV libraries (`tv-libs/`) to the image.
   See `README.md` for the full flow (engine `.so` → `.tpk` host → web `.wgt`).
 - Host self-tests that need no TV: `mlclient/xml_selftest.c` (XML parser),
   `tests/esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
