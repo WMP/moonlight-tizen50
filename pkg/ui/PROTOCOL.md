@@ -1,7 +1,7 @@
 # UI ↔ host message-port protocol
 
 The web UI (`Moonlight5.ui`, `pkg/ui/mlbridge.js`) talks to the .NET host
-(`org.moonlight.host.app`, `pkg/dotnet-host/Program.cs`, a service app) over Tizen
+(`org.moonlight.host.app`, `pkg/dotnet-host/Program.cs`, a no-display UI app) over Tizen
 message ports. The host calls the engine (`libmlengine.so`, `mlclient/mlengine.h`).
 
 | Direction | App id | Port | Trusted |
@@ -88,11 +88,11 @@ argument when it has one, and then also sends `cancelRequest`. `pair` waits up t
 ## Video window (known limit)
 
 The engine creates its own Wayland window (`ecore_wl2`) for the esplusplayer overlay,
-on the host's ecore main loop. The host is a service app; if the TV gives a service
+on the host's ecore main loop. The host is a UI app with no window (nodisplay); if the TV gives it
 no display access, `ecore_wl2_display_connect` or `ecore_wl2_window_new` fails. The
 engine then fails video setup cleanly: `startStream` replies `error` and the UI gets
 `streamTerminated: -1` (MLENGINE shows `esplus_set_window -> -1 (no window ...)`).
 
 If that happens on the TV, the alternative is a small UI app in the same `.tpk` that
 owns the overlay window only while a stream runs (the stream takes the screen anyway);
-the service keeps the engine and the message ports.
+the host keeps the engine and the message ports.
