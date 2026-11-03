@@ -344,7 +344,13 @@
   // console): mlDebug(true) / mlDebug(false). Remembered across restarts. The dlog
   // tags (MLHOST, MLENGINE, MLUI) are written as before either way.
   var DEBUG_KEY = 'mlDebug';
-  function debugStored() { try { return localStorage.getItem(DEBUG_KEY) === '1'; } catch (e) { return false; } }
+  // On by default in the debug packages (mltrace.js sets ML_TRACE); an explicit
+  // mlDebug(false) is remembered and wins.
+  function debugStored() {
+    var v = null;
+    try { v = localStorage.getItem(DEBUG_KEY); } catch (e) {}
+    return v === '1' || (v === null && TRACE);
+  }
   window.mlDebug = function (on) {
     on = !!on;
     try { localStorage.setItem(DEBUG_KEY, on ? '1' : '0'); } catch (e) {}

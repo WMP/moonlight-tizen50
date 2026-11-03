@@ -217,6 +217,21 @@ test('private keys are masked in console output', async function () {
   assert.ok(line.indexOf('SECRETKEY') < 0 && line.indexOf('[redacted]') >= 0, line);
 });
 
+test('debug package turns host log forwarding on at boot; mlDebug(false) is remembered', async function () {
+  function boot() {
+    win.common = { domContentLoaded: function () {}, attachDefaultListeners: function () {} };
+    domReady();
+    win.common.domContentLoaded();
+  }
+  sandbox.localStorage._d = {};              // fresh install of the debug package (ML_TRACE is on)
+  sent.length = 0; boot();
+  var setLog = sent.map(fields).filter(function (f) { return f.cmd === 'setLog'; });
+  assert.strictEqual(setLog.length, 1); assert.strictEqual(setLog[0].on, 'true');
+  sandbox.localStorage._d = { mlDebug: '0' }; // user turned it off before
+  sent.length = 0; boot();
+  assert.strictEqual(sent.map(fields).filter(function (f) { return f.cmd === 'setLog'; }).length, 0);
+});
+
 test('event passes string', async function () {
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   assert.strictEqual(handled.join('|'), 'streamTerminated: 0');
