@@ -19,7 +19,7 @@ FROM docker.io/vitalets/tizen-webos-sdk
 # Extra build tools the core/engine scripts use (the cross toolchain itself is mounted).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       make cmake pkg-config file xz-utils rsync curl ca-certificates \
-      git unzip cpio libarchive-tools \
+      git unzip zip cpio libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # .NET SDK for the .tpk host (dotnet-host/). The Tizen 4/5 TFM (tizen40)

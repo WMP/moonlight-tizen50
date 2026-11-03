@@ -131,6 +131,9 @@ jobs:
                 set -- "$REPO"/pkg/out/ui/*.wgt
                 [ $# -eq 1 ] && [ -f "$1" ] || { echo "expected exactly one .wgt for $V, got: $*"; exit 1; }
                 cp "$1" "/work/out/Moonlight-$VER$SFX.wgt"
+                # 7. the hybrid package: UI + host service in ONE unsigned .wgt (a web app
+                # can start a service only from its own package); the installer signs it
+                "$REPO/pkg/build-hybrid.sh" "$TPK" "$REPO/pkg/out/ui" "/work/out/Moonlight-$VER-hybrid$SFX.wgt"
               done
               ls -la /work/out
             '
@@ -151,4 +154,4 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: out/*
-          body: "Normal: Moonlight-${{ env.VER }}.wgt + org.moonlight.host-${{ env.VER }}.tpk. Debug (trace) build: the -debug files. Install one pair, not both."
+          body: "Hybrid (one file, the UI starts the host itself; test first): Moonlight-${{ env.VER }}-hybrid.wgt, install with Apps2Samsung (Custom WGT), after uninstalling the old Moonlight host. Pair (as before): Moonlight-${{ env.VER }}.wgt + org.moonlight.host-${{ env.VER }}.tpk. Debug (trace) builds: the -debug files."
