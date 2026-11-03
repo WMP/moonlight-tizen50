@@ -593,7 +593,7 @@ namespace MoonlightHost
             try
             {
                 // The SDK packs the csproj Link "res/lib/..." next to the assembly (bin/res/lib/)
-                // and also into lib/; the hybrid package keeps that layout at its root. Take the
+                // and also into lib/. Take the
                 // first that exists and name every path tried when none does.
                 string bin = Path.GetDirectoryName(typeof(App).Assembly.Location);
                 string[] tried = {

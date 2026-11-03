@@ -5,17 +5,15 @@
      a file in the app folder. -->
 <manifest xmlns="http://tizen.org/ns/packages" api-version="4" package="org.moonlight.host" version="0.0.1">
     <profile name="tv"/>
-    <!-- service-application: runs in the background, so it stays alive while the
-         web UI (Moonlight5.ui) is in the foreground. -->
+    <!-- service-application: the TV starts it at boot (on-boot) and restarts it
+         (auto-restart); it runs in the background while the web UI (Moonlight5.ui)
+         is in the foreground. The UI only connects to its message port. -->
     <service-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
-                         auto-restart="false" on-boot="false" taskmanage="false" multiple="false">
+                         auto-restart="true" on-boot="true" taskmanage="false" multiple="false">
         <label>Moonlight host</label>
         <icon>icon.png</icon>
         <!-- keeps running while the web UI is in front -->
         <metadata key="http://samsung.com/tv/metadata/background.execution.support" value="true"/>
-        <!-- in the hybrid package (pkg/build-hybrid.sh) the TV reads the app
-             metadata from the web part -->
-        <metadata key="http://samsung.com/tv/metadata/application/read.metadata.from.hybrid.webapp"/>
     </service-application>
     <privileges>
         <privilege>http://tizen.org/privilege/internet</privilege>
