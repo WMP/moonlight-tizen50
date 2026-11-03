@@ -5,15 +5,24 @@
      a file in the app folder. -->
 <manifest xmlns="http://tizen.org/ns/packages" api-version="4" package="org.moonlight.host" version="0.0.1">
     <profile name="tv"/>
-    <!-- service-application: the TV starts it at boot (on-boot) and restarts it
-         (auto-restart); it runs in the background while the web UI (Moonlight5.ui)
-         is in the foreground. The UI only connects to its message port. -->
+    <!-- service-application: the TV starts it at boot. on-boot alone is not enough on
+         Samsung TVs: the app also needs the allow-on-boot metadata, and the TV starts
+         it when the home screen is up (launch_on_event on /tmp/firstscreen_done).
+         auto-restart restarts it after a crash. It runs in the background while the
+         web UI (Moonlight5.ui) is in the foreground. The UI only connects to its
+         message port. -->
     <service-application appid="org.moonlight.host.app" exec="MoonlightHost.dll" type="dotnet"
                          auto-restart="true" on-boot="true" taskmanage="false" multiple="false">
         <label>Moonlight host</label>
         <icon>icon.png</icon>
         <!-- keeps running while the web UI is in front -->
         <metadata key="http://samsung.com/tv/metadata/background.execution.support" value="true"/>
+        <metadata key="http://developer.samsung.com/tizen/metadata/allow-on-boot"/>
+        <background-category value="background-network"/>
+        <app-control>
+            <operation name="http://tizen.org/appcontrol/operation/launch_on_event"/>
+            <uri name="file:///tmp/firstscreen_done"/>
+        </app-control>
     </service-application>
     <privileges>
         <privilege>http://tizen.org/privilege/internet</privilege>
