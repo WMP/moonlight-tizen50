@@ -42,9 +42,6 @@ The point of this repo is to improve the client itself:
   `mlclient/esplus_player.c`.
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching
   `pkg/ui/mlbridge.js`.
-- The hybrid package (UI + host in one `.wgt`, so the UI can start the host) is
-  assembled by `pkg/build-hybrid.sh <host.tpk> <ui dir> <out.wgt>` from the two
-  builds above; it is unsigned (the installer signs it).
 - `BUILD_VARIANT=debug|release` (default `release`) is honoured by
   `mlclient/build-engine-so.sh`, `pkg/build-tpk.sh` and `pkg/build-package.sh`. The
   trace macro is `MLT_TRACE` in `mlclient/mltrace.h`; it must compile to nothing in
