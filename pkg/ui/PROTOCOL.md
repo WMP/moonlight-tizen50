@@ -58,9 +58,19 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `toggleStats` | – | – | none (not supported yet) |
 | `stun` | – | `result` = `""` | none (not supported yet) |
 | `wakeOnLan` | `mac` | `error` = `not supported` | none (not supported yet) |
+| `setLog` | `on` (`true`/`false`) | – | `ml_engine_set_log_cb` (works also when the engine did not load) |
 
 An engine error becomes `error` = the engine return code as a decimal string (the
 same values the WASM build rejects with, for example `-1` = GS_FAILED).
+
+## Log lines (on demand)
+
+After `setLog on=true` the host sends log lines to the UI port: `log` (the line, at
+most 1000 characters) and `tag` (`MLHOST` or `MLENGINE`), no `id`. It first sends its
+last 100 `MLHOST` lines, then new ones as they are written. Engine lines exist only in
+debug builds. `mlbridge.js` prints them with `console.log('[<tag>] <line>')`. The UI
+sends `setLog` from `mlDebug(true|false)` and again at start-up when it is remembered
+on. The dlog output (`MLHOST`, `MLENGINE`, `MLUI`) does not change.
 
 ## Events
 

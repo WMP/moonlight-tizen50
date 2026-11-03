@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 72437e6..e1c8082 100644
+index 1790f6e..0b698b0 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -68,7 +68,7 @@ index 72437e6..e1c8082 100644
  
  ## Debug vs release packages
  
-@@ -54,108 +68,164 @@ sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
+@@ -54,11 +68,11 @@ sdb shell dlogutil MLUI:* MLHOST:* MLENGINE:* *:S
  sdb shell 0 debug Moonlight5.ui                # debug launch: prints a port for the web inspector
  ```
  
@@ -82,6 +82,10 @@ index 72437e6..e1c8082 100644
 +buffered (up to 500) and not shown in `dlog`. For the web inspector run
 +`sdb forward tcp:<port> tcp:<port>` with the printed port, then open `chrome://inspect`
 +in Chrome.
+ 
+ Without a PC, a web console on the phone (for example the debug console of the
+ Apps2Samsung Android app, which restarts the app when it attaches) shows the UI
+@@ -73,100 +87,156 @@ Engine lines exist only in the debug packages. The dlog output does not change.
  
  ## Why this exists
  
@@ -283,7 +287,7 @@ index 72437e6..e1c8082 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -166,5 +236,6 @@ device.
+@@ -177,5 +247,6 @@ device.
  
  ## Disclaimer
  
