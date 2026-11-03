@@ -60,16 +60,49 @@ lines are buffered (up to 500) and not shown in `dlog`. For the web
 inspector run `sdb forward tcp:<port> tcp:<port>` with the printed port, then
 open `chrome://inspect` in Chrome.
 
-Without a PC, a web console on the phone (for example the debug console of the
-Apps2Samsung Android app, which restarts the app when it attaches) shows the UI
-console. To see the host and engine log there too, type this in that console:
+### Logs with the Apps2Samsung app (no `sdb` needed)
+
+The Apps2Samsung desktop app (Linux/Windows/macOS) and its Android app can open the
+web console of the installed UI:
+
+1. **On the TV** → find **Moonlight**. It is listed twice: the web UI and the
+   background host. Hover over **⋯** — use the entry whose id is **`Moonlight5.ui`**
+   (the other one is the host, `org.moonlight.host.app`, which has no web console).
+2. **⋯ → Debug**. The UI restarts on the TV in debug mode and the console opens
+   (desktop: Chrome `chrome://inspect`; Android: the app's own console). The console
+   can be saved as a text file.
+3. To see the host and engine log in the same console, type:
 
 ```js
 mlDebug(true)    // host + engine lines appear as [MLHOST] / [MLENGINE]; remembered
 mlDebug(false)   // turn it off again
 ```
 
-Engine lines exist only in the debug packages. The dlog output does not change.
+After `mlDebug(true)` the host first sends its last 100 lines (start-up, engine
+load). Engine lines exist only in the debug packages. The dlog output does not change.
+Private keys from the pairing certificate are shown as `[redacted]`.
+
+### Which lines are ours, and how to filter them
+
+The console also shows the base UI's own lines (`[index.js, …]`, `[utils.js, …]`,
+`[productinfo.js] …`). Lines from this project start with:
+
+| Prefix | Source |
+|--------|--------|
+| `[mlbridge]` | UI ↔ host bridge (`pkg/ui/mlbridge.js`) |
+| `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`, debug packages) |
+| `[MLHOST]` | .NET host (after `mlDebug(true)`) |
+| `[MLENGINE]` | native engine (after `mlDebug(true)`, debug packages) |
+
+The `App Version` line names the build: `Moonlight v<ver> (tizen50-core <variant>
+<commit>, UI <base UI version>)`.
+
+- Chrome DevTools console, Filter box: `/\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core/`
+- A saved console file:
+  ```bash
+  grep -E '\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core' tv-console-Moonlight5.ui-*.txt
+  ```
+- dlog over `sdb`: `sdb shell dlogutil -v time MLUI:D MLHOST:D MLENGINE:D '*:S'`
 
 ## Why this exists
 
