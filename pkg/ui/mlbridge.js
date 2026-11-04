@@ -238,11 +238,50 @@
     }, retryDelay);
   }
 
+  // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
+  var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
+  function statsDiv(create) {
+    if (!statsEl && create && typeof document !== 'undefined' && document.body && document.createElement) {
+      statsEl = document.createElement('div');
+      statsEl.id = 'mlstats';
+      statsEl.style.cssText = 'position:fixed;top:0;left:0;background:rgba(0,0,0,.55);color:#fff;' +
+        'font:12px monospace;padding:6px 8px;z-index:99999;white-space:pre';
+      document.body.appendChild(statsEl);
+    }
+    return statsEl;
+  }
+  function showStats(m) {
+    var el = statsDiv(statsOn);
+    if (!el || !statsOn) return;
+    el.style.display = 'block';
+    el.textContent = 'depth ' + m.depth + ' ms (audio ' + m.addepth + ' ms)\n' +
+      'fps ' + m.fps + '\n' +
+      'dropped late ' + m.drop + ' / full ' + m.full + '\n' +
+      'under/over ' + m.uo + '\n' +
+      'errors ' + m.err + '  recoveries ' + m.rec + '\n' +
+      'play ' + (Number(m.play) / 1000).toFixed(1) + ' s';
+  }
+  function resetStats() {
+    statsOn = false; statsGen++;
+    if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
+  }
+  // Sends the wanted state (on), so a lost reply cannot leave the host and the overlay inverted.
+  function toggleStats() {
+    var want = !statsOn, gen = statsGen;
+    return bridgeCall('toggleStats', { on: String(want) }, DEFAULT_TIMEOUT).then(function (r) {
+      if (gen !== statsGen) return r;   // the stream ended meanwhile: the host stopped polling
+      if (!want) resetStats();
+      else statsOn = true;   // the overlay appears with the first mlstats event
+      return r;
+    });
+  }
+
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
     if (m.total !== undefined) { m = join(m); if (!m) return; }
+    if (m.event === 'mlstats') { showStats(m); return; }   // overlay only (2/s: not traced), not for handleMessage
     trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
     if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug)
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
@@ -250,6 +289,7 @@
     }
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
+      if (String(m.event).indexOf('streamTerminated') === 0) resetStats();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
     }
@@ -289,16 +329,17 @@
     makeCert: function () { return call('makeCert', {}); },
     httpInit: function (cert, key, uniqueId) { return call('httpInit', { cert: cert, key: key, uniqueId: uniqueId }); },
     startRequest: function () {
-      var a = arguments; // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, codecMode, ... a[18] audioConfig, a[24] videoCodec, a[25] hdr
+      var a = arguments; // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
+      // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
         appVer: a[8], gfeVer: a[9], rtspUrl: a[10], codecMode: a[11],
-        audioConfig: a[18], videoCodec: a[24], hdr: String(!!a[25])
+        audioConfig: a[19], videoCodec: a[24], hdr: String(!!a[25]), fullRange: String(!!a[26])
       });
     },
     stopRequest: function () { return call('stopStream', {}); },
     cancelRequest: function () { return call('cancelRequest', {}); },
-    toggleStats: function () { return call('toggleStats', {}); },
+    toggleStats: toggleStats,
   };
   window.AsyncFunctions = {
     openUrl: function (url, ppk, binary, timeout) {
@@ -343,7 +384,8 @@
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
     stopStream: function () { return bridgeCall('stopStream', {}); },
-    toggleStats: function () { return bridgeCall('toggleStats', {}); },
+    // the yellow-key caller ignores the promise: log a failure instead of an unhandled rejection
+    toggleStats: function () { return toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); }); },
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled
     HEAPF64: { buffer: new ArrayBuffer(0) },
   };

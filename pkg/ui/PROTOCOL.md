@@ -52,10 +52,10 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `openUrl` | `url`, `ppk` (server cert PEM, may be absent), `binary` (`true`/`false`) | `data` (string, or bytes when `binary=true`) | `ml_engine_open_url` |
 | `pair` | `major`, `addr`, `port`, `pin` | `serverCert` (PEM) | `ml_engine_pair` |
 | `cancelRequest` | – | – | `ml_engine_cancel_request` |
-| `startStream` | `host`, `w`, `h`, `fps`, `bitrate`, `rikey` (hex), `rikeyid`, `appVer`, `gfeVer`, `rtspUrl`, `codecMode`, `videoCodec` (`H264`/`HEVC`/`AV1`), `hdr` (`true`/`false`), `audioConfig` (`Stereo`/`51Surround`/`71Surround`) | – | `ml_engine_start_session` |
+| `startStream` | `host`, `w`, `h`, `fps`, `bitrate`, `rikey` (hex), `rikeyid`, `appVer`, `gfeVer`, `rtspUrl`, `codecMode`, `videoCodec` (`H264`/`HEVC`/`AV1`), `hdr` (`true`/`false`), `audioConfig` (`Stereo`/`51Surround`/`71Surround`, the audio channel layout), `fullRange` (`true`/`false`, optional, default `false`) | – | `ml_engine_start_session_v2` when the engine has it, else `ml_engine_start_session` (keeps the encoder's default color negotiation; `fullRange` is ignored) |
 | `stopStream` | – | – | `ml_engine_stop` |
 | `sendKeyboardEvent` | `key`, `action`, `mods` | – | `ml_engine_send_key` |
-| `toggleStats` | – | – | none (not supported yet) |
+| `toggleStats` | `on` (`true`/`false`: the wanted state; absent = flip) | – (`error` = `not supported` with an engine that lacks it) | `ml_engine_get_stats`; while on and a stream runs, the host polls it every 500 ms and sends `mlstats` events |
 | `stun` | – | `result` = `""` | none (not supported yet) |
 | `wakeOnLan` | `mac` | `error` = `not supported` | none (not supported yet) |
 | `setLog` | `on` (`true`/`false`) | – | `ml_engine_set_log_cb` (works also when the engine did not load) |
@@ -80,6 +80,26 @@ on, or not set and this is a debug package (`ML_TRACE`). The dlog output (`MLHOS
 |---------|------|
 | `Connection Established` | `startStream` succeeded (`LiStartConnection` returned 0) |
 | `streamTerminated: <code>` | a started session ended (`ml_engine_running()` went 1 → 0): `0` after `stopStream`; `-1` when `startStream` failed |
+| `mlstats` | live statistics, every 500 ms while `toggleStats` is on (see below) |
+
+### `mlstats`
+
+Fields (all decimal strings; the message is well under 4 KB, so it is never split into parts):
+
+| Key | Meaning |
+|-----|---------|
+| `depth` | video queue depth in ms: last submitted video PTS minus the player playing time |
+| `addepth` | the same for audio |
+| `fps` | video packets accepted in the last second |
+| `drop` | frames skipped by the late-frame cap |
+| `full` | frames lost because the player queue stayed full |
+| `uo` | `<underruns>/<overruns>` |
+| `err` | player errors |
+| `rec` | recoveries |
+| `play` | playing time in ms |
+
+The UI shows these in an overlay and does not pass the event to `window.handleMessage`.
+The host stops the polling and the UI hides the overlay on `streamTerminated`.
 
 ## Timeouts (UI side)
 

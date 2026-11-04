@@ -13,6 +13,7 @@
 
 #include "Limelight.h"
 #include "errors.h"
+#include "esplus_stats.h"
 #include "mlengine.h"
 #include "mltrace.h"
 
@@ -113,8 +114,10 @@ int ml_engine_start(const char *host, int appId, const char *pin,
 
   LiInitializeStreamConfiguration(&g_sc);
   g_sc.width = width; g_sc.height = height; g_sc.fps = fps; g_sc.bitrate = bitrate_kbps;
-  g_sc.packetSize = 1024;
+  g_sc.packetSize = 1392;   /* LAN packet size used by GameStream clients (fewer packets, less FEC overhead at high bitrates) */
   g_sc.supportedVideoFormats = VIDEO_FORMAT_H264;   /* HEVC later */
+  g_sc.colorSpace = COLORSPACE_REC_709;
+  g_sc.colorRange = COLOR_RANGE_LIMITED;
   g_sc.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
 
   LiInitializeServerInformation(&g_si);
@@ -129,6 +132,18 @@ int ml_engine_start(const char *host, int appId, const char *pin,
 
   if (start_connection() != 0) return 1;
   MLT("ml_engine_start -> 0");
+  return 0;
+}
+
+int ml_engine_get_stats(ml_engine_stats *out) {
+  if (!out || out->struct_size < (int32_t)sizeof *out) return GS_INVALID;
+  const esplus_stats_t *s = &esplus_stats;
+  out->running = g_running;
+  out->depth_ms = s->depth_ms; out->audio_depth_ms = s->audio_depth_ms; out->playing_ms = s->playing_ms;
+  out->submitted = s->submitted; out->dropped_late = s->dropped_late; out->dropped_full = s->dropped_full;
+  out->fps_submitted = s->fps_submitted; out->underruns = s->underruns; out->overruns = s->overruns;
+  out->errors = s->errors; out->last_error = s->last_error;
+  out->recoveries = s->recoveries; out->recovery_state = s->recovery_state;
   return 0;
 }
 
@@ -161,16 +176,16 @@ static int hexval(char c) {
   return -1;
 }
 
-int ml_engine_start_session(const char *host, int width, int height, int fps, int bitrate_kbps,
-                            const char *rikey_hex, int rikeyid, const char *app_version,
-                            const char *gfe_version, const char *rtsp_url,
-                            int server_codec_mode_support, const char *video_codec, int hdr,
-                            const char *audio_config) {
-  MLT("ml_engine_start_session host=%s %dx%d@%d %dkbps rikey=%s rikeyid=%d appver=%s gfever=%s rtsp=%s scm=%d codec=%s hdr=%d audio=%s",
+static int start_session_impl(const char *host, int width, int height, int fps, int bitrate_kbps,
+                              const char *rikey_hex, int rikeyid, const char *app_version,
+                              const char *gfe_version, const char *rtsp_url,
+                              int server_codec_mode_support, const char *video_codec, int hdr,
+                              const char *audio_config, int full_range) {
+  MLT("ml_engine_start_session host=%s %dx%d@%d %dkbps rikey=%s rikeyid=%d appver=%s gfever=%s rtsp=%s scm=%d codec=%s hdr=%d audio=%s full_range=%d",
       host ? host : "(null)", width, height, fps, bitrate_kbps, rikey_hex ? "(set)" : "(null)",
       rikeyid, app_version ? app_version : "(null)", gfe_version ? gfe_version : "(null)",
       rtsp_url ? "(set)" : "(null)", server_codec_mode_support, video_codec ? video_codec : "(null)",
-      hdr, audio_config ? audio_config : "(null)");
+      hdr, audio_config ? audio_config : "(null)", full_range);
   if (g_running) { MLT("ml_engine_start_session -> 0 (already streaming)"); return 0; }
   if (g_started) ml_engine_stop();
   if (!host || !rikey_hex || strlen(rikey_hex) != 32) { MLT("ml_engine_start_session -> GS_INVALID"); return GS_INVALID; }
@@ -197,7 +212,7 @@ int ml_engine_start_session(const char *host, int width, int height, int fps, in
 
   LiInitializeStreamConfiguration(&g_sc);
   g_sc.width = width; g_sc.height = height; g_sc.fps = fps; g_sc.bitrate = bitrate_kbps;
-  g_sc.packetSize = 1024;
+  g_sc.packetSize = 1392;   /* LAN packet size used by GameStream clients (fewer packets, less FEC overhead at high bitrates) */
   if (video_codec && !strcmp(video_codec, "HEVC"))
     g_sc.supportedVideoFormats = hdr ? VIDEO_FORMAT_H265_MAIN10 : VIDEO_FORMAT_H265;
   else {
@@ -207,6 +222,10 @@ int ml_engine_start_session(const char *host, int width, int height, int fps, in
     }
     g_sc.supportedVideoFormats = VIDEO_FORMAT_H264;
   }
+  int hevc = g_sc.supportedVideoFormats & VIDEO_FORMAT_MASK_H265;
+  g_sc.colorSpace = (hdr && hevc) ? COLORSPACE_REC_2020 : COLORSPACE_REC_709;
+  g_sc.colorRange = full_range ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
+  MLT("start_session: colorSpace=%d colorRange=%d", g_sc.colorSpace, g_sc.colorRange);
   g_sc.audioConfiguration = !audio_config ? AUDIO_CONFIGURATION_STEREO
     : !strcmp(audio_config, "51Surround") ? AUDIO_CONFIGURATION_51_SURROUND
     : !strcmp(audio_config, "71Surround") ? AUDIO_CONFIGURATION_71_SURROUND
@@ -226,4 +245,24 @@ int ml_engine_start_session(const char *host, int width, int height, int fps, in
   int rc = start_connection();
   MLT("ml_engine_start_session -> %d", rc);
   return rc;
+}
+
+int ml_engine_start_session(const char *host, int width, int height, int fps, int bitrate_kbps,
+                            const char *rikey_hex, int rikeyid, const char *app_version,
+                            const char *gfe_version, const char *rtsp_url,
+                            int server_codec_mode_support, const char *video_codec, int hdr,
+                            const char *audio_config) {
+  return start_session_impl(host, width, height, fps, bitrate_kbps, rikey_hex, rikeyid, app_version,
+                            gfe_version, rtsp_url, server_codec_mode_support, video_codec, hdr,
+                            audio_config, 0);
+}
+
+int ml_engine_start_session_v2(const char *host, int width, int height, int fps, int bitrate_kbps,
+                               const char *rikey_hex, int rikeyid, const char *app_version,
+                               const char *gfe_version, const char *rtsp_url,
+                               int server_codec_mode_support, const char *video_codec, int hdr,
+                               const char *audio_config, int full_range) {
+  return start_session_impl(host, width, height, fps, bitrate_kbps, rikey_hex, rikeyid, app_version,
+                            gfe_version, rtsp_url, server_codec_mode_support, video_codec, hdr,
+                            audio_config, full_range);
 }
