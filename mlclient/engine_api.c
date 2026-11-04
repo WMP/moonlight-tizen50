@@ -66,12 +66,13 @@ static void cl_connTerminated(int errorCode) {
   if (errorCode != 0) report_failure(errorCode, -1);   /* before g_running = 0: the host reads it after */
   g_running = 0;
 }
+/* moonlight-common-c is built with LC_LOG (build-deps-lib.sh): Limelog formats the line
+   itself and passes it as the only argument, so it is plain text here; a '%' in it must
+   not be expanded again. */
 static void cl_logMessage(const char *format, ...) {
-  char b[512];
-  va_list a; va_start(a, format); vsnprintf(b, sizeof b, format, a); va_end(a);
-  fputs(b, stderr);
-  mldiag_cc_line(b);
-  MLT("cc: %s", b);
+  fputs(format, stderr);
+  mldiag_cc_line(format);
+  MLT("cc: %s", format);
 }
 
 static void cl_stageStarting(int stage) { (void)stage; MLT("stage %d (%s) starting", stage, LiGetStageName(stage)); }

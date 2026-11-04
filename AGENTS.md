@@ -78,3 +78,12 @@ The point of this repo is to improve the client itself:
   3. Ask the reporter for: the `ML-ERROR` line, the full log from before `startStream`,
      the stream settings (resolution, fps, bitrate, codec, HDR) and the server name and version.
 - When you add a new failure path, add its data to the `ML-ERROR` line in the same change.
+
+## Branches and pull requests
+
+- **Every branch you push gets a pull request at once**, with a full description:
+  the goal (with a link to the issue, `Refs #n` or `Closes #n`), the changes per area,
+  how to check the result (for diagnostics: how to read the new data), the tests you ran
+  and the checks you could not run.
+- When you push more commits to the branch, update the pull request description so it
+  matches the whole branch.

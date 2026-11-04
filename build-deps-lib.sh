@@ -34,7 +34,9 @@ done
 "$AR" rcs "$OUT/libmbedcrypto_tv.a" "$OUT"/mbedtls/*.o
 
 echo "== moonlight-common-c (core + PlatformCrypto) =="
-CFLAGS="$BASE -std=gnu11 -DHAS_SOCKLEN_T -DNDEBUG -DUSE_MBEDTLS"
+# LC_LOG: Limelog goes to the logMessage callback (the engine counts it in the ML-ERROR line),
+# not only to the host's stderr
+CFLAGS="$BASE -std=gnu11 -DHAS_SOCKLEN_T -DNDEBUG -DUSE_MBEDTLS -DLC_LOG"
 CINC="-I$C/src -I$C/enet/include -I$C/reedsolomon -I$OUT/shim -I$BPD/mbedtls/include"
 for f in "$C"/src/*.c "$C"/enet/*.c "$C"/reedsolomon/rs.c; do
   b=$(basename "$f" .c); case "$b" in win32|ConnectionTester) continue;; esac

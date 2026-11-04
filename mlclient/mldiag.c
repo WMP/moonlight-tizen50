@@ -97,9 +97,9 @@ void mldiag_video_du(int is_idr) {
   pthread_mutex_unlock(&s_mu);
 }
 
-void mldiag_submit(int is_video, int status) {
+void mldiag_submit(int is_video, int ok, int status) {
   INC(is_video ? C_VSUB : C_ASUB);
-  if (status != 0) { INC(C_SUBFAIL); __atomic_store_n(&s_sub_last_bad, status, __ATOMIC_RELAXED); }
+  if (!ok) { INC(C_SUBFAIL); __atomic_store_n(&s_sub_last_bad, status, __ATOMIC_RELAXED); }
 }
 
 void mldiag_player(const char *what, int rc) {

@@ -355,7 +355,7 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
     int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok); mldiag_player("start", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
-  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS ? 0 : r);
+  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
     if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {

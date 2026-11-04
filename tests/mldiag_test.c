@@ -27,7 +27,7 @@ int main(void) {
   mldiag_cc_line("Video decode unit queue overflow\n");
   mldiag_video_setup(1, 1920, 1080, 60, 0);
   mldiag_video_du(0); mldiag_video_du(1);
-  mldiag_submit(1, 0); mldiag_submit(0, 0); mldiag_submit(0, 3);
+  mldiag_submit(1, 1, 4); mldiag_submit(0, 1, 4); mldiag_submit(0, 0, 3); mldiag_submit(0, 0, 0);   /* 0 = NOT_PREPARED: a failure */
   mldiag_player("open", 1); mldiag_player("win", 0); mldiag_player("prep", 1); mldiag_player("pdone", 1); mldiag_player("start", 1);
   mldiag_fail(-101, -1, NULL, 0, 2, 1, 7, 9);
   assert(mldiag_last(buf, sizeof buf) == -101);
@@ -35,7 +35,7 @@ int main(void) {
   assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
   assert(strstr(buf, "first_pkt_ms=12"));
   assert(strstr(buf, "du=2 idr=1"));
-  assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 vsub=1 asub=2 subfail=1/3 err=7/9"));
+  assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 vsub=1 asub=3 subfail=2/0 err=7/9"));
   assert(strstr(buf, "cc unrec=1 drop=1 waitidr=1 badlen=0 decrypt=0 corrupt=2 unkft=0 idrreq=2 fec=1 qovf=1 droplim=0"));
   assert(!strchr(buf, '\n'));
   puts(buf);
