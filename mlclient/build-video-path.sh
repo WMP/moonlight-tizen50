@@ -28,6 +28,7 @@ FLAGS="--sysroot=$DEPS/sysroot -mcpu=cortex-a53 -mfpu=neon-vfpv4 -mfloat-abi=sof
 
 "$GCC" $FLAGS -std=gnu11 -Wall -Wextra -I"$C/src" -I"$HERE/.." -c "$HERE/video_esplus.c" -o "$OUT/video_esplus.o"
 "$GCC" $FLAGS -std=gnu11 -Wall -Wextra -I"$C/src" -I"$HERE/.." -c "$HERE/esplus_player.c" -o "$OUT/esplus_player.o"
+"$GCC" $FLAGS -std=gnu11 -Wall -Wextra -c "$HERE/mldiag.c" -o "$OUT/mldiag.o"
 
 cat > "$OUT/vtest.c" <<'EOF'
 #include <openssl/x509.h>
@@ -39,7 +40,7 @@ int main(void){ DECODER_RENDERER_CALLBACKS dr; VidEsplus_FillCallbacks(&dr);
   return (dr.submitDecodeUnit!=0)&&((void*)gs_pair!=0); }
 EOF
 "$GCC" $FLAGS -I"$C/src" -I"$BPD/ossl-inc" -c "$OUT/vtest.c" -o "$OUT/vtest.o"
-"$GCC" $FLAGS -o "$OUT/vtest" "$OUT/vtest.o" "$OUT/video_esplus.o" "$OUT/esplus_player.o" \
+"$GCC" $FLAGS -o "$OUT/vtest" "$OUT/vtest.o" "$OUT/video_esplus.o" "$OUT/esplus_player.o" "$OUT/mldiag.o" \
   "$DEPSBUILD"/obj/*.o "$DEPSBUILD"/gs/*.o "$DEPSBUILD/libmbedcrypto_tv.a" \
   -L"$TVL" -Wl,-rpath-link,"$TVL" -Wl,--allow-shlib-undefined \
   -l:libesplusplayer.so -l:libecore_wl2.so.1 -l:libecore.so.1 \

@@ -266,6 +266,8 @@ namespace MoonlightHost
                                                     string gfeVersion, string rtspUrl,
                                                     int serverCodecModeSupport, string videoCodec, int hdr,
                                                     string audioConfig, int fullRange);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int LastErrorDelegate(byte[] buf, int len);
+        public static LastErrorDelegate     LastError;   // null with an engine that lacks it
         public static StartSessionV2Delegate StartSessionV2;   // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
@@ -306,6 +308,8 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { GetStats = null; }
             try { StartSessionV2 = MemLoader.GetDelegate<StartSessionV2Delegate>(h, "ml_engine_start_session_v2"); }
             catch (EntryPointNotFoundException) { StartSessionV2 = null; }
+            try { LastError = MemLoader.GetDelegate<LastErrorDelegate>(h, "ml_engine_last_error"); }
+            catch (EntryPointNotFoundException) { LastError = null; }
             Loaded = true;
         }
     }
@@ -341,10 +345,25 @@ namespace MoonlightHost
                 if (s_active && Engine.Loaded && Engine.Running() == 0)
                 {
                     s_active = false;
-                    SendTerminated("streamTerminated: 0");
+                    int code = ReadLastError(out string diag);
+                    if (diag != null) Log.Error(diag);
+                    SendTerminated("streamTerminated: " + code, diag);
                 }
             }
             catch (Exception ex) { Log.Error("monitor failed: " + ex.Message); }
+        }
+
+        // Engine failure code (0 = none / old engine) and its ML-ERROR line (null when empty).
+        private static int ReadLastError(out string line)
+        {
+            line = null;
+            if (!Engine.Loaded || Engine.LastError == null) return 0;
+            var buf = new byte[4096];
+            int code = Engine.LastError(buf, buf.Length);
+            int n = Array.IndexOf(buf, (byte)0);
+            if (n < 0) n = buf.Length;
+            if (n > 0) line = System.Text.Encoding.UTF8.GetString(buf, 0, n);
+            return code;
         }
 
         private static string Item(Tizen.Applications.Bundle b, string k)
@@ -383,7 +402,7 @@ namespace MoonlightHost
             if (cmd == "startStream")
             {
                 if (err == null) { s_active = true; SendEvent("Connection Established"); }
-                else SendTerminated("streamTerminated: -1");
+                else { ReadLastError(out string diag); if (diag != null) Log.Error(diag); SendTerminated("streamTerminated: -1", diag); }
             }
         }
 
@@ -508,10 +527,10 @@ namespace MoonlightHost
             catch (Exception ex) { Tizen.Log.Error("MLHOST", "log forward send failed: " + ex.Message); }
         }
 
-        private static void SendTerminated(string ev)
+        private static void SendTerminated(string ev, string diag = null)
         {
             StopStats();
-            SendEvent(ev);
+            SendEvent(ev, diag);
         }
 
         private static void StopStats()
@@ -557,8 +576,17 @@ namespace MoonlightHost
             catch (Exception ex) { Log.Error("stats failed: " + ex.Message); }
         }
 
-        private static void SendEvent(string ev)
+        private static int s_eventSeq;
+
+        private static void SendEvent(string ev, string diag = null)
         {
+            if (!string.IsNullOrEmpty(diag))
+            {
+                // the ML-ERROR line can pass the ~4 KB message limit: send it as parts (own id, never a command id)
+                var r = new Dictionary<string, object> { { "event", ev }, { "diag", diag } };
+                SendReply("ev" + Interlocked.Increment(ref s_eventSeq), r, s_uiApp, s_uiPort);
+                return;
+            }
             var m = new Tizen.Applications.Bundle();
             m.AddItem("event", ev);
             Send(m, s_uiApp, s_uiPort);

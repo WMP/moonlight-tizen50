@@ -15,6 +15,7 @@
 #include "errors.h"
 #include "esplus_stats.h"
 #include "mlengine.h"
+#include "mldiag.h"
 #include "mltrace.h"
 
 extern int  ml_cert_init(const char *dir);
@@ -41,22 +42,36 @@ void ml_engine_set_log_cb(ml_engine_log_cb cb) {
 static STREAM_CONFIGURATION g_sc;  /* static: held by moonlight-common-c for the session */
 static SERVER_INFORMATION g_si;
 
+/* Build the one-line failure report (also in release) from the engine counters. */
+static void report_failure(int code, int stage) {
+  uint32_t rtt = 0, var = 0;
+  if (!LiGetEstimatedRttInfo(&rtt, &var)) rtt = var = 0;
+  mldiag_fail(code, stage, stage >= 0 ? LiGetStageName(stage) : NULL, (int)LiGetHostFeatureFlags(),
+              (int)rtt, (int)var, esplus_stats.errors, esplus_stats.last_error);
+  char line[2048]; mldiag_last(line, sizeof line);
+  MLT("%s", line);
+}
+
 static void cl_stageFailed(int stage, int errorCode) {
   fprintf(stderr, "[ml] stage %d FAILED err=%d\n", stage, errorCode);
   MLT("stageFailed stage=%d err=%d", stage, errorCode);
+  report_failure(errorCode, stage);
 }
 /* Host dropped the stream -> clear running so ml_engine_wait() returns and the
    caller runs ml_engine_stop(), which releases the HW overlay. Without this the
    overlay stays grabbed and blocks the TV's own broadcast video. */
 static void cl_connTerminated(int errorCode) {
-  fprintf(stderr, "[ml] connection terminated err=%d\n", errorCode); g_running = 0;
+  fprintf(stderr, "[ml] connection terminated err=%d\n", errorCode);
   MLT("connectionTerminated err=%d", errorCode);
+  if (errorCode != 0) report_failure(errorCode, -1);   /* before g_running = 0: the host reads it after */
+  g_running = 0;
 }
 static void cl_logMessage(const char *format, ...) {
-  va_list a; va_start(a, format); vfprintf(stderr, format, a); va_end(a);
-#ifdef MLT_TRACE   /* moonlight-common-c RTSP/control logs */
-  { char b[512]; va_start(a, format); vsnprintf(b, sizeof b, format, a); va_end(a); MLT("cc: %s", b); }
-#endif
+  char b[512];
+  va_list a; va_start(a, format); vsnprintf(b, sizeof b, format, a); va_end(a);
+  fputs(b, stderr);
+  mldiag_cc_line(b);
+  MLT("cc: %s", b);
 }
 
 static void cl_stageStarting(int stage) { (void)stage; MLT("stage %d (%s) starting", stage, LiGetStageName(stage)); }
@@ -79,6 +94,11 @@ static int start_connection(void) {
       g_sc.bitrate, g_sc.supportedVideoFormats, g_sc.audioConfiguration, g_sc.packetSize);
   fprintf(stderr, "[ml] LiStartConnection %dx%d@%d %dkbps -> %s\n",
           g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, (const char *)g_si.address);
+  mldiag_cfg dc = { g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, g_sc.packetSize,
+                    g_sc.supportedVideoFormats, g_sc.colorSpace, g_sc.colorRange, g_sc.audioConfiguration,
+                    g_si.serverCodecModeSupport, g_sc.encryptionFlags,
+                    g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion };
+  mldiag_reset(&dc);
   int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
   if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("start_connection -> 1 (LiStartConnection %d)", err); return 1; }
   MLT("LiStartConnection -> 0");
@@ -99,6 +119,7 @@ int ml_engine_start(const char *host, int appId, const char *pin,
       bitrate_kbps, datadir ? datadir : "(null)");
   if (g_running) { MLT("ml_engine_start -> 0 (already streaming)"); return 0; }
   if (g_started) ml_engine_stop();  /* previous session ended by host drop but was never stopped */
+  mldiag_reset(NULL);   /* an early failure must not report the previous session */
   if (!host) { MLT("ml_engine_start -> 2 (no host)"); return 2; }
   if (!datadir) datadir = "/tmp";
   if (!width)  width = 1920;
@@ -147,6 +168,8 @@ int ml_engine_get_stats(ml_engine_stats *out) {
   return 0;
 }
 
+int ml_engine_last_error(char *buf, int len) { return mldiag_last(buf, len); }
+
 int ml_engine_running(void) { MLT("ml_engine_running -> %d", g_running); return g_running; }
 
 void ml_engine_wait(void) {
@@ -188,6 +211,7 @@ static int start_session_impl(const char *host, int width, int height, int fps, 
       hdr, audio_config ? audio_config : "(null)", full_range);
   if (g_running) { MLT("ml_engine_start_session -> 0 (already streaming)"); return 0; }
   if (g_started) ml_engine_stop();
+  mldiag_reset(NULL);   /* an early failure must not report the previous session */
   if (!host || !rikey_hex || strlen(rikey_hex) != 32) { MLT("ml_engine_start_session -> GS_INVALID"); return GS_INVALID; }
   unsigned char key[16];
   for (int i = 0; i < 16; i++) {
