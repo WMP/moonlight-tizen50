@@ -27,14 +27,17 @@ Patch files:
 
 - `0001-re-root-overlay.patch` — the device-integration overlay (docs, service
   path, probes).
-- `0002-manual-engine-loader.patch` — the manual ELF32-ARM engine loader
-  (`pkg/dotnet-host/ManualLoader.cs` + the host fallback to it + the diag
-  `anon-exec` probe). On web-launched host processes every fd-backed exec-mmap
-  route is refused (EPERM), while anonymous RW memory made executable with
-  mprotect still works; the loader maps the engine image that way, applies its
-  relocations, resolves its imports per dependency handle and runs its
-  initializers. Kept out of the clean upstream on purpose: it is a workaround
-  for the TV's exec-mmap policy, not engine or UI development.
+- `0002-manual-engine-loader.patch` — the host-side hook-up of the manual
+  ELF32-ARM engine loader: the `Program.cs` fallback (memfd → manual loader →
+  packaged file), the `GetDelegate` routing through the manual image's symbol
+  table, the diag `anon-exec` probe, and the README link. The loader itself
+  (`pkg/dotnet-host/ManualLoader.cs`) and the docs
+  (`docs/ENGINE-LOAD.md`, `docs/ENGINE-LOAD.en.md`) are maintained directly in
+  this repo (kept out of the rsync in sync-from-clean.yml), because on a
+  web-launched host process every fd-backed exec-mmap route is refused (EPERM)
+  while anonymous RW memory made executable with mprotect still works — a
+  workaround for the TV's exec-mmap policy, not engine or UI development. See
+  `docs/ENGINE-LOAD.en.md` for the full decision tree.
 
 Regenerate after intentionally changing the tracked tree:
 

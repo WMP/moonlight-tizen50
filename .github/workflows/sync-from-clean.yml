@@ -54,12 +54,19 @@ jobs:
           # Upstream code replaces the tracked tree; this repo's own infra is kept:
           # patches/, this workflow, FUNDING.yml, and .git. The upstream's own
           # AGENTS.md (which forbids RE content) does NOT belong in this repo.
+          # The manual engine loader and the engine-load docs are maintained
+          # directly here (device-policy workaround, see docs/ENGINE-LOAD.en.md):
+          # keep the whole file, the overlay patch 0002 carries only the
+          # Program.cs/Diag.cs edits that hook it up.
           rsync -a --delete \
             --exclude='/.git' \
             --exclude='/.gitmodules' \
             --exclude='/third_party' \
             --exclude='/AGENTS.md' \
             --exclude='/patches' \
+            --exclude='/pkg/dotnet-host/ManualLoader.cs' \
+            --exclude='/docs/ENGINE-LOAD.md' \
+            --exclude='/docs/ENGINE-LOAD.en.md' \
             --exclude='/.github/workflows/sync-from-clean.yml' \
             --exclude='/.github/FUNDING.yml' \
             /tmp/clean/ ./

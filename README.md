@@ -11,7 +11,9 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 > Status: **experimental / work in progress.** The streaming engine is verified
 > end-to-end on real hardware (pairing → launch → RTSP → hardware decode, 2–3
 > frame player latency). The hybrid app package (UI + service) is still being
-> brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state.
+> brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state,
+> and [ENGINE-LOAD](docs/ENGINE-LOAD.en.md) ([PL](docs/ENGINE-LOAD.md)) for how the engine `.so` is
+> loaded on a retail TV (the exec-mmap policy and the manual loader).
 
 > **Where to make changes:** the engine and UI are developed in
 > **[moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core)**. This repo
@@ -273,7 +275,7 @@ esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
 mlclient/             native engine + CLI harness (video, audio, input, pairing)
 pkg/                  hybrid package: Dockerfile, service (tpk), ui (wgt), build
 tests/                esppplay probe + host self-tests used during bring-up
-docs/                 BACKPORT / PROVENANCE / ARCHITECTURE / DEV-CERT (EN + PL)
+docs/                 BACKPORT / PROVENANCE / ARCHITECTURE / ENGINE-LOAD / DEV-CERT (EN + PL)
 third_party/          moonlight-tizen (web UI + moonlight-common-c), git submodule
 fetch-*.sh build-*.sh reproducible build scripts
 ```
