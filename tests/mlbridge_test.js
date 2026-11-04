@@ -254,6 +254,30 @@ test('debug package turns host log forwarding on at boot; mlDebug(false) is reme
   assert.strictEqual(sent.map(fields).filter(function (f) { return f.cmd === 'setLog'; }).length, 0);
 });
 
+test('mlDiag prints the host report line by line', async function () {
+  sent.length = 0;
+  var r = win.mlDiag();
+  assert.ok(/requested/.test(r));
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'diag'); assert.strictEqual(f.rerun, 'true');
+  reply(f.id, { report: 'diag#1 run: x\ndiag#1 summary: file: read=ok exec=ok, dlopen ok' });
+  await tick();
+  assert.ok(logs.indexOf('[MLDIAG] diag#1 run: x') >= 0);
+  assert.ok(logs.indexOf('[MLDIAG] diag#1 summary: file: read=ok exec=ok, dlopen ok') >= 0);
+});
+
+test('mlDiag("launch") tries each way while the host does not run', async function () {
+  var n = logs.length, l0 = launches;
+  win.mlDiag('launch');
+  assert.strictEqual(launches, l0 + 1, 'way 1 = launch');
+  advance(3000);                     // check after way 1: the stub never lists the host -> way 2
+  var out = logs.slice(n).join('\n');
+  assert.ok(/before: host process not running/.test(out), out);
+  assert.ok(/way 1 accepted/.test(out), out);
+  assert.ok(/way 2 threw: .*must never start the host/.test(out), out);
+  assert.ok(/launch test end: no way started the host/.test(out), out);
+});
+
 test('event passes string', async function () {
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   assert.strictEqual(handled.join('|'), 'streamTerminated: 0');

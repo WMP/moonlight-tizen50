@@ -70,6 +70,12 @@
   var retryTimer = null, retryDelay = 250;
   var DEFAULT_TIMEOUT = 15000, PAIR_TIMEOUT = 120000, RETRY_MAX = 4000;
 
+  function errText(e) {
+    if (!e) return '?';
+    var p = [e.name, e.message, e.code].filter(function (x) { return x !== undefined && x !== null && x !== ''; });
+    return p.length ? p.join(' / ') : String(e);
+  }
+
   // Once, on the first miss: say in the console whether the host is installed and
   // running, so a UI log alone tells "not installed" from "installed, not started".
   var hostReported = false;
@@ -80,6 +86,7 @@
     try { info = tizen.application.getAppInfo(ENGINE_APPID); }
     catch (e) { console.warn('[mlbridge] host ' + ENGINE_APPID + ' is not installed (' + (e && (e.name || e.message || e)) + ')'); return; }
     var what = '[mlbridge] host ' + ENGINE_APPID + ' installed (version ' + info.version + ', package ' + info.packageId + ')';
+    trace('host app info: name=' + info.name + ' show=' + info.show + ' installed=' + info.installDate + ' size=' + info.size);
     try {
       tizen.application.getAppsContext(function (ctx) {
         var up = ctx.some(function (c) { return c.appId === ENGINE_APPID; });
@@ -88,14 +95,33 @@
     } catch (e) { console.warn(what + ', running state unknown (' + (e && (e.name || e.message || e)) + ')'); }
   }
 
+  // Whether the host process runs and its port is open; calls done(running).
+  function hostState(tag, done) {
+    var port = 'open';
+    try { tizen.messageport.requestRemoteMessagePort(ENGINE_APPID, ENGINE_PORT); }
+    catch (e) { port = 'missing (' + errText(e) + ')'; }
+    function say(proc, up) { console.log('[mldiag] ' + tag + ': host process ' + proc + ', port ' + port); if (done) done(up); }
+    try {
+      tizen.application.getAppsContext(function (ctx) {
+        var c = ctx.filter(function (x) { return x.appId === ENGINE_APPID; });
+        say(c.length ? 'running (context ' + c[0].id + ')' : 'not running', c.length > 0);
+      }, function (e) { say('state unknown (' + errText(e) + ')', false); });
+    } catch (e) { say('state unknown (' + errText(e) + ')', false); }
+  }
+
   // Start the host (a no-display UI app) on the first miss, then every LAUNCH_EVERY-th.
-  var LAUNCH_EVERY = 8, misses = 0;
+  var LAUNCH_EVERY = 8, misses = 0, starts = 0, uiStart = Date.now();
   function startHost() {
+    var n = ++starts, at = Date.now();
+    console.log('[mlbridge] host start #' + n + ': tizen.application.launch(' + ENGINE_APPID + '), ' + (at - uiStart) + ' ms after UI start');
     try {
       tizen.application.launch(ENGINE_APPID,
-        function () { console.log('[mlbridge] host start requested'); },
-        function (e) { console.error('[mlbridge] host start failed: ' + (e && (e.name || e.message || e))); });
-    } catch (e) { console.error('[mlbridge] host start failed: ' + (e && (e.name || e.message || e))); }
+        function () {
+          console.log('[mlbridge] host start #' + n + ' requested (accepted in ' + (Date.now() - at) + ' ms)');
+          if (TRACE) setTimeout(function () { hostState('3 s after host start #' + n); }, 3000);
+        },
+        function (e) { console.error('[mlbridge] host start #' + n + ' failed: ' + errText(e)); });
+    } catch (e) { console.error('[mlbridge] host start #' + n + ' failed (threw): ' + errText(e)); }
   }
 
   function ensurePorts() {
@@ -117,7 +143,7 @@
       trace('ensurePorts: ok');
       return true;
     } catch (e) {
-      trace('ensurePorts: remote port missing', e && (e.name || e.message || e));
+      trace('ensurePorts: remote port missing (miss ' + (misses + 1) + ')', errText(e));
       reportHost();
       if (misses++ % LAUNCH_EVERY === 0) startHost();
       return false;
@@ -365,6 +391,59 @@
     return 'host/engine log in this console: ' + (on ? 'on' : 'off');
   };
 
+  // Diagnostics in this console (on a retail TV, Apps2Samsung's debug console is the
+  // only place to read logs):
+  //   mlDiag()          the host runs its engine load checks again and sends the report
+  //   mlDiag('launch')  start the host in each way the UI can, and say what happened
+  var DIAG_TIMEOUT = 60000;
+  window.mlDiag = function (what) {
+    if (what === 'launch') { diagLaunch(); return 'starting the host in each way; see the [mldiag] lines'; }
+    console.log('[mldiag] asking the host to run its checks');
+    bridgeCall('diag', { rerun: 'true' }, DIAG_TIMEOUT).then(function (r) {
+      String(r.report || '').split('\n').forEach(function (l) { console.log('[MLDIAG] ' + l); });
+      console.log('[mldiag] report end');
+    }, function (e) {
+      console.warn('[mldiag] no report from the host: ' + e + '. Is it running? Try mlDiag("launch").');
+    });
+    return 'host diagnostics requested';
+  };
+
+  // Each way the UI can start the host, one after another while it is not running.
+  // The UI cannot stop the host, so once one way starts it the later ways are skipped.
+  function diagLaunch() {
+    var ways = [
+      ['tizen.application.launch', function (ok, err) { tizen.application.launch(ENGINE_APPID, ok, err); }],
+      ['tizen.application.launchAppControl (operation default, explicit app id)', function (ok, err) {
+        var ac = new tizen.ApplicationControl('http://tizen.org/appcontrol/operation/default', null, null, null, null);
+        tizen.application.launchAppControl(ac, ENGINE_APPID, ok, err, null);
+      }]
+    ];
+    try { var me = tizen.application.getCurrentApplication().appInfo; console.log('[mldiag] UI ' + me.id + ' package ' + me.packageId + ' version ' + me.version); }
+    catch (e) { console.log('[mldiag] UI app info unavailable: ' + errText(e)); }
+    hostReported = false; reportHost();   // install state again, also when said before
+    hostState('before', function (up) {
+      if (up) { console.log('[mldiag] the host already runs: close it (or restart the TV) to test how it starts'); return; }
+      next(0);
+    });
+    function next(i) {
+      if (i >= ways.length) { console.log('[mldiag] launch test end: no way started the host'); return; }
+      var name = ways[i][0];
+      console.log('[mldiag] way ' + (i + 1) + ': ' + name);
+      function check() {
+        setTimeout(function () {
+          hostState('3 s after way ' + (i + 1), function (up) {
+            if (up) console.log('[mldiag] launch test end: way ' + (i + 1) + ' (' + name + ') started the host');
+            else next(i + 1);
+          });
+        }, 3000);
+      }
+      try {
+        ways[i][1](function () { console.log('[mldiag] way ' + (i + 1) + ' accepted'); check(); },
+                   function (e) { console.log('[mldiag] way ' + (i + 1) + ' error callback: ' + errText(e)); check(); });
+      } catch (e) { console.log('[mldiag] way ' + (i + 1) + ' threw: ' + errText(e)); next(i + 1); }
+    }
+  }
+
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -380,6 +459,12 @@
     if (window.common && typeof window.common.domContentLoaded === 'function') {
       window.common.domContentLoaded = function () {
         try { if (window.common.attachDefaultListeners) window.common.attachDefaultListeners(); } catch (e) {}
+        if (TRACE) {
+          try { var me = tizen.application.getCurrentApplication().appInfo; trace('ui app ' + me.id + ', package ' + me.packageId + ', version ' + me.version); }
+          catch (e) { trace('ui app info unavailable: ' + errText(e)); }
+          try { trace('platform ' + tizen.systeminfo.getCapability('http://tizen.org/feature/platform.version')); } catch (e) {}
+          console.log('[mlbridge] diagnostics: mlDiag() = host engine checks, mlDiag("launch") = host start test');
+        }
         connect();   // start/connect the host (commands queue until connected)
         if (debugStored()) window.mlDebug(true);
         trace('boot: moduleDidLoad found =', typeof window.moduleDidLoad === 'function');
