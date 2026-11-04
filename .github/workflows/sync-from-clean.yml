@@ -161,7 +161,8 @@ jobs:
           Review the diff, then merge.
           EOF
 
-          if gh pr view "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # Only an OPEN PR counts: `gh pr view <branch>` also returns merged/closed ones.
+          if [ -n "$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$TARGET_BRANCH" --state open --json number --jq '.[].number')" ]; then
             echo "PR for $TARGET_BRANCH already open; the push updated it"
             gh pr edit "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" \
               --title "Sync from clean upstream (core $CORE_REF @ $CORE_SHA)" \
