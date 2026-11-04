@@ -38,6 +38,8 @@ void esplus_sample_tick(uint64_t now_ms);
 int32_t esplus_correction_ms(void);
 /* Counts sampler ticks; video uses it to skip at most one late frame per tick. */
 uint32_t esplus_sample_seq(void);
+/* 1 once after a recovery seek (then 0): the video sink must return DR_NEED_IDR. */
+int esplus_take_need_idr(void);
 /* CLOCK_MONOTONIC in ms (sampler, arrival-mode PTS). */
 uint64_t esplus_mono_ms(void);
 

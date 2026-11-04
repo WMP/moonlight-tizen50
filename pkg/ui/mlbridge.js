@@ -239,7 +239,7 @@
   }
 
   // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
-  var statsOn = false, statsEl = null;
+  var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
   function statsDiv(create) {
     if (!statsEl && create && typeof document !== 'undefined' && document.body && document.createElement) {
       statsEl = document.createElement('div');
@@ -262,13 +262,14 @@
       'play ' + (Number(m.play) / 1000).toFixed(1) + ' s';
   }
   function resetStats() {
-    statsOn = false;
+    statsOn = false; statsGen++;
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
   }
   // Sends the wanted state (on), so a lost reply cannot leave the host and the overlay inverted.
   function toggleStats() {
-    var want = !statsOn;
+    var want = !statsOn, gen = statsGen;
     return bridgeCall('toggleStats', { on: String(want) }, DEFAULT_TIMEOUT).then(function (r) {
+      if (gen !== statsGen) return r;   // the stream ended meanwhile: the host stopped polling
       if (!want) resetStats();
       else statsOn = true;   // the overlay appears with the first mlstats event
       return r;

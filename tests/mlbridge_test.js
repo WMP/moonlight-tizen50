@@ -337,6 +337,18 @@ test('streamTerminated hides and clears the overlay, still reaches handleMessage
   assert.ok(await toggleStats());                   // leave it off
 });
 
+test('a toggle reply after streamTerminated leaves the overlay off', async function () {
+  var n = sent.length, p = win.SyncFunctions.toggleStats();
+  advance(250);
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  reply(fields(sent[n]).id, {});
+  await p;
+  listener(STATS);
+  assert.strictEqual(byId.mlstats.style.display, 'none');
+  assert.ok(await toggleStats(undefined, 'true'));  // the next press turns it on
+  assert.ok(await toggleStats(undefined, 'false'));
+});
+
 test('a rejected toggleStats leaves the overlay hidden', async function () {
   assert.ok(!(await toggleStats('not supported')));
   assert.strictEqual(byId.mlstats.style.display, 'none');

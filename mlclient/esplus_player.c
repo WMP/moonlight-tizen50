@@ -75,7 +75,10 @@ static uint64_t s_last_video_pts_ms, s_last_audio_pts_ms;   /* under s_lock */
 static uint64_t s_fps_t0;     /* start of the current fps second; 0 = not started */
 static uint32_t s_fps_sub0;
 
-extern void LiRequestIdrFrame(void);   /* moonlight-common-c; the host test stubs it */
+/* set by recover(): the video sink returns DR_NEED_IDR for its next non-IDR frame, so
+   moonlight-common-c drops the frames that reference the flushed ones and asks for an IDR */
+static volatile int s_need_idr;
+int esplus_take_need_idr(void) { return __atomic_exchange_n(&s_need_idr, 0, __ATOMIC_RELAXED); }
 
 static int64_t s_corr_us;            /* nudge correction, microseconds, under s_lock */
 static volatile int32_t s_corr_ms;   /* rounded, read lock-free by the video sink */
@@ -112,15 +115,16 @@ static uint64_t s_stall_play, s_stall_t, s_last_recover_ms;   /* s_stall_t 0 = n
 static uint32_t s_stall_sub;
 static int s_stall_armed, s_recover_count, s_have_recover, s_off_logged;
 
-/* Flushing seek a little behind the last video PTS. Returns 1 when the caller must force an IDR
- * after releasing s_lock. Does not wait for seek_done; never ends the session. */
+/* Flushing seek a little behind the last video PTS, then a fresh IDR (s_need_idr). Returns -1
+ * when it is too soon after the last one (an error then stays pending), else 0. Does not wait
+ * for seek_done; never ends the session. */
 static int recover(const char *why, uint64_t now_ms) {
   if (esplus_cfg.recover_max == 0) {
     if (!s_off_logged) { s_off_logged = 1; MLT("recovery off (%s)", why); }
     return 0;
   }
   if (esplus_stats.recovery_state == 2 || s_conflicted) return 0;
-  if (s_have_recover && now_ms - s_last_recover_ms < 2000) return 0;
+  if (s_have_recover && now_ms - s_last_recover_ms < 2000) return -1;
   if (s_recover_count >= esplus_cfg.recover_max) {
     esplus_stats.recovery_state = 2; MLT("recovery gave up"); PLOG("recovery gave up\n");
     return 0;
@@ -135,13 +139,14 @@ static int recover(const char *why, uint64_t now_ms) {
   MLT("recover (%s) seek %llu ms -> %d", why, (unsigned long long)target, ok);
   s_corr_us = 0; s_corr_ms = 0;
   s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted;
-  if (!s_conflicted) esplus_stats.recovery_state = 0;   /* a conflict during the seek stays visible */
-  return 1;
+  s_need_idr = 1;
+  int one = 1;   /* on_conflict may store 2 meanwhile, without s_lock: keep it */
+  __atomic_compare_exchange_n(&esplus_stats.recovery_state, &one, 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+  return 0;
 }
 
 /* One sampler step; the thread calls it with the monotonic clock, the host test with a fake one. */
 void esplus_sample_tick(uint64_t now_ms) {
-  int idr = 0;
   pthread_mutex_lock(&s_lock);
   if (s_pl && s_started) {
     const char *why = NULL;
@@ -166,12 +171,12 @@ void esplus_sample_tick(uint64_t now_ms) {
       } else if (s_stall_armed && now_ms - s_stall_t > (uint64_t)esplus_cfg.stall_ms
                  && esplus_stats.submitted != s_stall_sub) why = "stall";
     }
-    if (__atomic_exchange_n(&s_error_pending, 0, __ATOMIC_RELAXED)) why = "error";
-    if (why && !s_conflicted) idr = recover(why, now_ms);
+    int err = __atomic_exchange_n(&s_error_pending, 0, __ATOMIC_RELAXED);
+    if (err) why = "error";
+    if (why && !s_conflicted && recover(why, now_ms) < 0 && err) s_error_pending = 1;   /* retry after the cooldown */
   }
   s_tick_seq++;
   pthread_mutex_unlock(&s_lock);
-  if (idr) LiRequestIdrFrame();   /* never under s_lock */
 }
 
 uint64_t esplus_mono_ms(void) {
@@ -243,7 +248,7 @@ esplusplayer_handle esplus_create_open(void) {
   if (!s_pl) {
     load_cfg();
     memset((void *)&esplus_stats, 0, sizeof esplus_stats);   /* new session */
-    s_conflicted = 0; s_error_pending = 0;
+    s_conflicted = 0; s_error_pending = 0; s_need_idr = 0;
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
     s_pl = esplusplayer_create();

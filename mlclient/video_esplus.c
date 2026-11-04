@@ -75,6 +75,7 @@ static void VidDecStop(void) {}
 static void VidDecCleanup(void) { MLT("video cleanup"); esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
 
 static int VidDecSubmit(PDECODE_UNIT du) {
+  if (esplus_take_need_idr() && du->frameType != FRAME_TYPE_IDR) return DR_NEED_IDR;   /* after a recovery seek */
   /* experimental, off by default: the sampler's depth only refreshes per tick, so skip at most
      one frame per tick, and never the IDR we asked for. */
   if (esplus_cfg.drop_after_ms > 0 && esplus_stats.depth_ms > esplus_cfg.drop_after_ms
