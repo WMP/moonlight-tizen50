@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 059038f..cf2dc55 100644
+index 49ea77a..3d6d8c1 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,20 +1,28 @@
@@ -69,7 +69,7 @@ index 059038f..cf2dc55 100644
  
  ## Debug vs release packages
  
-@@ -127,38 +141,44 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
+@@ -138,38 +152,44 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
  
  ## Why this exists
  
@@ -132,9 +132,9 @@ index 059038f..cf2dc55 100644
 +During streaming the native service owns the hardware video overlay; the web UI
 +is the menu/launcher.
  
- ## Build (headless, Docker)
+ ## Latency & statistics
  
-@@ -202,6 +222,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
+@@ -264,6 +284,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
  
  `.github/workflows/build-packages.yml` is the reference for the full sequence.
  
@@ -168,7 +168,7 @@ index 059038f..cf2dc55 100644
  ## Requirements
  
  - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
-@@ -211,25 +258,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
+@@ -273,25 +320,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
  ## Repository layout
  
  ```
@@ -210,7 +210,7 @@ index 059038f..cf2dc55 100644
  
  **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
  **GPLv3**.
-@@ -240,5 +295,6 @@ device.
+@@ -302,5 +357,6 @@ device.
  
  ## Disclaimer
  
@@ -1048,7 +1048,7 @@ index 0000000..9152857
 +> Materiał pomocniczy inżynierski. Przed użyciem zewnętrznym części oznaczone
 +> jako założone wymagają weryfikacji na docelowym sprzęcie.
 diff --git a/esplusplayer_tv50.h b/esplusplayer_tv50.h
-index 1696478..47844c4 100644
+index b243b6b..a94cab9 100644
 --- a/esplusplayer_tv50.h
 +++ b/esplusplayer_tv50.h
 @@ -1,17 +1,22 @@
@@ -1206,11 +1206,11 @@ index 1696478..47844c4 100644
 + * prepare_async_done +24  [ASM 0x33938..0x33c30, 0x350e8, 0x34fb8, 0x35168] */
 +typedef void (*esplusplayer_error_cb)(uint32_t plusplayer_error_type); /* raw value, enum not mapped */
  typedef void (*esplusplayer_buffer_status_cb)(uint32_t stream_type, uint32_t status);
--typedef void (*esplusplayer_resource_conflicted_cb)(void);
+-typedef void (*esplusplayer_resource_conflicted_cb)(void); /* the player lost its resources to another app; only stop() leaves that state */
 -typedef void (*esplusplayer_eos_cb)(void);
 -typedef void (*esplusplayer_ready_to_prepare_cb)(uint32_t stream_type);
 -typedef void (*esplusplayer_prepare_async_done_cb)(int result_bool);
-+typedef void (*esplusplayer_resource_conflicted_cb)(void);              /* [ASM] no args seen; assumed */
++typedef void (*esplusplayer_resource_conflicted_cb)(void);              /* [ASM] no args seen; assumed. The player lost its resources to another app; only stop() leaves that state */
 +typedef void (*esplusplayer_eos_cb)(void);                              /* assumed */
 +typedef void (*esplusplayer_ready_to_prepare_cb)(uint32_t stream_type); /* [ASM 0x34f94] */
 +typedef void (*esplusplayer_prepare_async_done_cb)(int result_bool);    /* [ASM 0x35014] */

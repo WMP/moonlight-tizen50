@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index e522196..0612533 100644
+index 3d6d8c1..04c3483 100644
 --- a/README.md
 +++ b/README.md
 @@ -11,7 +11,9 @@ hardware video plane through the vendor library `libesplusplayer.so`.
@@ -13,7 +13,7 @@ index e522196..0612533 100644
  
  > **Where to make changes:** the engine and UI are developed in
  > **[moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core)**. This repo
-@@ -273,7 +275,7 @@ esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
+@@ -324,7 +326,7 @@ esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
  mlclient/             native engine + CLI harness (video, audio, input, pairing)
  pkg/                  hybrid package: Dockerfile, service (tpk), ui (wgt), build
  tests/                esppplay probe + host self-tests used during bring-up
@@ -91,7 +91,7 @@ index 6e3e839..278e932 100644
          {
              string bad = null;
 diff --git a/pkg/dotnet-host/Program.cs b/pkg/dotnet-host/Program.cs
-index 61ed086..400cecd 100644
+index aeec966..9092aef 100644
 --- a/pkg/dotnet-host/Program.cs
 +++ b/pkg/dotnet-host/Program.cs
 @@ -100,10 +100,24 @@ namespace MoonlightHost

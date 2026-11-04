@@ -2,7 +2,10 @@
 
 This repository is **generated**: it is the clean upstream
 [moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core) **plus
-`patches/`**, re-assembled by `.github/workflows/sync-from-clean.yml`.
+`patches/`**, re-assembled by `.github/workflows/sync-from-clean.yml`. The sync
+merges core's branch history (original commit names, authors and trees stay
+reachable) and then rebuilds the tree as core + `patches/`; a core branch
+syncs into the same-named branch here (core `main` → `sync/main`).
 
 ## Where to make changes
 

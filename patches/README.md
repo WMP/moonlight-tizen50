@@ -13,15 +13,29 @@ root with plain paths.
 
 Applied automatically by `.github/workflows/sync-from-clean.yml`:
 
-1. the clean upstream's files (default branch, or the branch given in the
-   manual run's `core_branch` input) are laid down at the repo root (upstream code only,
-   not its repo-level `AGENTS.md`; this repo's own `patches/`, sync workflow and
-   `FUNDING.yml` are preserved);
-2. `git apply patches/*.patch` re-adds this layer;
-3. the result is opened as a pull request.
+1. the target branch of the clean upstream (its default branch, or the branch
+   given in the manual run's `core_branch` input) is **merged with the `ours`
+   strategy**, so the original commits (names, authors, dates, trees) become
+   reachable from this repo's history;
+2. the upstream's files are laid down at the repo root (upstream code only;
+   this repo's own `patches/`, sync workflow, `FUNDING.yml`, `AGENTS.md`,
+   `.gitmodules`, `third_party/`, and the device-only files listed below are
+   preserved), then `git apply patches/*.patch` re-adds this layer — the result
+   is committed as one deterministic rebuild commit;
+3. the branch is pushed and a pull request opened against `main` here.
+
+Branch mapping: a core branch syncs into the **same-named branch** here
+(`core:feature/x` → `feature/x`). Core's `main` goes to `sync/main` here
+(a PR needs a different head than its base).
 
 If a patch no longer applies, the upstream changed the same lines this overlay
 touches — the sync run fails on purpose so a human can refresh the patch.
+
+The first sync after this model was introduced was refreshed against core
+`207360c` (the 4K/HEVC + latency/statistics work): `0001` re-based onto the new
+README wording (the "Latency & statistics" section moved the context lines) and
+the annotated `esplusplayer_tv50.h` (core documented `resource_conflicted`;
+both notes were merged in the overlay's copy).
 
 Patch files:
 

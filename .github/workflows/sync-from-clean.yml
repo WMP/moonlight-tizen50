@@ -1,9 +1,23 @@
 name: Sync from clean upstream
 
-# Pulls the clean upstream (moonlight-tizen50-core) into the repo root and re-applies
-# the device-integration overlay (patches/), then opens a PR with the result. Nothing
-# is merged automatically. If a patch no longer applies, the run fails on purpose so a
-# human refreshes the overlay (that is exactly the case worth a human's eyes).
+# Brings a branch of moonlight-tizen50-core into this repo while keeping the
+# original commits (names, authors, dates, trees) reachable from this repo's
+# history: the synced branch merges core's branch as an ancestor, so the PR's
+# commit list and `git log` show core's real commits.
+#
+# Branch mapping (a core branch syncs into the same-named branch here):
+#   core main      -> sync/main here (main -> main needs a PR branch), PR into main
+#   core <feature> -> <feature> here, PR into main
+#
+# Mechanism per run:
+#   1. merge core's branch with the `ours` strategy — adopts the commits, keeps
+#      this repo's tree;
+#   2. rebuild the tree deterministically as core's branch + patches/ overlay
+#      (same rsync + git apply as before);
+#   3. push the branch and open/update the PR.
+#
+# If a patch no longer applies, the run fails on purpose so a human refreshes
+# the overlay (that is exactly the case worth a human's eyes).
 
 on:
   workflow_dispatch:
@@ -30,34 +44,67 @@ jobs:
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v4
+        with:
+          # Full history: the sync merge must carry core's commits as ancestors.
+          fetch-depth: 0
 
-      - name: Fetch clean upstream
+      - name: Resolve the core branch
         run: |
           set -euo pipefail
           if [ -n "$CORE_BRANCH" ]; then
             git check-ref-format --branch "$CORE_BRANCH" >/dev/null \
               || { echo "::error::invalid branch name: $CORE_BRANCH"; exit 1; }
-            git clone --depth 1 --branch "$CORE_BRANCH" "$CLEAN_REPO" /tmp/clean
-            # One PR branch per core branch; '/' -> '-' avoids a ref clash with sync/from-clean.
-            echo "PR_BRANCH=sync/from-clean-${CORE_BRANCH//\//-}" >> "$GITHUB_ENV"
-            echo "SRC_LABEL=moonlight-tizen50-core@$CORE_BRANCH" >> "$GITHUB_ENV"
+            echo "CORE_REF=$CORE_BRANCH" >> "$GITHUB_ENV"
           else
-            git clone --depth 1 "$CLEAN_REPO" /tmp/clean
-            echo "PR_BRANCH=sync/from-clean" >> "$GITHUB_ENV"
-            echo "SRC_LABEL=moonlight-tizen50-core" >> "$GITHUB_ENV"
+            # Empty input -> the core's default branch.
+            CORE_REF="$(git ls-remote --symref "$CLEAN_REPO" HEAD | awk '/^ref:/ {sub("refs/heads/","",$2); print $2}')"
+            [ -n "$CORE_REF" ] || { echo "::error::could not resolve the default branch of $CLEAN_REPO"; exit 1; }
+            echo "CORE_REF=$CORE_REF" >> "$GITHUB_ENV"
           fi
-          echo "SRC_SHA=$(git -C /tmp/clean rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
-      - name: Lay down upstream at root + apply overlay
+      - name: Fetch clean upstream
         run: |
           set -euo pipefail
-          # Upstream code replaces the tracked tree; this repo's own infra is kept:
-          # patches/, this workflow, FUNDING.yml, and .git. The upstream's own
-          # AGENTS.md (which forbids RE content) does NOT belong in this repo.
-          # The manual engine loader and the engine-load docs are maintained
-          # directly here (device-policy workaround, see docs/ENGINE-LOAD.en.md):
-          # keep the whole file, the overlay patch 0002 carries only the
-          # Program.cs/Diag.cs edits that hook it up.
+          git fetch --no-tags "$CLEAN_REPO" "+refs/heads/$CORE_REF:refs/remotes/core/$CORE_REF"
+          echo "CORE_SHA=$(git rev-parse --short "refs/remotes/core/$CORE_REF")" >> "$GITHUB_ENV"
+
+      - name: Pick the target branch
+        run: |
+          set -euo pipefail
+          if [ "$CORE_REF" = "main" ]; then
+            # core main -> main here would have no PR head; use a dedicated branch.
+            echo "TARGET_BRANCH=sync/main" >> "$GITHUB_ENV"
+          else
+            # A feature branch of core syncs into the same-named branch here.
+            echo "TARGET_BRANCH=$CORE_REF" >> "$GITHUB_ENV"
+          fi
+
+      - name: Merge core history, then rebuild the tree
+        run: |
+          set -euo pipefail
+          git config user.name  github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git switch -C "$TARGET_BRANCH" origin/main
+
+          if git merge-base --is-ancestor "refs/remotes/core/$CORE_REF" HEAD; then
+            echo "core $CORE_REF is already an ancestor of main; overlay refresh only"
+          else
+            # Adopt core's commits as ancestors (names, authors, dates, trees);
+            # the tree is rebuilt right after, so 'ours' loses nothing.
+            git merge --allow-unrelated-histories --no-ff -s ours -m \
+              "sync: merge moonlight-tizen50-core $CORE_REF history ($CORE_SHA); tree rebuilt on top" \
+              "refs/remotes/core/$CORE_REF"
+          fi
+
+          # Lay the clean upstream down at the repo root; this repo's own infra
+          # and device-only files survive as rsync exclusions (full list in
+          # patches/README.md):
+          #  patches/, this workflow, FUNDING.yml, .gitmodules, third_party/,
+          #  AGENTS.md (this repo keeps its own), ManualLoader.cs,
+          #  docs/ENGINE-LOAD*.md (the TV exec-mmap workaround layer).
+          rm -rf /tmp/clean
+          mkdir /tmp/clean
+          git archive "refs/remotes/core/$CORE_REF" | tar -x -C /tmp/clean
           rsync -a --delete \
             --exclude='/.git' \
             --exclude='/.gitmodules' \
@@ -70,22 +117,58 @@ jobs:
             --exclude='/.github/workflows/sync-from-clean.yml' \
             --exclude='/.github/FUNDING.yml' \
             /tmp/clean/ ./
+
           for p in patches/*.patch; do
             echo "applying $p"
             git apply --whitespace=nowarn "$p" \
               || { echo "::error::$p no longer applies — the upstream changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
           done
 
-      - name: Open PR with the synced tree
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: ${{ env.PR_BRANCH }}
-          title: "Sync from clean upstream (${{ env.SRC_LABEL }})"
-          commit-message: "sync: pull clean upstream (${{ env.SRC_LABEL }} ${{ env.SRC_SHA }}) + re-apply patches/"
-          body: |
-            Automated sync: clean upstream (`${{ env.SRC_LABEL }}`, commit `${{ env.SRC_SHA }}`)
-            laid down at the repo root, then `patches/*.patch` re-applied.
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "tree unchanged after the rebuild; nothing to commit"
+            echo "NOTHING_TO_COMMIT=1" >> "$GITHUB_ENV"
+          fi
 
-            Review the diff, then merge. If this PR is empty, the tree already matches
-            the upstream + overlay.
-          delete-branch: true
+      - name: Commit the rebuilt tree
+        if: env.NOTHING_TO_COMMIT != '1'
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m "sync: rebuild the tree as core $CORE_REF ($CORE_SHA) + overlay"
+
+      - name: Push the branch and open the PR
+        if: env.NOTHING_TO_COMMIT != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The branch is generated: replace whatever was there before.
+          git push --force origin "$TARGET_BRANCH"
+
+          # An empty diff against main means the sync is already reflected.
+          if git diff --quiet origin/main "$TARGET_BRANCH"; then
+            echo "the rebuilt tree matches main already; no PR needed"
+            exit 0
+          fi
+
+          cat > /tmp/pr-body.md <<EOF
+          Sync of \`moonlight-tizen50-core $CORE_REF\` (\`$CORE_SHA\`).
+
+          The branch merges core's history first, so the commit list below shows
+          core's original commits (names, authors, trees preserved). The tree is
+          then rebuilt as core + \`patches/\`, which is what the diff shows.
+
+          Review the diff, then merge.
+          EOF
+
+          if gh pr view "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "PR for $TARGET_BRANCH already open; the push updated it"
+            gh pr edit "$TARGET_BRANCH" --repo "$GITHUB_REPOSITORY" \
+              --title "Sync from clean upstream (core $CORE_REF @ $CORE_SHA)" \
+              --body-file /tmp/pr-body.md
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base main --head "$TARGET_BRANCH" \
+              --title "Sync from clean upstream (core $CORE_REF @ $CORE_SHA)" \
+              --body-file /tmp/pr-body.md
+          fi
