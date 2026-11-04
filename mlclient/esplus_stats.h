@@ -34,4 +34,12 @@ extern esplus_cfg_t esplus_cfg;       /* read once per session in esplus_create_
  * depth_poll_ms; the host test calls it with a fake clock. */
 void esplus_sample_tick(uint64_t now_ms);
 
+/* Latency nudge (mode nudge): ms the video sink subtracts from each PTS. Lock-free. */
+int32_t esplus_correction_ms(void);
+/* Counts sampler ticks; video uses it to skip at most one late frame per tick. */
+uint32_t esplus_sample_seq(void);
+/* Ask the host for an IDR frame (LiRequestIdrFrame) unless one was asked less than
+ * idr_cooldown_ms ago; force ignores the cooldown. Never call it with s_lock held. */
+void esplus_request_idr(int force);
+
 #endif

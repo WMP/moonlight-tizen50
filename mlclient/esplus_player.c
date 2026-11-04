@@ -77,6 +77,45 @@ static uint64_t s_last_video_pts_ms, s_last_audio_pts_ms;   /* under s_lock */
 static uint64_t s_fps_t0;     /* start of the current fps second; 0 = not started */
 static uint32_t s_fps_sub0;
 
+extern void LiRequestIdrFrame(void);   /* moonlight-common-c; the host test stubs it */
+
+static int64_t s_corr_us;            /* nudge correction, microseconds, under s_lock */
+static volatile int32_t s_corr_ms;   /* rounded, read lock-free by the video sink */
+static uint64_t s_tick_prev_ms;      /* previous successful tick; 0 = none */
+static volatile uint32_t s_tick_seq;
+
+int32_t esplus_correction_ms(void) { return s_corr_ms; }
+uint32_t esplus_sample_seq(void) { return s_tick_seq; }
+
+static uint64_t mono_ms(void);
+static pthread_mutex_t s_idr_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t s_idr_last_ms; static int s_idr_have;
+
+void esplus_request_idr(int force) {
+  uint64_t now = mono_ms();
+  pthread_mutex_lock(&s_idr_mu);
+  int go = force || !s_idr_have || now - s_idr_last_ms >= (uint64_t)esplus_cfg.idr_cooldown_ms;
+  if (go) { s_idr_have = 1; s_idr_last_ms = now; }
+  pthread_mutex_unlock(&s_idr_mu);
+  MLT("request idr force=%d -> %d", force, go);
+  if (go) LiRequestIdrFrame();
+}
+
+static void nudge(int32_t depth, uint64_t now_ms) {
+  if (esplus_cfg.latency_mode != ESPLUS_LAT_NUDGE) return;
+  if (s_tick_prev_ms) {
+    int64_t err = (int64_t)depth - esplus_cfg.target_depth_ms, hyst = esplus_cfg.target_depth_ms / 2;
+    if (hyst < 10) hyst = 10;
+    int64_t step = (int64_t)esplus_cfg.nudge_max_ms_per_s * (int64_t)(now_ms - s_tick_prev_ms);   /* us */
+    if (err > hyst) s_corr_us += err * 1000 < step ? err * 1000 : step;
+    else if (err < -hyst) s_corr_us -= -err * 1000 < step ? -err * 1000 : step;
+    /* guard against a broken clock reading */
+    if (s_corr_us > 1000000) s_corr_us = 1000000;
+    if (s_corr_us < -1000000) s_corr_us = -1000000;
+    s_corr_ms = (int32_t)((s_corr_us + (s_corr_us < 0 ? -500 : 500)) / 1000);
+  }
+}
+
 static pthread_t s_smp_th;
 static pthread_mutex_t s_smp_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_smp_cv;
@@ -95,9 +134,12 @@ void esplus_sample_tick(uint64_t now_ms) {
       esplus_stats.fps_submitted = esplus_stats.submitted - s_fps_sub0;
       s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted;
     }
+    if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
+    s_tick_prev_ms = now_ms;
     MLT("stats depth=%dms audio=%dms fps=%u submitted=%u", esplus_stats.depth_ms,
         esplus_stats.audio_depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
   }
+  s_tick_seq++;
   pthread_mutex_unlock(&s_lock);
 }
 
@@ -292,6 +334,7 @@ void esplus_close(void) {
   }
   s_prepared = s_prepare_ok = s_started = 0;
   s_last_video_pts_ms = s_last_audio_pts_ms = 0; s_fps_t0 = 0;
+  s_corr_us = 0; s_corr_ms = 0; s_tick_prev_ms = 0;
   pthread_mutex_unlock(&s_lock);
   /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would
      shut down the host app's own ecore loop. */

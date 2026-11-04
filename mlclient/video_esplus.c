@@ -11,8 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "Limelight.h"
+#include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 #include "mltrace.h"
 
@@ -30,6 +33,16 @@ static uint8_t *s_scratch;
 static size_t s_scratch_cap;
 static uint64_t s_base_pts_ms;
 static int s_have_base;
+static uint64_t s_arrival_base_ms;
+static int s_have_arrival;
+static int64_t s_prev_pts_ms;
+static int s_have_prev;
+static uint32_t s_skip_seq;   /* sampler tick of the last late-frame skip */
+
+static uint64_t mono_ms(void) {
+  struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
+}
 
 static int ensure_scratch(size_t need) {
   if (need <= s_scratch_cap) return 0;
@@ -61,11 +74,22 @@ static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, v
   return 0;
 }
 
-static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0; esplus_prepare(); }
+static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0;
+  s_arrival_base_ms = 0; s_have_arrival = 0; s_prev_pts_ms = 0; s_have_prev = 0; s_skip_seq = esplus_sample_seq() - 1;
+  esplus_prepare(); }
 static void VidDecStop(void) {}
 static void VidDecCleanup(void) { MLT("video cleanup"); esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
 
 static int VidDecSubmit(PDECODE_UNIT du) {
+  /* experimental, off by default: the sampler's depth only refreshes per tick, so skip at most
+     one frame per tick, and never the IDR we asked for. */
+  if (esplus_cfg.drop_after_ms > 0 && esplus_stats.depth_ms > esplus_cfg.drop_after_ms
+      && du->frameType != FRAME_TYPE_IDR && esplus_sample_seq() != s_skip_seq) {
+    s_skip_seq = esplus_sample_seq();
+    __atomic_fetch_add(&esplus_stats.dropped_late, 1, __ATOMIC_RELAXED);
+    esplus_request_idr(0);
+    return DR_OK;
+  }
   if (ensure_scratch((size_t)du->fullLength)) return DR_NEED_IDR;
   size_t off = 0;
   for (PLENTRY e = du->bufferList; e; e = e->next) {
@@ -73,12 +97,30 @@ static int VidDecSubmit(PDECODE_UNIT du) {
     off += (size_t)e->length;
   }
   if (!s_have_base) { s_base_pts_ms = du->presentationTimeMs; s_have_base = 1; }
-  uint64_t pts_ms = du->presentationTimeMs - s_base_pts_ms;
+  int64_t pts_ms;
+  if (esplus_cfg.latency_mode == ESPLUS_LAT_ARRIVAL) {
+    uint64_t now = mono_ms();
+    if (!s_have_arrival) { s_arrival_base_ms = now; s_have_arrival = 1; }
+    pts_ms = (int64_t)(now - s_arrival_base_ms);
+  } else {
+    pts_ms = (int64_t)(du->presentationTimeMs - s_base_pts_ms);
+    if (esplus_cfg.latency_mode == ESPLUS_LAT_NUDGE) pts_ms -= esplus_correction_ms();
+  }
+  if (pts_ms < 0) pts_ms = 0;
+  /* the player's PTS resolution is 1 ms: keep PTS strictly increasing */
+  if (s_have_prev && pts_ms <= s_prev_pts_ms) pts_ms = s_prev_pts_ms + 1;
+  s_prev_pts_ms = pts_ms; s_have_prev = 1;
   esplusplayer_es_packet pkt = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, (char *)s_scratch, (uint32_t)off,
-                                pts_ms * 1000000ull, (1000000000ull / s_fps)};
+                                (uint64_t)pts_ms * 1000000ull, (1000000000ull / s_fps)};
   int r = esplus_submit(&pkt);
-  if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS || r == ESPLUSPLAYER_SUBMIT_STATUS_FULL
-      || r == ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED)
+  /* FULL backpressure: the player queue is full; retry briefly, then drop and ask for an IDR */
+  for (int i = 0; r == ESPLUSPLAYER_SUBMIT_STATUS_FULL && i < 3; i++) { usleep(2000); r = esplus_submit(&pkt); }
+  if (r == ESPLUSPLAYER_SUBMIT_STATUS_FULL) {
+    __atomic_fetch_add(&esplus_stats.dropped_full, 1, __ATOMIC_RELAXED);
+    esplus_request_idr(0);
+    return DR_OK;
+  }
+  if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS || r == ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED)
     return DR_OK;
   VLOG("submit_packet failed %d\n", r);
   return DR_NEED_IDR;

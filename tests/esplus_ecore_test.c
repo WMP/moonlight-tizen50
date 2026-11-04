@@ -45,11 +45,14 @@ int esplusplayer_start(esplusplayer_handle h) { (void)h; return 1; }
 static int submit_ret = 4;
 int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
 int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y;(void)ww;(void)hh; return 1; }
+static int idr_calls;
+void LiRequestIdrFrame(void) { idr_calls++; }
 extern esplusplayer_handle esplus_create_open(void);
 extern int esplus_set_window(int, int);
 extern void esplus_close(void);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern void esplus_prepare(void);
+extern void esplus_request_idr(int force);
 static void vsub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 static void asub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_AUDIO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 /* start a session on a stubbed, prepared and started player */
@@ -91,6 +94,23 @@ int main(void) {
   assert(esplus_stats.playing_ms == 500 && esplus_stats.depth_ms == 960 - 500 && esplus_stats.audio_depth_ms == 400);
   assert(esplus_stats.fps_submitted == 60);
   play_ok = 0; play_ms = 9999; esplus_sample_tick(3000); assert(esplus_stats.playing_ms == 500);   /* failed read: unchanged */
+  esplus_close();
+  /* b: nudge. Correction grows by at most nudge_max*dt; inside the hysteresis it holds. */
+  setenv("MLENGINE_LATENCY_MODE", "nudge", 1);
+  begin(); vsub(1000); play_ms = 100;               /* depth 900, target 50 */
+  esplus_sample_tick(1000); assert(esplus_correction_ms() == 0);     /* first tick: no change */
+  esplus_sample_tick(2000); assert(esplus_correction_ms() == 10);    /* 10 ms/s * 1 s */
+  esplus_sample_tick(2500); assert(esplus_correction_ms() == 15);    /* 5 ms more for 0.5 s */
+  esplus_sample_tick(3500); assert(esplus_correction_ms() == 25);
+  play_ms = 940;                                    /* depth 60: err 10 within hysteresis 25 */
+  esplus_sample_tick(4500); assert(esplus_correction_ms() == 25);
+  play_ms = 1200;                                   /* depth -200: pulls back */
+  esplus_sample_tick(5500); assert(esplus_correction_ms() == 15);
+  esplus_close(); assert(esplus_correction_ms() == 0);
+  unsetenv("MLENGINE_LATENCY_MODE");
+  idr_calls = 0; begin();                           /* IDR cooldown (500 ms default); force ignores it */
+  esplus_request_idr(0); esplus_request_idr(0); assert(idr_calls == 1);
+  esplus_request_idr(1); assert(idr_calls == 2);
   esplus_close();
   /* e: sampler thread starts at prepare, stops promptly at close */
   setenv("MLENGINE_DEPTH_POLL_MS", "50", 1);
