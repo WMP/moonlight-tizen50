@@ -13,6 +13,7 @@
 
 #include "Limelight.h"
 #include "errors.h"
+#include "esplus_stats.h"
 #include "mlengine.h"
 #include "mltrace.h"
 
@@ -129,6 +130,18 @@ int ml_engine_start(const char *host, int appId, const char *pin,
 
   if (start_connection() != 0) return 1;
   MLT("ml_engine_start -> 0");
+  return 0;
+}
+
+int ml_engine_get_stats(ml_engine_stats *out) {
+  if (!out || out->struct_size < (int32_t)sizeof *out) return GS_INVALID;
+  const esplus_stats_t *s = &esplus_stats;
+  out->running = g_running;
+  out->depth_ms = s->depth_ms; out->audio_depth_ms = s->audio_depth_ms; out->playing_ms = s->playing_ms;
+  out->submitted = s->submitted; out->dropped_late = s->dropped_late; out->dropped_full = s->dropped_full;
+  out->fps_submitted = s->fps_submitted; out->underruns = s->underruns; out->overruns = s->overruns;
+  out->errors = s->errors; out->last_error = s->last_error;
+  out->recoveries = s->recoveries; out->recovery_state = s->recovery_state;
   return 0;
 }
 

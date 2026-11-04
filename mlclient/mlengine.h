@@ -8,6 +8,7 @@
  */
 #ifndef MLENGINE_H
 #define MLENGINE_H
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,6 +53,26 @@ void ml_engine_free(void *p);
  * dlog/stderr output is unchanged. Release builds have no trace lines. */
 typedef void (*ml_engine_log_cb)(const char *line);
 void ml_engine_set_log_cb(ml_engine_log_cb cb);
+
+/* Live playback statistics (UI overlay, pkg/ui/PROTOCOL.md `mlstats`). The caller
+ * sets struct_size = sizeof(ml_engine_stats); the engine fills the struct and
+ * returns 0, or GS_INVALID when out is NULL or struct_size is too small. The
+ * layout is frozen; new fields only come with a new function. Works in release
+ * builds. depth_ms = last submitted video PTS minus the player's playing time. */
+typedef struct ml_engine_stats {
+  int32_t  struct_size;
+  int32_t  running;
+  int32_t  depth_ms;
+  int32_t  audio_depth_ms;
+  uint32_t playing_ms;
+  uint32_t submitted, dropped_late, dropped_full;
+  uint32_t fps_submitted;
+  uint32_t underruns, overruns;
+  uint32_t errors, last_error;
+  uint32_t recoveries;
+  int32_t  recovery_state;
+} ml_engine_stats;
+int ml_engine_get_stats(ml_engine_stats *out);
 
 #ifdef __cplusplus
 }

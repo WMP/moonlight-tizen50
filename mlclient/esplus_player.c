@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
@@ -70,6 +71,73 @@ static void load_cfg(void) {
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
       esplus_cfg.idr_cooldown_ms);
+}
+
+static uint64_t s_last_video_pts_ms, s_last_audio_pts_ms;   /* under s_lock */
+static uint64_t s_fps_t0;     /* start of the current fps second; 0 = not started */
+static uint32_t s_fps_sub0;
+
+static pthread_t s_smp_th;
+static pthread_mutex_t s_smp_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_smp_cv;
+static int s_smp_run, s_smp_stop;
+
+/* One sampler step; the thread calls it with the monotonic clock, the host test with a fake one. */
+void esplus_sample_tick(uint64_t now_ms) {
+  pthread_mutex_lock(&s_lock);
+  uint64_t play;
+  if (s_pl && s_started && esplusplayer_get_playing_time(s_pl, &play)) {
+    esplus_stats.playing_ms = (uint32_t)play;
+    esplus_stats.depth_ms = (int32_t)(s_last_video_pts_ms - play);
+    esplus_stats.audio_depth_ms = (int32_t)(s_last_audio_pts_ms - play);
+    if (!s_fps_t0) { s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted; }
+    else if (now_ms - s_fps_t0 >= 1000) {
+      esplus_stats.fps_submitted = esplus_stats.submitted - s_fps_sub0;
+      s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted;
+    }
+    MLT("stats depth=%dms audio=%dms fps=%u submitted=%u", esplus_stats.depth_ms,
+        esplus_stats.audio_depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
+  }
+  pthread_mutex_unlock(&s_lock);
+}
+
+static uint64_t mono_ms(void) {
+  struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
+}
+
+static void *sampler(void *arg) {
+  (void)arg;
+  pthread_mutex_lock(&s_smp_mu);
+  while (!s_smp_stop) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    t.tv_sec += esplus_cfg.depth_poll_ms / 1000;
+    t.tv_nsec += (long)(esplus_cfg.depth_poll_ms % 1000) * 1000000L;
+    if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+    if (pthread_cond_timedwait(&s_smp_cv, &s_smp_mu, &t) == 0 || s_smp_stop) continue;
+    pthread_mutex_unlock(&s_smp_mu);
+    esplus_sample_tick(mono_ms());
+    pthread_mutex_lock(&s_smp_mu);
+  }
+  pthread_mutex_unlock(&s_smp_mu);
+  return NULL;
+}
+
+static void sampler_start(void) {
+  if (s_smp_run || esplus_cfg.depth_poll_ms < 50) return;
+  pthread_condattr_t a; pthread_condattr_init(&a); pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+  pthread_cond_init(&s_smp_cv, &a); pthread_condattr_destroy(&a);
+  s_smp_stop = 0;
+  s_smp_run = pthread_create(&s_smp_th, NULL, sampler, NULL) == 0;
+  MLT("sampler start -> %d", s_smp_run);
+}
+
+static void sampler_stop(void) {   /* never call with s_lock held: the tick takes it */
+  if (!s_smp_run) return;
+  pthread_mutex_lock(&s_smp_mu); s_smp_stop = 1; pthread_cond_signal(&s_smp_cv); pthread_mutex_unlock(&s_smp_mu);
+  pthread_join(s_smp_th, NULL);
+  s_smp_run = 0;
+  MLT("sampler stopped");
 }
 
 static int s_ecore;   /* 1 while we hold an ecore_init()/ecore_wl2_init() reference */
@@ -189,6 +257,7 @@ void esplus_prepare(void) {
   int ok = esplusplayer_prepare_async(s_pl);
   MLT("esplus_prepare prepare_async -> %d", ok);
   if (!ok) PLOG("prepare_async failed\n");
+  sampler_start();
 }
 
 /* submit + start-once-prepared; safe to call from the video and audio threads. */
@@ -200,6 +269,10 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
   int r = esplusplayer_submit_packet(s_pl, pkt);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS && pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO)
     __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
+  if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
+    uint64_t ms = pkt->pts / 1000000;
+    if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) s_last_video_pts_ms = ms; else s_last_audio_pts_ms = ms;
+  }
   /* shortcut: sample per-frame trace (first 30, then every 300th, plus failures);
      raise the rate here if a hang needs every frame. Counter is under s_lock. */
   static unsigned n; n++;
@@ -210,6 +283,7 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
 
 void esplus_close(void) {
   MLT("esplus_close");
+  sampler_stop();
   pthread_mutex_lock(&s_lock);
   if (s_pl) {
     int st = esplusplayer_stop(s_pl), cl = esplusplayer_close(s_pl); (void)st; (void)cl;
@@ -217,6 +291,7 @@ void esplus_close(void) {
     s_pl = NULL;
   }
   s_prepared = s_prepare_ok = s_started = 0;
+  s_last_video_pts_ms = s_last_audio_pts_ms = 0; s_fps_t0 = 0;
   pthread_mutex_unlock(&s_lock);
   /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would
      shut down the host app's own ecore loop. */

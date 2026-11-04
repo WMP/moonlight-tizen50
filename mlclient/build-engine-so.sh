@@ -59,7 +59,7 @@ miss=""
 for s in ml_engine_start ml_engine_running ml_engine_wait ml_engine_stop \
          ml_engine_make_cert ml_engine_http_init ml_engine_open_url ml_engine_pair \
          ml_engine_cancel_request ml_engine_start_session ml_engine_send_key ml_engine_free \
-         ml_engine_set_log_cb; do
+         ml_engine_set_log_cb ml_engine_get_stats; do
   "$OBJD" -T "$OUT/libmlengine.so" | grep -q " $s\$" || miss="$miss $s"
 done
 [ -z "$miss" ] && echo "ABI exported: ml_engine_* OK" || { echo "MISSING ABI:$miss"; exit 1; }

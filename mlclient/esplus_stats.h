@@ -30,4 +30,8 @@ typedef struct { int latency_mode, target_depth_ms, nudge_max_ms_per_s, drop_aft
 extern esplus_stats_t esplus_stats;   /* counters: update with __atomic_fetch_add(..., __ATOMIC_RELAXED) */
 extern esplus_cfg_t esplus_cfg;       /* read once per session in esplus_create_open, read-only afterwards */
 
+/* One sampler step (playing time, depth, fps). The sampler thread calls it every
+ * depth_poll_ms; the host test calls it with a fake clock. */
+void esplus_sample_tick(uint64_t now_ms);
+
 #endif
