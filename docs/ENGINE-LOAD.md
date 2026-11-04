@@ -169,11 +169,29 @@ zależy od odpowiedzi na pytanie o kontekst startu:
 
 ## 8. Baseline do zebrania (pozycje otwarte)
 
-- [ ] mlDiag po ręcznym starcie (`app_launcher -s`) — sprecyzuje, czym
-      różni się działający kontekst (label? cgroup/dotnetzone?
-      `__K_RELOCATE_BELOW`?) od web-launched. Nie blokuje loadera.
+- [x] mlDiag po ręcznym starcie (`app_launcher -s`) — **zebrane 2026-11-04
+      (root SSH)**. Wynik zaskakujący: kontekst ręczny jest **identyczny**
+      z web-launched — ta sama etykieta procesu
+      (`User::Pkg::org.moonlight.host`), ten sam uid 5001/gid 100,
+      `CapEff=0`, `Seccomp=0`, ta sama cgroupa `6:devices:/lxc.payload/dotnetzone`
+      (z `devices.list = a *:* rwm`), wspólne pid/ipc/net ns z systemem
+      (odrębny tylko mnt ns), a `__K_RELOCATE_BELOW=com.samsung.tv.csfs`
+      występuje w **obu** bundlach (to nie jest wyznacznik drogi startu).
+      A mimo to w procesie ręcznym memfd-dlopen **przechodzi**
+      (`/proc/<pid>/maps` bez odmowy UEP w dmesg), a w web-launched
+      ten sam plik dostaje EPERM. Wniosek: różnica nie leży w żadnym
+      atrybucie widocznym w `/proc` — rozstrzyga stan wewnątrz taska
+      (najbardziej prawdopodobny mechanizm: **flaga `PF_UEP_*` /
+      exemption wydawana przez launchpad przy `app_launcher -s`,
+      dziedziczona przez procesy potomne** — wymaga potwierdzenia
+      w kodzie launchpada/libaul). Praktycznie: nie da się odróżnić
+      „dobrego" kontekstu żadnym statycznym testem — dopóki mechanizm
+      nie zostanie zlokalizowany, loader pozostaje jedyną działającą
+      trasą dla web-launched.
 - [ ] Empiryczny test rpc-port: czy proces started-by-rpc dostaje prawo
-      exec-mmap (§6).
+      exec-mmap (§6). Po wyniku baseline wyżej: rpc-port nadal wart testu —
+      start odbywa się przez amd/launchpad (nie przez child web-app), więc
+      szansa, że dostanie exemption jak start ręczny, jest realna.
 
 ## 9. Odtworzenie diagnozy
 
