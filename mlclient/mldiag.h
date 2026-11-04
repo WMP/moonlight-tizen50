@@ -18,7 +18,7 @@ void mldiag_cc_line(const char *line);                    /* one moonlight-commo
 void mldiag_video_setup(int fmt, int w, int h, int fps, int rc);
 void mldiag_video_du(int is_idr);                         /* every decode unit */
 void mldiag_submit(int is_video, int status);             /* esplus_submit result; 0 = success, else the player status */
-void mldiag_player(const char *what, int rc);             /* "win", "prep" or "start" */
+void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done) or "start" */
 /* Build, store and print the line. extra values come from the caller. */
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,
                  int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error);

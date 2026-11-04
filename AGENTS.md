@@ -62,7 +62,7 @@ The point of this repo is to improve the client itself:
   - error code and name, the failed stage, time since session start;
   - session config: resolution, fps, bitrate, packet size, video formats, color space
     and range, audio config, server codec mode, encryption flags, server versions;
-  - counters of each step: packets, frames, IDR frames, player window/prepare/start,
+  - counters of each step: packets, frames, IDR frames, player open/window/prepare/prepare-done/start,
     submits per stream type and their failures;
   - the counted moonlight-common-c log messages and the first and last library log lines.
 - **The line must reach the user.** The engine returns it with `ml_engine_last_error()`,

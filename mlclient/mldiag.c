@@ -19,7 +19,7 @@ static char s_first[FIRST_N][LINE_MAX_CC + 1], s_last[LAST_N][LINE_MAX_CC + 1];
 static int s_nlines;                      /* total cc lines seen */
 static char s_out[OUT_MAX]; static int s_code;
 static int s_vfmt, s_vw, s_vh, s_vfps, s_vrc, s_vset;
-static int s_win = -99, s_prep = -99, s_start = -99;   /* -99 = not reached */
+static int s_open = -99, s_win = -99, s_prep = -99, s_pdone = -99, s_start = -99;   /* -99 = not reached */
 static int s_first_pkt_ms = -1, s_sub_last_bad;
 static long long s_first_du_ms = -1;
 
@@ -40,7 +40,7 @@ void mldiag_reset(const mldiag_cfg *cfg) {
   memset(s_c, 0, sizeof s_c);
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
-  s_vset = 0; s_win = s_prep = s_start = -99; s_first_pkt_ms = -1; s_sub_last_bad = 0; s_first_du_ms = -1;
+  s_vset = 0; s_open = s_win = s_prep = s_pdone = s_start = -99; s_first_pkt_ms = -1; s_sub_last_bad = 0; s_first_du_ms = -1;
   memset(&s_cfg, 0, sizeof s_cfg);
   if (cfg) {
     s_cfg = *cfg;
@@ -104,7 +104,8 @@ void mldiag_submit(int is_video, int status) {
 
 void mldiag_player(const char *what, int rc) {
   pthread_mutex_lock(&s_mu);
-  if (!strcmp(what, "win")) s_win = rc; else if (!strcmp(what, "prep")) s_prep = rc; else if (!strcmp(what, "start")) s_start = rc;
+  if (!strcmp(what, "open")) s_open = rc; else if (!strcmp(what, "pdone")) s_pdone = rc;
+  else if (!strcmp(what, "win")) s_win = rc; else if (!strcmp(what, "prep")) s_prep = rc; else if (!strcmp(what, "start")) s_start = rc;
   pthread_mutex_unlock(&s_mu);
 }
 
@@ -145,7 +146,7 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   if (s_vset) ADD(" | video setup=0x%x %dx%d@%d rc=%d", s_vfmt, s_vw, s_vh, s_vfps, s_vrc);
   else ADD(" | video setup=none");
   ADD(" du=%u idr=%u first_du_ms=%s first_pkt_ms=%s", GET(C_DU), GET(C_IDR), fduS, fpS);
-  ADD(" | player win=%d prep=%d start=%d vsub=%u asub=%u subfail=%u/%d err=%u/%u", s_win, s_prep, s_start,
+  ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d vsub=%u asub=%u subfail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, player_errors, player_last_error);
   ADD(" | cc unrec=%u drop=%u waitidr=%u badlen=%u decrypt=%u corrupt=%u unkft=%u idrreq=%u fec=%u qovf=%u droplim=%u",
       GET(C_UNREC), GET(C_DROP), GET(C_WAITIDR), GET(C_BADLEN), GET(C_DECRYPT), GET(C_CORRUPT), GET(C_UNKFT),

@@ -93,7 +93,7 @@ as ordered parts with its own id (`ev<n>`, never a command id); the UI joins the
 - `code`, `name`: the termination code (`-100` NO_VIDEO_TRAFFIC, `-101` NO_VIDEO_FRAME, `-102` UNEXPECTED_EARLY_TERMINATION, `-103` PROTECTED_CONTENT, `-104` FRAME_CONVERSION, other: OTHER). `stage`: the failed connection stage, or `-`. `t`: ms since session start.
 - `cfg`: the requested stream (size, fps, bitrate, packet size, formats, color, audio, server codec support, encryption, server versions, host feature flags, RTT/variance). No address, key or PIN.
 - `video`: sink setup result, decode units (`du`), IDR frames (`idr`), ms to the first decode unit, ms to the first video packet.
-- `player`: window/prepare/start results (`-99` = not reached), packets submitted (`vsub`, `asub`), failed submits (`subfail=<count>/<last status>`), player errors (`err=<count>/<last>`).
+- `player`: results of `open`, window (`win`), `prepare_async` (`prep`), the prepare-done callback (`pdone`) and `start` (`-99` = not reached), packets submitted (`vsub`, `asub`), failed submits (`subfail=<count>/<last status>`, status `0` = NOT_PREPARED), player errors (`err=<count>/<last>`).
 - `cc`: counters of moonlight-common-c log messages (lost frames, IDR requests, FEC recoveries, and so on).
 - `cc-first`, `cc-last`: the first 4 and the last 8 moonlight-common-c log lines.
 
