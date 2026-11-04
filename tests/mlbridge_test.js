@@ -2,7 +2,7 @@
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], warns = [], timers = [], now = 0, tid = 1;
-var domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
+var byId = {}, domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
@@ -29,7 +29,12 @@ var tizen = {
 var sandbox = {
   window: win, tizen: tizen, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
   localStorage: { _d: {}, getItem: function (k) { return this._d[k] === undefined ? null : this._d[k]; }, setItem: function (k, v) { this._d[k] = String(v); } },
-  document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') domReady = f; } },
+  document: {
+    addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') domReady = f; },
+    body: { appendChild: function (e) { byId[e.id] = e; } },
+    createElement: function () { return { style: {}, textContent: '' }; },
+    getElementById: function (id) { return byId[id] || null; }
+  },
   console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () { warns.push([].join.call(arguments, ' ')); }, error: function () {} },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
   clearTimeout: function (id) { timers = timers.filter(function (t) { return t.id !== id; }); }
@@ -281,6 +286,57 @@ test('mlDiag("launch") tries each way while the host does not run', async functi
 test('event passes string', async function () {
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   assert.strictEqual(handled.join('|'), 'streamTerminated: 0');
+});
+
+var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'addepth', value: '8' }, { key: 'fps', value: '60' },
+  { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' }];
+async function toggleStats(err) {
+  var n = sent.length, p = win.Module.toggleStats();
+  advance(250);
+  assert.strictEqual(sent.length, n + 1);
+  var f = fields(sent[n]);
+  assert.strictEqual(f.cmd, 'toggleStats');
+  reply(f.id, err ? { error: err } : {});
+  try { await p; return true; } catch (e) { assert.strictEqual(e, err); return false; }
+}
+
+test('mlstats updates the overlay and is not passed to handleMessage', async function () {
+  var h = handled.length;
+  listener(STATS);                                  // off: nothing shown
+  assert.strictEqual(byId.mlstats, undefined);
+  assert.ok(await toggleStats());                   // on
+  var el = byId.mlstats;
+  assert.ok(el && el.style.display !== 'none' && el.id === 'mlstats');
+  listener(STATS);
+  assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms (audio 8 ms)');
+  assert.ok(/play 12\.3 s/.test(el.textContent), el.textContent);
+  assert.strictEqual(handled.length, h);
+});
+
+test('a second toggle hides the overlay', async function () {
+  assert.ok(await toggleStats());
+  assert.strictEqual(byId.mlstats.style.display, 'none');
+  listener(STATS);                                  // hidden: stays hidden
+  assert.strictEqual(byId.mlstats.style.display, 'none');
+});
+
+test('streamTerminated hides and clears the overlay, still reaches handleMessage', async function () {
+  assert.ok(await toggleStats());
+  listener(STATS);
+  assert.notStrictEqual(byId.mlstats.textContent, '');
+  var h = handled.length;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  assert.strictEqual(byId.mlstats.style.display, 'none');
+  assert.strictEqual(byId.mlstats.textContent, '');
+  assert.strictEqual(handled.length, h + 1);
+  assert.ok(await toggleStats());                   // toggle state was reset: this is "on" again
+  assert.notStrictEqual(byId.mlstats.style.display, 'none');
+  assert.ok(await toggleStats());                   // leave it off
+});
+
+test('a rejected toggleStats leaves the overlay hidden', async function () {
+  assert.ok(!(await toggleStats('not supported')));
+  assert.strictEqual(byId.mlstats.style.display, 'none');
 });
 
 test('trace hides secrets', async function () {

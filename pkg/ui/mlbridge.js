@@ -238,6 +238,41 @@
     }, retryDelay);
   }
 
+  // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
+  var statsOn = false, statsEl = null;
+  function statsDiv(create) {
+    if (!statsEl && create && typeof document !== 'undefined' && document.body && document.createElement) {
+      statsEl = document.createElement('div');
+      statsEl.id = 'mlstats';
+      statsEl.style.cssText = 'position:fixed;top:0;left:0;background:rgba(0,0,0,.55);color:#fff;' +
+        'font:12px monospace;padding:6px 8px;z-index:99999;white-space:pre';
+      document.body.appendChild(statsEl);
+    }
+    return statsEl;
+  }
+  function showStats(m) {
+    var el = statsDiv(statsOn);
+    if (!el || !statsOn) return;
+    el.textContent = 'depth ' + m.depth + ' ms (audio ' + m.addepth + ' ms)\n' +
+      'fps ' + m.fps + '\n' +
+      'dropped late ' + m.drop + ' / full ' + m.full + '\n' +
+      'under/over ' + m.uo + '\n' +
+      'errors ' + m.err + '  recoveries ' + m.rec + '\n' +
+      'play ' + (Number(m.play) / 1000).toFixed(1) + ' s';
+  }
+  function resetStats() {
+    statsOn = false;
+    if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
+  }
+  function toggleStats() {
+    return bridgeCall('toggleStats', {}, DEFAULT_TIMEOUT).then(function (r) {
+      statsOn = !statsOn;
+      var el = statsOn && statsDiv(true);
+      if (el) el.style.display = 'block'; else resetStats();
+      return r;
+    });
+  }
+
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
@@ -248,8 +283,10 @@
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
       return;
     }
+    if (m.event === 'mlstats') { showStats(m); return; }   // overlay only, not for handleMessage
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
+      if (String(m.event).indexOf('streamTerminated') === 0) resetStats();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
     }
@@ -298,7 +335,7 @@
     },
     stopRequest: function () { return call('stopStream', {}); },
     cancelRequest: function () { return call('cancelRequest', {}); },
-    toggleStats: function () { return call('toggleStats', {}); },
+    toggleStats: toggleStats,
   };
   window.AsyncFunctions = {
     openUrl: function (url, ppk, binary, timeout) {
@@ -343,7 +380,7 @@
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
     stopStream: function () { return bridgeCall('stopStream', {}); },
-    toggleStats: function () { return bridgeCall('toggleStats', {}); },
+    toggleStats: toggleStats,
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled
     HEAPF64: { buffer: new ArrayBuffer(0) },
   };

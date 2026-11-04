@@ -191,6 +191,15 @@ namespace MoonlightHost
         }
     }
 
+    // ml_engine_stats (mlengine.h): 15 x 4 bytes, no padding.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct EngineStats
+    {
+        public int StructSize, Running, DepthMs, AudioDepthMs;
+        public uint PlayingMs, Submitted, DroppedLate, DroppedFull, FpsSubmitted, Underruns, Overruns, Errors, LastError, Recoveries;
+        public int RecoveryState;
+    }
+
     // The engine C ABI (mlengine.h), bound at runtime from the in-memory .so.
     internal static class Engine
     {
@@ -234,6 +243,8 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void LogCbDelegate(IntPtr line);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetLogCbDelegate(LogCbDelegate cb);
         public static SetLogCbDelegate      SetLogCb;   // null with an engine that lacks it
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GetStatsDelegate(ref EngineStats s);
+        public static GetStatsDelegate      GetStats;   // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -269,6 +280,8 @@ namespace MoonlightHost
             Free          = MemLoader.GetDelegate<FreeDelegate>(h,          "ml_engine_free");
             try { SetLogCb = MemLoader.GetDelegate<SetLogCbDelegate>(h, "ml_engine_set_log_cb"); }
             catch (EntryPointNotFoundException) { SetLogCb = null; }
+            try { GetStats = MemLoader.GetDelegate<GetStatsDelegate>(h, "ml_engine_get_stats"); }
+            catch (EntryPointNotFoundException) { GetStats = null; }
             Loaded = true;
         }
     }
@@ -285,6 +298,8 @@ namespace MoonlightHost
         private static volatile bool s_active;
         private static string s_uiApp = DefaultApp;
         private static string s_uiPort = DefaultPort;
+        private static System.Threading.Timer s_stats;   // live stats overlay, null while off
+        private static readonly object s_statsLock = new object();
 
         public static void Start()
         {
@@ -302,7 +317,7 @@ namespace MoonlightHost
                 if (s_active && Engine.Loaded && Engine.Running() == 0)
                 {
                     s_active = false;
-                    SendEvent("streamTerminated: 0");
+                    SendTerminated("streamTerminated: 0");
                 }
             }
             catch (Exception ex) { Log.Error("monitor failed: " + ex.Message); }
@@ -344,7 +359,7 @@ namespace MoonlightHost
             if (cmd == "startStream")
             {
                 if (err == null) { s_active = true; SendEvent("Connection Established"); }
-                else SendEvent("streamTerminated: -1");
+                else SendTerminated("streamTerminated: -1");
             }
         }
 
@@ -469,6 +484,52 @@ namespace MoonlightHost
             catch (Exception ex) { Tizen.Log.Error("MLHOST", "log forward send failed: " + ex.Message); }
         }
 
+        private static void SendTerminated(string ev)
+        {
+            StopStats();
+            SendEvent(ev);
+        }
+
+        private static void StopStats()
+        {
+            lock (s_statsLock) { s_stats?.Dispose(); s_stats = null; }
+        }
+
+        // Returns an error text, or null when ok.
+        private static string ToggleStats()
+        {
+            if (Engine.GetStats == null) return "not supported";
+            lock (s_statsLock)
+            {
+                if (s_stats != null) { s_stats.Dispose(); s_stats = null; }
+                else s_stats = new System.Threading.Timer(_ => StatsTick(), null, 500, 500);
+            }
+            return null;
+        }
+
+        private static void StatsTick()
+        {
+            try
+            {
+                var s = new EngineStats { StructSize = Marshal.SizeOf<EngineStats>() };
+                if (Engine.GetStats(ref s) != 0) return;
+                var c = System.Globalization.CultureInfo.InvariantCulture;
+                var m = new Tizen.Applications.Bundle();
+                m.AddItem("event", "mlstats");
+                m.AddItem("depth", s.DepthMs.ToString(c));
+                m.AddItem("addepth", s.AudioDepthMs.ToString(c));
+                m.AddItem("fps", s.FpsSubmitted.ToString(c));
+                m.AddItem("drop", s.DroppedLate.ToString(c));
+                m.AddItem("full", s.DroppedFull.ToString(c));
+                m.AddItem("uo", s.Underruns.ToString(c) + "/" + s.Overruns.ToString(c));
+                m.AddItem("err", s.Errors.ToString(c));
+                m.AddItem("rec", s.Recoveries.ToString(c));
+                m.AddItem("play", s.PlayingMs.ToString(c));
+                Send(m, s_uiApp, s_uiPort);
+            }
+            catch (Exception ex) { Log.Error("stats failed: " + ex.Message); }
+        }
+
         private static void SendEvent(string ev)
         {
             var m = new Tizen.Applications.Bundle();
@@ -565,7 +626,7 @@ namespace MoonlightHost
                         Engine.SendKey(key, action, mods);
                         return null;
                     }
-                case "toggleStats": return null;
+                case "toggleStats": return ToggleStats();
                 case "stun": r.Add("result", ""); return null;
                 case "wakeOnLan": return "not supported";
                 default: return "unknown cmd " + cmd;
