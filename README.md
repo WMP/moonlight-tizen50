@@ -171,6 +171,56 @@ parts and replacing the EMSS video/audio path with a native engine built on
 During streaming the engine owns the hardware video overlay; the web UI is the
 menu/launcher.
 
+## Latency & statistics
+
+**Queue depth.** `depth_ms` = the PTS of the last video packet accepted by the
+player minus `esplusplayer_get_playing_time`: how far ahead of the screen the
+player queue is. A sampler thread reads it every `MLENGINE_DEPTH_POLL_MS` (the
+counters and the sampler also run in release builds). `audio_depth_ms` is the same
+for audio, which keeps its sample-counter PTS, so the two values show A/V drift.
+
+**Pacing modes** (`MLENGINE_LATENCY_MODE`, video only):
+
+| Mode | Video PTS |
+|---|---|
+| `off` (default) | host PTS minus the first frame's PTS |
+| `nudge` | the same minus a slow correction that moves `depth_ms` towards `MLENGINE_TARGET_DEPTH_MS` (at most `MLENGINE_NUDGE_MAX_MS_PER_S` ms per second; no change inside a hysteresis of max(10 ms, target/2); the correction is capped at ±1 s) |
+| `arrival` (experimental) | the TV's monotonic clock at submit, from the first frame |
+
+In all modes video PTS are strictly increasing (the player's PTS unit is 1 ms).
+
+**Backpressure.** A `FULL` submit is retried 3 times (2 ms apart); then the frame
+is dropped (`dropped_full`) and an IDR is requested. With `MLENGINE_DROP_AFTER_MS`
+> 0, a non-IDR frame is skipped (`dropped_late`, at most one per sampler tick) while
+`depth_ms` is above that value. IDR requests (`LiRequestIdrFrame`) are limited by
+`MLENGINE_IDR_COOLDOWN_MS`.
+
+**Recovery.** When playing time stops for `MLENGINE_STALL_MS` while frames are
+still submitted, or after a player error, the engine does a flushing
+`esplusplayer_seek` to `MLENGINE_RECOVER_BACK_MS` before the last video PTS and
+forces an IDR. At most `MLENGINE_RECOVER_MAX` recoveries per session, at least
+2 s apart; then it stops trying (`recovery_state` 2). A resource conflict (another
+app took the player) is final: only `stop()` leaves it, so it never triggers a
+recovery. The watchdog never ends the session itself.
+
+**Knobs.** Environment variables of the engine process, read once when the player
+is created (for example on the CLI harness command line; the .NET host sets none):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MLENGINE_LATENCY_MODE` | `off` | `off` \| `nudge` \| `arrival` |
+| `MLENGINE_TARGET_DEPTH_MS` | `50` | `nudge` target queue depth |
+| `MLENGINE_NUDGE_MAX_MS_PER_S` | `10` | max `nudge` correction rate |
+| `MLENGINE_DROP_AFTER_MS` | `0` (off) | late-frame skip threshold |
+| `MLENGINE_DEPTH_POLL_MS` | `250` | sampler period; below 50 the sampler does not run |
+| `MLENGINE_STALL_MS` | `700` | watchdog: no playing-time progress |
+| `MLENGINE_RECOVER_MAX` | `0` (off) | recoveries per session (3 recommended once validated on a TV) |
+| `MLENGINE_RECOVER_BACK_MS` | `250` | seek target behind the last video PTS |
+| `MLENGINE_IDR_COOLDOWN_MS` | `500` | min. time between IDR requests |
+
+**Overlay.** `toggleStats` in the UI turns on a live overlay (`mlstats` events from
+`ml_engine_get_stats`, every 500 ms); see `pkg/ui/PROTOCOL.md`.
+
 ## Build (headless, Docker)
 
 Everything builds in one **self-contained image** (`pkg/Dockerfile`): Tizen Studio
