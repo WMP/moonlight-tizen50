@@ -23,6 +23,22 @@ Applied automatically by `.github/workflows/sync-from-clean.yml`:
 If a patch no longer applies, the upstream changed the same lines this overlay
 touches — the sync run fails on purpose so a human can refresh the patch.
 
+Patch files:
+
+- `0001-re-root-overlay.patch` — the device-integration overlay (docs, service
+  path, probes).
+- `0002-manual-engine-loader.patch` — the host-side hook-up of the manual
+  ELF32-ARM engine loader: the `Program.cs` fallback (memfd → manual loader →
+  packaged file), the `GetDelegate` routing through the manual image's symbol
+  table, the diag `anon-exec` probe, and the README link. The loader itself
+  (`pkg/dotnet-host/ManualLoader.cs`) and the docs
+  (`docs/ENGINE-LOAD.md`, `docs/ENGINE-LOAD.en.md`) are maintained directly in
+  this repo (kept out of the rsync in sync-from-clean.yml), because on a
+  web-launched host process every fd-backed exec-mmap route is refused (EPERM)
+  while anonymous RW memory made executable with mprotect still works — a
+  workaround for the TV's exec-mmap policy, not engine or UI development. See
+  `docs/ENGINE-LOAD.en.md` for the full decision tree.
+
 Regenerate after intentionally changing the tracked tree:
 
     # base = clean upstream (minus AGENTS.md, .gitmodules, third_party/);

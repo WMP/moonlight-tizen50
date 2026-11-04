@@ -100,10 +100,24 @@ namespace MoonlightHost
         [DllImport("libdl.so.2")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
         [DllImport("libdl.so.2")]                       private static extern IntPtr dlerror();
 
-        // Load the engine image from an anonymous fd. The fd must stay open for process life.
+        // Load the engine image from an anonymous fd; on targets that restrict dlopen of a
+        // mapped file, fall back to the manual ELF32-ARM loader (ManualLoader.cs).
         public static IntPtr LoadFromMemory(byte[] so)
         {
-            return Open("/proc/self/fd/" + CreateMemfd(so), "memfd");
+            try
+            {
+                return Open("/proc/self/fd/" + CreateMemfd(so), "memfd");
+            }
+            catch (Exception memErr)
+            {
+                // Some targets restrict dlopen of a mapped file (a memfd included). Map the
+                // image into plain anonymous memory ourselves. Keep the memfd reason if the
+                // manual route fails too, so Engine.Load's packaged-file fallback still runs.
+                Log.Error("memfd route failed: " + memErr.Message + "; trying the manual loader");
+                try { return ManualLoader.Load(so).Base; }
+                catch (Exception manErr)
+                { throw new InvalidOperationException(memErr.Message + "; manual loader: " + manErr.Message); }
+            }
         }
 
         // An anonymous fd holding the bytes of so (also used by Diag.cs).
@@ -184,7 +198,8 @@ namespace MoonlightHost
 
         public static T GetDelegate<T>(IntPtr handle, string symbol) where T : class
         {
-            IntPtr p = dlsym(handle, symbol);
+            // A manually mapped image has no dlopen handle: resolve from its own symtab.
+            IntPtr p = (ManualLoader.Image != null && handle == ManualLoader.Image.Base) ? ManualLoader.Image.Resolve(symbol) : dlsym(handle, symbol);
             if (p == IntPtr.Zero) throw new EntryPointNotFoundException("dlsym: " + symbol);
             Log.Trace("dlsym " + symbol + " -> 0x" + p.ToInt64().ToString("x"));
             return (T)(object)Marshal.GetDelegateForFunctionPointer(p, typeof(T));

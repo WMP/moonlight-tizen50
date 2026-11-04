@@ -12,7 +12,11 @@ This repository is **generated**: it is the clean upstream
   **overwritten on the next sync**.
 - **Maintained directly here only:** `patches/` (the device-integration overlay),
   the device-only files (`pkg/service/`, `pkg/roottest/`), `docs/`, and the infra
-  (`.github/`, this file).
+  (`.github/`, this file). This includes the manual engine loader
+  (`pkg/dotnet-host/ManualLoader.cs`, with `docs/ENGINE-LOAD*.md` and the
+  `Program.cs`/`Diag.cs` hook-up in `patches/0002-manual-engine-loader.patch`):
+  it works around the TV's exec-mmap policy and stays out of the clean upstream
+  on purpose.
 - If a change in core also needs the overlay adjusted, regenerate
   `patches/0001-*.patch` (see `patches/README.md`) and keep the round-trip valid:
   `clean (minus AGENTS.md, .gitmodules, third_party/) + patch == this tree
