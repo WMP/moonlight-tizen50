@@ -1,7 +1,7 @@
 // Host self-test for pkg/ui/mlbridge.js: node tests/mlbridge_test.js
 var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
-var logs = [], warns = [], timers = [], now = 0, tid = 1;
+var logs = [], warns = [], errs = [], timers = [], now = 0, tid = 1;
 var byId = {}, domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
@@ -35,7 +35,7 @@ var sandbox = {
     createElement: function () { return { style: {}, textContent: '' }; },
     getElementById: function (id) { return byId[id] || null; }
   },
-  console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () { warns.push([].join.call(arguments, ' ')); }, error: function () {} },
+  console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () { warns.push([].join.call(arguments, ' ')); }, error: function () { errs.push([].join.call(arguments, ' ')); } },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
   clearTimeout: function (id) { timers = timers.filter(function (t) { return t.id !== id; }); }
 };
@@ -315,6 +315,26 @@ test('mlDiag("launch") tries each way while the host does not run', async functi
 test('event passes string', async function () {
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   assert.strictEqual(handled.join('|'), 'streamTerminated: 0');
+});
+
+test('event with diag logs the ML-ERROR line and passes the code', async function () {
+  var line = 'ML-ERROR code=-101 name=NO_VIDEO_FRAME stage=- t=10412ms | cfg 1920x1080@60';
+  var before = handled.length;
+  listener([{ key: 'event', value: 'streamTerminated: -101' }, { key: 'diag', value: line }]);
+  assert.strictEqual(handled.slice(before).join('|'), 'streamTerminated: -101');
+  assert.ok(errs.indexOf('[ML-ERROR] ' + line) >= 0, errs.join('\n'));
+});
+
+test('event with a long diag sent in parts is joined', async function () {
+  var line = 'ML-ERROR code=-101 ' + new Array(1500).join('x');
+  var a = line.slice(0, 512), b = line.slice(512);
+  var before = handled.length;
+  listener([{ key: 'id', value: 'ev7' }, { key: 'seq', value: '1' }, { key: 'total', value: '3' }, { key: 'field', value: 'diag' }, { key: 'chunk', value: a }]);
+  listener([{ key: 'id', value: 'ev7' }, { key: 'seq', value: '0' }, { key: 'total', value: '3' }, { key: 'field', value: 'event' }, { key: 'chunk', value: 'streamTerminated: -101' }]);
+  assert.strictEqual(handled.length, before);   // not all parts yet
+  listener([{ key: 'id', value: 'ev7' }, { key: 'seq', value: '2' }, { key: 'total', value: '3' }, { key: 'field', value: 'diag' }, { key: 'chunk', value: b }]);
+  assert.strictEqual(handled.slice(before).join('|'), 'streamTerminated: -101');
+  assert.ok(errs.indexOf('[ML-ERROR] ' + line) >= 0);
 });
 
 var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'addepth', value: '8' }, { key: 'fps', value: '60' },

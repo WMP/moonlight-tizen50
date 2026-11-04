@@ -79,8 +79,23 @@ on, or not set and this is a debug package (`ML_TRACE`). The dlog output (`MLHOS
 | `event` | When |
 |---------|------|
 | `Connection Established` | `startStream` succeeded (`LiStartConnection` returned 0) |
-| `streamTerminated: <code>` | a started session ended (`ml_engine_running()` went 1 → 0): `0` after `stopStream`; `-1` when `startStream` failed |
+| `streamTerminated: <code>` | a started session ended (`ml_engine_running()` went 1 → 0). `<code>` is the engine's termination code from `ml_engine_last_error()`: `0` after `stopStream` or a graceful end, for example `-101` (no video frame) when the engine failed; `-1` when `startStream` failed. Optional field `diag`: the `ML-ERROR` line (see below). The UI writes it to the console with `console.error('[ML-ERROR] ...')`; the host writes it to dlog. |
 | `mlstats` | live statistics, every 500 ms while `toggleStats` is on (see below) |
+
+### `ML-ERROR` line (`diag`)
+
+One line, sections separated by ` | `. It is built when a session fails (also in release builds).
+An event with `diag` can be larger than one message, so the host sends it like a large reply:
+as ordered parts with its own id (`ev<n>`, never a command id); the UI joins them first.
+
+`ML-ERROR code=<n> name=<NAME> stage=<stage|-> t=<ms> | cfg ... | video ... | player ... | cc ... | cc-first: ... | cc-last: ...`
+
+- `code`, `name`: the termination code (`-100` NO_VIDEO_TRAFFIC, `-101` NO_VIDEO_FRAME, `-102` UNEXPECTED_EARLY_TERMINATION, `-103` PROTECTED_CONTENT, `-104` FRAME_CONVERSION, other: OTHER). `stage`: the failed connection stage, or `-`. `t`: ms since session start.
+- `cfg`: the requested stream (size, fps, bitrate, packet size, formats, color, audio, server codec support, encryption, server versions, host feature flags, RTT/variance). No address, key or PIN.
+- `video`: sink setup result, decode units (`du`), IDR frames (`idr`), ms to the first decode unit, ms to the first video packet.
+- `player`: window/prepare/start results (`-99` = not reached), packets submitted (`vsub`, `asub`), failed submits (`subfail=<count>/<last status>`), player errors (`err=<count>/<last>`).
+- `cc`: counters of moonlight-common-c log messages (lost frames, IDR requests, FEC recoveries, and so on).
+- `cc-first`, `cc-last`: the first 4 and the last 8 moonlight-common-c log lines.
 
 ### `mlstats`
 

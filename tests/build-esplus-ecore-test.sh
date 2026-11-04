@@ -9,9 +9,12 @@ LC="$R/third_party/moonlight-tizen/moonlight-common-c/src"
 [ -f "$LC/Limelight.h" ] || { echo "Limelight.h missing: run 'git submodule update --init'" >&2; exit 1; }
 for D in "" "-DMLT_TRACE"; do
   gcc -std=gnu11 -Wall -Wextra -Werror $D '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" \
-    -o "$OUT" "$HERE/esplus_ecore_test.c" "$R/mlclient/esplus_player.c" -lpthread -ldl
+    -o "$OUT" "$HERE/esplus_ecore_test.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT" 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" -I"$LC" \
-    -o "$OUT-video" "$HERE/video_esplus_test.c" "$R/mlclient/video_esplus.c" "$R/mlclient/esplus_player.c" -lpthread -ldl
+    -o "$OUT-video" "$HERE/video_esplus_test.c" "$R/mlclient/video_esplus.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-video" 2>/dev/null
 done
+# mldiag self-test
+gcc -std=gnu11 -Wall -Wextra -Werror -I"$R/mlclient" -o "$OUT-diag" "$HERE/mldiag_test.c" "$R/mlclient/mldiag.c" -lpthread
+"$OUT-diag"

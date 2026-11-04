@@ -19,6 +19,7 @@
 
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
+#include "mldiag.h"
 #include "mltrace.h"
 
 /* EFL opaque decls (same as esppplay.c). */
@@ -340,6 +341,7 @@ int esplus_set_window(int w, int h) {
 void esplus_prepare(void) {
   int ok = esplusplayer_prepare_async(s_pl);
   MLT("esplus_prepare prepare_async -> %d", ok);
+  mldiag_player("prep", ok);
   if (!ok) PLOG("prepare_async failed\n");
   sampler_start();
 }
@@ -349,9 +351,10 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
   pthread_mutex_lock(&s_lock);
   if (s_prepared && s_prepare_ok == 1 && !s_started) {
     s_started = 1; s_error_pending = 0;   /* an error before start is not a playback failure */
-    int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok);
+    int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok); mldiag_player("start", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
+  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS ? 0 : r);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
     if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {
