@@ -170,7 +170,11 @@ int ml_engine_get_stats(ml_engine_stats *out) {
 
 int ml_engine_last_error(char *buf, int len) { return mldiag_last(buf, len); }
 
-int ml_engine_running(void) { MLT("ml_engine_running -> %d", g_running); return g_running; }
+int ml_engine_running(void) {   /* polled every 500 ms by the host: trace only changes */
+  static int last = -1; int r = g_running;
+  if (r != last) { MLT("ml_engine_running -> %d", r); last = r; }
+  return r;
+}
 
 void ml_engine_wait(void) {
   MLT("ml_engine_wait");
