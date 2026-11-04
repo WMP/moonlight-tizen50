@@ -38,8 +38,10 @@ The point of this repo is to improve the client itself:
 - Host self-tests that need no TV: `mlclient/xml_selftest.c` (XML parser),
   `tests/esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
   parser or the bitstream code.
-- Player/window self-test (host gcc): `sh tests/build-esplus-ecore-test.sh`. Run it after touching
-  `mlclient/esplus_player.c`.
+- Player/window self-test (host gcc): `sh tests/build-esplus-ecore-test.sh` (ecore balance,
+  statistics, `nudge` pacing, watchdog/recovery, sampler join; plus the video sink
+  test `tests/video_esplus_test.c`: PTS modes, FULL retries, late-frame cap). Needs the submodule.
+  Run it after touching `mlclient/esplus_player.c`, `mlclient/esplus_stats.h` or `mlclient/video_esplus.c`.
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching
   `pkg/ui/mlbridge.js`.
 - `BUILD_VARIANT=debug|release` (default `release`) is honoured by

@@ -137,7 +137,7 @@ _Static_assert(__builtin_offsetof(esplusplayer_es_packet, duration) == 24, "layo
 /* Callbacks take no user_data. */
 typedef void (*esplusplayer_error_cb)(uint32_t plusplayer_error_type); /* raw value */
 typedef void (*esplusplayer_buffer_status_cb)(uint32_t stream_type, uint32_t status);
-typedef void (*esplusplayer_resource_conflicted_cb)(void);
+typedef void (*esplusplayer_resource_conflicted_cb)(void); /* the player lost its resources to another app; only stop() leaves that state */
 typedef void (*esplusplayer_eos_cb)(void);
 typedef void (*esplusplayer_ready_to_prepare_cb)(uint32_t stream_type);
 typedef void (*esplusplayer_prepare_async_done_cb)(int result_bool);
@@ -181,6 +181,20 @@ void esplusplayer_set_resource_conflicted_cb(esplusplayer_handle h, esplusplayer
 void esplusplayer_set_eos_cb(esplusplayer_handle h, esplusplayer_eos_cb cb);
 void esplusplayer_set_ready_to_prepare_cb(esplusplayer_handle h, esplusplayer_ready_to_prepare_cb cb);
 void esplusplayer_set_prepare_async_done_cb(esplusplayer_handle h, esplusplayer_prepare_async_done_cb cb);
+
+/* Flushing seek: drops the data queued in the player pipelines (decoder and
+ * sinks included) and continues playback from time_ms without stop/close.
+ * time_ms is in milliseconds, the same unit esplusplayer_get_playing_time
+ * reports. After the seek the segment restarts from the PTS of the first
+ * submitted packet, so the caller should request a fresh reference frame
+ * (IDR) right after. Returns a bool (1 = enqueued). Legal from the playing
+ * state; after a resource conflict only stop() leaves the player. */
+int esplusplayer_seek(esplusplayer_handle h, uint64_t time_ms);
+
+/* Called when a seek issued with esplusplayer_seek() has completed. Like the
+ * other callbacks in this ABI there is no user_data argument. */
+typedef void (*esplusplayer_seek_done_cb)(void);
+void esplusplayer_set_seek_done_cb(esplusplayer_handle h, esplusplayer_seek_done_cb cb);
 
 #ifdef __cplusplus
 }

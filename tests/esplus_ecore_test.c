@@ -6,6 +6,9 @@
  */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 int ecore_cnt, wl2_cnt, disp_ok = 1, win_ok = 1, calls_off_main;
 int ecore_init(void) { return ++ecore_cnt; }
@@ -26,17 +29,36 @@ esplusplayer_handle esplusplayer_create(void) { return (esplusplayer_handle)&pl;
 int esplusplayer_open(esplusplayer_handle h) { (void)h; return 1; }
 int esplusplayer_close(esplusplayer_handle h) { (void)h; return 1; }
 int esplusplayer_stop(esplusplayer_handle h) { (void)h; return 1; }
-void esplusplayer_set_error_cb(esplusplayer_handle h, esplusplayer_error_cb c) { (void)h;(void)c; }
-void esplusplayer_set_buffer_status_cb(esplusplayer_handle h, esplusplayer_buffer_status_cb c) { (void)h;(void)c; }
+static esplusplayer_prepare_async_done_cb cb_prepared;
+static esplusplayer_error_cb cb_error;
+static esplusplayer_buffer_status_cb cb_buffer;
+static esplusplayer_resource_conflicted_cb cb_conflict;
+void esplusplayer_set_error_cb(esplusplayer_handle h, esplusplayer_error_cb c) { (void)h; cb_error = c; }
+void esplusplayer_set_buffer_status_cb(esplusplayer_handle h, esplusplayer_buffer_status_cb c) { (void)h; cb_buffer = c; }
+void esplusplayer_set_resource_conflicted_cb(esplusplayer_handle h, esplusplayer_resource_conflicted_cb c) { (void)h; cb_conflict = c; }
 void esplusplayer_set_ready_to_prepare_cb(esplusplayer_handle h, esplusplayer_ready_to_prepare_cb c) { (void)h;(void)c; }
-void esplusplayer_set_prepare_async_done_cb(esplusplayer_handle h, esplusplayer_prepare_async_done_cb c) { (void)h;(void)c; }
+void esplusplayer_set_prepare_async_done_cb(esplusplayer_handle h, esplusplayer_prepare_async_done_cb c) { (void)h; cb_prepared = c; }
 int esplusplayer_prepare_async(esplusplayer_handle h) { (void)h; return 1; }
+static uint64_t play_ms; static int play_ok = 1, play_calls;
+int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *t) { (void)h; play_calls++; *t = play_ms; return play_ok; }
 int esplusplayer_start(esplusplayer_handle h) { (void)h; return 1; }
-int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return 4; }
+static int submit_ret = 4;
+int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
 int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y;(void)ww;(void)hh; return 1; }
+static int seek_calls; static uint64_t seek_target;
+int esplusplayer_seek(esplusplayer_handle h, uint64_t t) { (void)h; seek_calls++; seek_target = t; return 1; }
+void esplusplayer_set_seek_done_cb(esplusplayer_handle h, esplusplayer_seek_done_cb c) { (void)h;(void)c; }
+static int idr_calls;
+void LiRequestIdrFrame(void) { idr_calls++; }
 extern esplusplayer_handle esplus_create_open(void);
 extern int esplus_set_window(int, int);
 extern void esplus_close(void);
+extern int esplus_submit(const esplusplayer_es_packet *pkt);
+extern void esplus_prepare(void);
+static void vsub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
+static void asub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_AUDIO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
+/* start a session on a stubbed, prepared and started player */
+static void begin(void) { esplus_create_open(); cb_prepared(1); esplus_prepare(); play_ms = 0; play_ok = 1; vsub(0); }
 int main(void) {
   /* the host app already holds one ecore reference */
   ecore_cnt = 1;
@@ -52,5 +74,77 @@ int main(void) {
   win_ok = 0; esplus_create_open(); assert(esplus_set_window(1280, 720) == -1); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 5: no player */
   assert(esplus_set_window(1280, 720) == -1 && ecore_cnt == 1);
+  /* 6: counters. Only video SUCCESS counts as submitted; callbacks bump the rest. */
+  win_ok = 1; esplus_create_open();
+  assert(esplus_stats.submitted == 0 && cb_error && cb_buffer && cb_conflict);
+  esplusplayer_es_packet v = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, 40000000ull, 0}, a = v;
+  a.type = ESPLUSPLAYER_STREAM_TYPE_AUDIO;
+  esplus_submit(&v); esplus_submit(&a); submit_ret = 3; esplus_submit(&v); submit_ret = 4;
+  assert(esplus_stats.submitted == 1);
+  cb_buffer(1, 0); cb_buffer(1, 1); cb_buffer(1, 1); cb_error(0x42); cb_error(0x43);
+  assert(esplus_stats.underruns == 1 && esplus_stats.overruns == 2 && esplus_stats.errors == 2 && esplus_stats.last_error == 0x43);
+  cb_conflict(); assert(esplus_stats.recovery_state == 2);
+  esplus_close(); esplus_create_open(); assert(esplus_stats.submitted == 0 && esplus_stats.recovery_state == 0);   /* new session */
+  esplus_close();
+  /* a: depth and fps from the sampler tick (thread off) */
+  setenv("MLENGINE_DEPTH_POLL_MS", "0", 1);
+  begin();
+  esplus_sample_tick(1000);                        /* first tick starts the fps second */
+  for (int i = 1; i <= 60; i++) vsub(i * 16);      /* 60 + the begin() packet = 61 */
+  asub(900); play_ms = 500;
+  esplus_sample_tick(2000);
+  assert(esplus_stats.playing_ms == 500 && esplus_stats.depth_ms == 960 - 500 && esplus_stats.audio_depth_ms == 400);
+  assert(esplus_stats.fps_submitted == 60);
+  play_ok = 0; play_ms = 9999; esplus_sample_tick(3000); assert(esplus_stats.playing_ms == 500);   /* failed read: unchanged */
+  esplus_close();
+  /* b: nudge. Correction grows by at most nudge_max*dt; inside the hysteresis it holds. */
+  setenv("MLENGINE_LATENCY_MODE", "nudge", 1);
+  begin(); vsub(1000); play_ms = 100;               /* depth 900, target 50 */
+  esplus_sample_tick(1000); assert(esplus_correction_ms() == 0);     /* first tick: no change */
+  esplus_sample_tick(2000); assert(esplus_correction_ms() == 10);    /* 10 ms/s * 1 s */
+  esplus_sample_tick(2500); assert(esplus_correction_ms() == 15);    /* 5 ms more for 0.5 s */
+  esplus_sample_tick(3500); assert(esplus_correction_ms() == 25);
+  play_ms = 940;                                    /* depth 60: err 10 within hysteresis 25 */
+  esplus_sample_tick(4500); assert(esplus_correction_ms() == 25);
+  play_ms = 1200;                                   /* depth -200: pulls back */
+  esplus_sample_tick(5500); assert(esplus_correction_ms() == 15);
+  esplus_close(); assert(esplus_correction_ms() == 0);
+  unsetenv("MLENGINE_LATENCY_MODE");
+  esplus_close();
+  /* c: watchdog. RECOVER_MAX=0 (default): a stall never seeks. */
+  begin(); vsub(1000); play_ms = 100;
+  esplus_sample_tick(1000); vsub(1010); esplus_sample_tick(1800); vsub(1020); esplus_sample_tick(5000);
+  assert(seek_calls == 0 && esplus_stats.recoveries == 0);
+  esplus_close();
+  /* RECOVER_MAX=2: seek behind the last PTS + forced IDR; 2 s spacing; then give up */
+  setenv("MLENGINE_RECOVER_MAX", "2", 1);
+  begin(); idr_calls = 0; vsub(1000); play_ms = 100;
+  esplus_sample_tick(1000); vsub(1010); esplus_sample_tick(1500); assert(seek_calls == 0);   /* not stalled long enough */
+  esplus_sample_tick(1800);                                  /* stalled 800 ms while submitting */
+  assert(seek_calls == 1 && seek_target == 1010 - 250 && esplus_take_need_idr() == 1 && esplus_take_need_idr() == 0 && esplus_stats.recoveries == 1 && esplus_stats.recovery_state == 0);
+  vsub(1020); esplus_sample_tick(2600); assert(seek_calls == 1);   /* within 2 s of the last recovery */
+  vsub(1030); esplus_sample_tick(3900); assert(seek_calls == 2 && esplus_take_need_idr() == 1 && seek_target == 1030 - 250);
+  vsub(1040); esplus_sample_tick(4700); assert(seek_calls == 2);
+  vsub(1050); esplus_sample_tick(6000); assert(seek_calls == 2 && esplus_stats.recovery_state == 2);   /* gave up */
+  vsub(1060); esplus_sample_tick(9000); assert(seek_calls == 2 && esplus_stats.recoveries == 2);
+  esplus_close();
+  /* an error callback recovers on the next tick, not in the callback */
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  cb_error(7); assert(seek_calls == 0); esplus_sample_tick(1100); assert(seek_calls == 1);
+  cb_error(8); esplus_sample_tick(1500); assert(seek_calls == 1);   /* too soon: the error stays pending */
+  esplus_sample_tick(3200); assert(seek_calls == 2);
+  esplus_close();
+  /* d: after a resource conflict nothing seeks */
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  cb_conflict(); assert(esplus_stats.recovery_state == 2);
+  vsub(1010); cb_error(7); esplus_sample_tick(2000); assert(seek_calls == 0);
+  esplus_close();
+  unsetenv("MLENGINE_RECOVER_MAX");
+  /* e: sampler thread starts at prepare, stops promptly at close */
+  setenv("MLENGINE_DEPTH_POLL_MS", "50", 1);
+  begin(); play_calls = 0;
+  usleep(150000); assert(play_calls >= 1);
+  esplus_close(); int n = play_calls; usleep(120000); assert(play_calls == n);
+  unsetenv("MLENGINE_DEPTH_POLL_MS");
   puts("ecore balance ok"); return 0;
 }
