@@ -16,6 +16,7 @@
 #include "Limelight.h"
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
+#include "mldiag.h"
 #include "mltrace.h"
 
 extern esplusplayer_handle esplus_create_open(void);
@@ -48,7 +49,7 @@ static int ensure_scratch(size_t need) {
   return 0;
 }
 
-static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
+static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
   (void)context; (void)drFlags;
   MLT("video setup fmt=0x%x %dx%d@%d", videoFormat, width, height, redrawRate);
   s_fps = redrawRate > 0 ? redrawRate : 60;
@@ -58,7 +59,9 @@ static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, v
   else { VLOG("unsupported videoFormat 0x%x\n", videoFormat); MLT("video setup -> -1 (format)"); return -1; }
 
   if (!esplus_create_open()) { MLT("video setup -> -1 (player)"); return -1; }   /* audio init may have created it */
-  if (esplus_set_window(width, height) != 0) { MLT("video setup -> -1 (window)"); return -1; }
+  int wrc = esplus_set_window(width, height);
+  mldiag_player("win", wrc);
+  if (wrc != 0) { MLT("video setup -> -1 (window)"); return -1; }
   esplusplayer_video_stream_info vi = {NULL, 0, mime, (uint32_t)width, (uint32_t)height,
                                        (uint32_t)width, (uint32_t)height, (uint32_t)s_fps, 1};
   int ok = esplusplayer_add_video_stream_info(esplus_handle(), &vi);
@@ -74,7 +77,14 @@ static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_ba
 static void VidDecStop(void) {}
 static void VidDecCleanup(void) { MLT("video cleanup"); esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
 
+static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
+  int rc = VidDecSetup_(videoFormat, width, height, redrawRate, context, drFlags);
+  mldiag_video_setup(videoFormat, width, height, redrawRate, rc);
+  return rc;
+}
+
 static int VidDecSubmit(PDECODE_UNIT du) {
+  mldiag_video_du(du->frameType == FRAME_TYPE_IDR);
   if (esplus_take_need_idr() && du->frameType != FRAME_TYPE_IDR) return DR_NEED_IDR;   /* after a recovery seek */
   /* experimental, off by default: the sampler's depth only refreshes per tick, so skip at most
      one frame per tick, and never the IDR we asked for. */

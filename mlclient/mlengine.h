@@ -85,6 +85,12 @@ int  ml_engine_start_session_v2(const char *host, int width, int height, int fps
                                 const char *video_codec, int hdr,
                                 const char *audio_config, int full_range);
 
+/* Failure report of the last session. Returns its termination code (for example -101,
+ * ML_ERROR_NO_VIDEO_FRAME), 0 = none / graceful / cleared when the next session starts.
+ * When buf && len > 0, copies the one-line "ML-ERROR ..." text (NUL-terminated, truncated
+ * to len). Works in release builds. */
+int  ml_engine_last_error(char *buf, int len);
+
 #ifdef __cplusplus
 }
 #endif
