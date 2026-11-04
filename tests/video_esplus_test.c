@@ -115,17 +115,17 @@ int main(void) {
   script_set(2, ESPLUSPLAYER_SUBMIT_STATUS_FULL);
   assert(frame(0, P) == DR_OK && sub_calls == 3 && esplus_stats.dropped_full == 0 && idr_calls == 0 && esplus_stats.submitted == 1);
   sub_calls = 0; script_set(4, ESPLUSPLAYER_SUBMIT_STATUS_FULL);
-  assert(frame(16, P) == DR_OK && sub_calls == 4 && esplus_stats.dropped_full == 1 && idr_calls == 1);
+  assert(frame(16, P) == DR_NEED_IDR && sub_calls == 4 && esplus_stats.dropped_full == 1 && idr_calls == 0);
   end();
   /* 5: late-frame cap, at most one skip per tick, never an IDR */
   begin(NULL, "50");
   frame(0, P); frame(200, P); play_ms = 10;        /* depth 190 > 50 */
   esplus_sample_tick(1000); sub_calls = 0;
-  assert(frame(216, P) == DR_OK && sub_calls == 0 && esplus_stats.dropped_late == 1 && idr_calls == 1);
+  assert(frame(216, P) == DR_NEED_IDR && sub_calls == 0 && esplus_stats.dropped_late == 1);
   assert(frame(232, P) == DR_OK && sub_calls == 1);                      /* same tick: sent */
   esplus_sample_tick(1250);
   assert(frame(248, FRAME_TYPE_IDR) == DR_OK && sub_calls == 2 && esplus_stats.dropped_late == 1);   /* IDR: sent */
-  assert(frame(264, P) == DR_OK && sub_calls == 2 && esplus_stats.dropped_late == 2);                /* new tick: one more skip */
+  assert(frame(264, P) == DR_NEED_IDR && sub_calls == 2 && esplus_stats.dropped_late == 2);                /* new tick: one more skip */
   assert(frame(280, P) == DR_OK && sub_calls == 3);
   end();
   /* 6: any other failure status asks for an IDR */

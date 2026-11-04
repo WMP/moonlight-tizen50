@@ -39,7 +39,7 @@ The point of this repo is to improve the client itself:
   `tests/esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
   parser or the bitstream code.
 - Player/window self-test (host gcc): `sh tests/build-esplus-ecore-test.sh` (ecore balance,
-  statistics, `nudge` pacing, IDR cooldown, watchdog/recovery, sampler join; plus the video sink
+  statistics, `nudge` pacing, watchdog/recovery, sampler join; plus the video sink
   test `tests/video_esplus_test.c`: PTS modes, FULL retries, late-frame cap). Needs the submodule.
   Run it after touching `mlclient/esplus_player.c`, `mlclient/esplus_stats.h` or `mlclient/video_esplus.c`.
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching

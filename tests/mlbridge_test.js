@@ -291,7 +291,7 @@ test('event passes string', async function () {
 var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'addepth', value: '8' }, { key: 'fps', value: '60' },
   { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' }];
 async function toggleStats(err, on) {
-  var n = sent.length, p = win.Module.toggleStats();
+  var n = sent.length, p = win.SyncFunctions.toggleStats();
   advance(250);
   assert.strictEqual(sent.length, n + 1);
   var f = fields(sent[n]);
@@ -305,10 +305,11 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
   var h = handled.length;
   listener(STATS);                                  // off: nothing shown
   assert.strictEqual(byId.mlstats, undefined);
-  assert.ok(await toggleStats(undefined, 'true'));  // on
+  assert.ok(await toggleStats(undefined, 'true'));  // on: the overlay appears with the first event
+  assert.strictEqual(byId.mlstats, undefined);
+  listener(STATS);
   var el = byId.mlstats;
   assert.ok(el && el.style.display !== 'none' && el.id === 'mlstats');
-  listener(STATS);
   assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms (audio 8 ms)');
   assert.ok(/play 12\.3 s/.test(el.textContent), el.textContent);
   assert.strictEqual(handled.length, h);
@@ -331,6 +332,7 @@ test('streamTerminated hides and clears the overlay, still reaches handleMessage
   assert.strictEqual(byId.mlstats.textContent, '');
   assert.strictEqual(handled.length, h + 1);
   assert.ok(await toggleStats(undefined, 'true'));  // toggle state was reset: this is "on" again
+  listener(STATS);
   assert.notStrictEqual(byId.mlstats.style.display, 'none');
   assert.ok(await toggleStats());                   // leave it off
 });
@@ -338,6 +340,11 @@ test('streamTerminated hides and clears the overlay, still reaches handleMessage
 test('a rejected toggleStats leaves the overlay hidden', async function () {
   assert.ok(!(await toggleStats('not supported')));
   assert.strictEqual(byId.mlstats.style.display, 'none');
+  var n = sent.length, w = warns.length, p = win.Module.toggleStats();   // yellow key: no unhandled rejection
+  advance(250);
+  reply(fields(sent[n]).id, { error: 'not supported' });
+  assert.strictEqual(await p, undefined);
+  assert.ok(warns.slice(w).join('\n').indexOf('not supported') >= 0);
 });
 
 test('trace hides secrets', async function () {

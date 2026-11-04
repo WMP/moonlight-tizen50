@@ -55,7 +55,6 @@ extern int esplus_set_window(int, int);
 extern void esplus_close(void);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern void esplus_prepare(void);
-extern void esplus_request_idr(int force);
 static void vsub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 static void asub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_AUDIO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 /* start a session on a stubbed, prepared and started player */
@@ -111,9 +110,6 @@ int main(void) {
   esplus_sample_tick(5500); assert(esplus_correction_ms() == 15);
   esplus_close(); assert(esplus_correction_ms() == 0);
   unsetenv("MLENGINE_LATENCY_MODE");
-  idr_calls = 0; begin();                           /* IDR cooldown (500 ms default); force ignores it */
-  esplus_request_idr(0); esplus_request_idr(0); assert(idr_calls == 1);
-  esplus_request_idr(1); assert(idr_calls == 2);
   esplus_close();
   /* c: watchdog. RECOVER_MAX=0 (default): a stall never seeks. */
   begin(); vsub(1000); play_ms = 100;

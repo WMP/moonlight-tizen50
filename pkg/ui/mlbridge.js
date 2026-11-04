@@ -253,6 +253,7 @@
   function showStats(m) {
     var el = statsDiv(statsOn);
     if (!el || !statsOn) return;
+    el.style.display = 'block';
     el.textContent = 'depth ' + m.depth + ' ms (audio ' + m.addepth + ' ms)\n' +
       'fps ' + m.fps + '\n' +
       'dropped late ' + m.drop + ' / full ' + m.full + '\n' +
@@ -269,7 +270,7 @@
     var want = !statsOn;
     return bridgeCall('toggleStats', { on: String(want) }, DEFAULT_TIMEOUT).then(function (r) {
       if (!want) resetStats();
-      else { statsOn = true; var el = statsDiv(true); if (el) el.style.display = 'block'; }
+      else statsOn = true;   // the overlay appears with the first mlstats event
       return r;
     });
   }
@@ -279,12 +280,12 @@
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
     if (m.total !== undefined) { m = join(m); if (!m) return; }
+    if (m.event === 'mlstats') { showStats(m); return; }   // overlay only (2/s: not traced), not for handleMessage
     trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
     if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug)
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
       return;
     }
-    if (m.event === 'mlstats') { showStats(m); return; }   // overlay only, not for handleMessage
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (String(m.event).indexOf('streamTerminated') === 0) resetStats();
@@ -381,7 +382,8 @@
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
     stopStream: function () { return bridgeCall('stopStream', {}); },
-    toggleStats: toggleStats,
+    // the yellow-key caller ignores the promise: log a failure instead of an unhandled rejection
+    toggleStats: function () { return toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); }); },
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled
     HEAPF64: { buffer: new ArrayBuffer(0) },
   };

@@ -81,8 +81,7 @@ static int VidDecSubmit(PDECODE_UNIT du) {
       && du->frameType != FRAME_TYPE_IDR && esplus_sample_seq() != s_skip_seq) {
     s_skip_seq = esplus_sample_seq();
     __atomic_fetch_add(&esplus_stats.dropped_late, 1, __ATOMIC_RELAXED);
-    esplus_request_idr(0);
-    return DR_OK;
+    return DR_NEED_IDR;   /* later frames reference this one: common-c drops them and asks for an IDR */
   }
   if (ensure_scratch((size_t)du->fullLength)) return DR_NEED_IDR;
   size_t off = 0;
@@ -107,12 +106,11 @@ static int VidDecSubmit(PDECODE_UNIT du) {
   esplusplayer_es_packet pkt = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, (char *)s_scratch, (uint32_t)off,
                                 (uint64_t)pts_ms * 1000000ull, (1000000000ull / s_fps)};
   int r = esplus_submit(&pkt);
-  /* FULL backpressure: the player queue is full; retry briefly, then drop and ask for an IDR */
+  /* FULL backpressure: the player queue is full; retry briefly, then drop the frame (DR_NEED_IDR) */
   for (int i = 0; r == ESPLUSPLAYER_SUBMIT_STATUS_FULL && i < 3; i++) { usleep(2000); r = esplus_submit(&pkt); }
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_FULL) {
     __atomic_fetch_add(&esplus_stats.dropped_full, 1, __ATOMIC_RELAXED);
-    esplus_request_idr(0);
-    return DR_OK;
+    return DR_NEED_IDR;
   }
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS || r == ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED)
     return DR_OK;

@@ -25,7 +25,7 @@ typedef struct {
 
 enum { ESPLUS_LAT_OFF, ESPLUS_LAT_NUDGE, ESPLUS_LAT_ARRIVAL };
 typedef struct { int latency_mode, target_depth_ms, nudge_max_ms_per_s, drop_after_ms,
-                 depth_poll_ms, stall_ms, recover_max, recover_back_ms, idr_cooldown_ms; } esplus_cfg_t;
+                 depth_poll_ms, stall_ms, recover_max, recover_back_ms; } esplus_cfg_t;
 
 extern esplus_stats_t esplus_stats;   /* counters: update with __atomic_fetch_add(..., __ATOMIC_RELAXED) */
 extern esplus_cfg_t esplus_cfg;       /* read once per session in esplus_create_open, read-only afterwards */
@@ -38,9 +38,6 @@ void esplus_sample_tick(uint64_t now_ms);
 int32_t esplus_correction_ms(void);
 /* Counts sampler ticks; video uses it to skip at most one late frame per tick. */
 uint32_t esplus_sample_seq(void);
-/* Ask the host for an IDR frame (LiRequestIdrFrame) unless one was asked less than
- * idr_cooldown_ms ago; force ignores the cooldown. Never call it with s_lock held. */
-void esplus_request_idr(int force);
 /* CLOCK_MONOTONIC in ms (sampler, IDR cooldown, arrival-mode PTS). */
 uint64_t esplus_mono_ms(void);
 

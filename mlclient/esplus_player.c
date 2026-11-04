@@ -66,11 +66,9 @@ static void load_cfg(void) {
   /* 0 = never recover. Recommended 3, once validated on a TV. */
   esplus_cfg.recover_max = mlc_env_int("MLENGINE_RECOVER_MAX", 0);
   esplus_cfg.recover_back_ms = mlc_env_int("MLENGINE_RECOVER_BACK_MS", 250);
-  esplus_cfg.idr_cooldown_ms = mlc_env_int("MLENGINE_IDR_COOLDOWN_MS", 500);
-  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d idr_cd=%d",
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
-      esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
-      esplus_cfg.idr_cooldown_ms);
+      esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms);
 }
 
 static uint64_t s_last_video_pts_ms, s_last_audio_pts_ms;   /* under s_lock */
@@ -87,18 +85,6 @@ static volatile uint32_t s_tick_seq;
 int32_t esplus_correction_ms(void) { return s_corr_ms; }
 uint32_t esplus_sample_seq(void) { return s_tick_seq; }
 
-static pthread_mutex_t s_idr_mu = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t s_idr_last_ms; static int s_idr_have;
-
-void esplus_request_idr(int force) {
-  uint64_t now = esplus_mono_ms();
-  pthread_mutex_lock(&s_idr_mu);
-  int go = force || !s_idr_have || now - s_idr_last_ms >= (uint64_t)esplus_cfg.idr_cooldown_ms;
-  if (go) { s_idr_have = 1; s_idr_last_ms = now; }
-  pthread_mutex_unlock(&s_idr_mu);
-  MLT("request idr force=%d -> %d", force, go);
-  if (go) LiRequestIdrFrame();
-}
 
 static void nudge(int32_t depth, uint64_t now_ms) {
   if (esplus_cfg.latency_mode != ESPLUS_LAT_NUDGE) return;
@@ -149,7 +135,7 @@ static int recover(const char *why, uint64_t now_ms) {
   MLT("recover (%s) seek %llu ms -> %d", why, (unsigned long long)target, ok);
   s_corr_us = 0; s_corr_ms = 0;
   s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted;
-  esplus_stats.recovery_state = 0;
+  if (!s_conflicted) esplus_stats.recovery_state = 0;   /* a conflict during the seek stays visible */
   return 1;
 }
 
@@ -185,7 +171,7 @@ void esplus_sample_tick(uint64_t now_ms) {
   }
   s_tick_seq++;
   pthread_mutex_unlock(&s_lock);
-  if (idr) esplus_request_idr(1);
+  if (idr) LiRequestIdrFrame();   /* never under s_lock */
 }
 
 uint64_t esplus_mono_ms(void) {
@@ -258,7 +244,6 @@ esplusplayer_handle esplus_create_open(void) {
     load_cfg();
     memset((void *)&esplus_stats, 0, sizeof esplus_stats);   /* new session */
     s_conflicted = 0; s_error_pending = 0;
-    pthread_mutex_lock(&s_idr_mu); s_idr_have = 0; pthread_mutex_unlock(&s_idr_mu);   /* no cooldown from the last session */
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
     s_pl = esplusplayer_create();
@@ -358,14 +343,15 @@ void esplus_prepare(void) {
 int esplus_submit(const esplusplayer_es_packet *pkt) {
   pthread_mutex_lock(&s_lock);
   if (s_prepared && s_prepare_ok == 1 && !s_started) {
-    s_started = 1; int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok);
+    s_started = 1; s_error_pending = 0;   /* an error before start is not a playback failure */
+    int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
-  if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS && pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO)
-    __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
-    if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) s_last_video_pts_ms = ms; else s_last_audio_pts_ms = ms;
+    if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {
+      s_last_video_pts_ms = ms; __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
+    } else s_last_audio_pts_ms = ms;
   }
   /* shortcut: sample per-frame trace (first 30, then every 300th, plus failures);
      raise the rate here if a hang needs every frame. Counter is under s_lock. */
