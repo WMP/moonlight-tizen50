@@ -50,3 +50,30 @@ The point of this repo is to improve the client itself:
   release.
 - The engine ABI (`mlclient/mlengine.h`) is **additive only**: never change a
   signature, only append functions.
+
+## Error reports and diagnostics
+
+- **Every failure must produce one `ML-ERROR` line.** When a stream or a user action
+  fails (`connectionTerminated` with a non-zero code, `stageFailed`, a failed command),
+  the engine writes one line that starts with `ML-ERROR`. It must work in release builds
+  (not only with `MLT_TRACE`). Build it in `mlclient/mldiag.c`.
+- **The line must hold all data needed to find the cause without a second test run:**
+  - error code and name, the failed stage, time since session start;
+  - session config: resolution, fps, bitrate, packet size, video formats, color space
+    and range, audio config, server codec mode, encryption flags, server versions;
+  - counters of each step: packets, frames, IDR frames, player window/prepare/start,
+    submits per stream type and their failures;
+  - the counted moonlight-common-c log messages and the first and last library log lines.
+- **The line must reach the user.** The engine returns it with `ml_engine_last_error()`,
+  the host writes it to dlog and sends it in the `diag` field of `streamTerminated`, and
+  the UI writes it to the console with `console.error('[ML-ERROR] ...')`.
+- **No secrets in the line.** Never put the rikey, PIN, certificates, client unique id,
+  RTSP session URL or host address in it.
+- **When you handle a bug report:**
+  1. Find the `ML-ERROR` line in the reporter's log. Do not guess the cause from a log
+     without it or from a log that starts in the middle of a session.
+  2. If the line does not contain the data that you need, first add that data to the
+     line (and to `tests/mldiag_test.c`), then ask the reporter for a new log.
+  3. Ask the reporter for: the `ML-ERROR` line, the full log from before `startStream`,
+     the stream settings (resolution, fps, bitrate, codec, HDR) and the server name and version.
+- When you add a new failure path, add its data to the `ML-ERROR` line in the same change.
