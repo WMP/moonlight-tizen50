@@ -329,11 +329,12 @@
     makeCert: function () { return call('makeCert', {}); },
     httpInit: function (cert, key, uniqueId) { return call('httpInit', { cert: cert, key: key, uniqueId: uniqueId }); },
     startRequest: function () {
-      var a = arguments; // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, codecMode, ... a[18] audioConfig, a[24] videoCodec, a[25] hdr
+      var a = arguments; // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
+      // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
         appVer: a[8], gfeVer: a[9], rtspUrl: a[10], codecMode: a[11],
-        audioConfig: a[18], videoCodec: a[24], hdr: String(!!a[25])
+        audioConfig: a[19], videoCodec: a[24], hdr: String(!!a[25]), fullRange: String(!!a[26])
       });
     },
     stopRequest: function () { return call('stopStream', {}); },

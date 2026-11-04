@@ -93,7 +93,7 @@ test('openUrl mapping and binary reply', async function () {
 test('startRequest mapping', async function () {
   sent.length = 0;
   var a = []; a[0] = 'host'; a[1] = 47989; a[2] = 1920; a[3] = 1080; a[4] = 60; a[5] = 20000; a[6] = 'abcd';
-  a[7] = 7; a[8] = '7.1'; a[9] = '3.2'; a[10] = 'rtsp://x'; a[11] = 1; a[18] = '51Surround'; a[24] = 'HEVC'; a[25] = true;
+  a[7] = 7; a[8] = '7.1'; a[9] = '3.2'; a[10] = 'rtsp://x'; a[11] = 1; a[19] = '51Surround'; a[24] = 'HEVC'; a[25] = true;
   var p = win.sendMessage('startRequest', a);
   var f = fields(sent[0]);
   assert.strictEqual(f.cmd, 'startStream');
@@ -102,6 +102,35 @@ test('startRequest mapping', async function () {
   for (var k in want) assert.strictEqual(f[k], want[k], k);
   reply(f.id, {});
   assert.strictEqual(await p, undefined);
+});
+
+test('startRequest full 30-argument order', async function () {
+  sent.length = 0;
+  var a = ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7, '7.1', '3.2', 'rtsp://x', 3, 1, 0, 1, 0, 0, 0,
+    'EMSS', '51Surround', 1, 40, 1, 1, 'HEVC', 1, 1, 0, 0, 1];
+  assert.strictEqual(a.length, 30);
+  var p = win.sendMessage('startRequest', a);
+  var f = fields(sent[0]);
+  var want = { audioConfig: '51Surround', fullRange: 'true', videoCodec: 'HEVC', hdr: 'true', codecMode: '3' };
+  for (var k in want) assert.strictEqual(f[k], want[k], k);
+  reply(f.id, {});
+  await p;
+});
+
+test('startRequest fullRange defaults to false', async function () {
+  sent.length = 0;
+  var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
+  var f = fields(sent[0]);
+  assert.strictEqual(f.fullRange, 'false');
+  reply(f.id, {});
+  await p;
+  sent.length = 0;
+  var a = []; a[26] = 0;
+  p = win.sendMessage('startRequest', a);
+  f = fields(sent[0]);
+  assert.strictEqual(f.fullRange, 'false');
+  reply(f.id, {});
+  await p;
 });
 
 test('pair mapping and serverCert', async function () {

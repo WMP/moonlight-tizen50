@@ -245,6 +245,13 @@ namespace MoonlightHost
         public static SetLogCbDelegate      SetLogCb;   // null with an engine that lacks it
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GetStatsDelegate(ref EngineStats s);
         public static GetStatsDelegate      GetStats;   // null with an engine that lacks it
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public delegate int  StartSessionV2Delegate(string host, int width, int height, int fps, int bitrateKbps,
+                                                    string rikeyHex, int rikeyId, string appVersion,
+                                                    string gfeVersion, string rtspUrl,
+                                                    int serverCodecModeSupport, string videoCodec, int hdr,
+                                                    string audioConfig, int fullRange);
+        public static StartSessionV2Delegate StartSessionV2;   // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -282,6 +289,8 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { SetLogCb = null; }
             try { GetStats = MemLoader.GetDelegate<GetStatsDelegate>(h, "ml_engine_get_stats"); }
             catch (EntryPointNotFoundException) { GetStats = null; }
+            try { StartSessionV2 = MemLoader.GetDelegate<StartSessionV2Delegate>(h, "ml_engine_start_session_v2"); }
+            catch (EntryPointNotFoundException) { StartSessionV2 = null; }
             Loaded = true;
         }
     }
@@ -615,6 +624,12 @@ namespace MoonlightHost
                             !int.TryParse(Item(b, "rikeyid"), out rikeyid))
                             return "bad args";
                         if (!int.TryParse(Item(b, "codecMode"), out codec)) codec = 0;   // optional: engine defaults to H.264
+                        int fullRange = Item(b, "fullRange") == "true" ? 1 : 0;   // optional: absent = limited
+                        if (Engine.StartSessionV2 != null)
+                            return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
+                                                            Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
+                                                            codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
+                                                            Item(b, "audioConfig"), fullRange));
                         return Rc(Engine.StartSession(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
                                                       Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
                                                       codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,

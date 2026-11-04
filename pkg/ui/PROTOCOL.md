@@ -52,7 +52,7 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `openUrl` | `url`, `ppk` (server cert PEM, may be absent), `binary` (`true`/`false`) | `data` (string, or bytes when `binary=true`) | `ml_engine_open_url` |
 | `pair` | `major`, `addr`, `port`, `pin` | `serverCert` (PEM) | `ml_engine_pair` |
 | `cancelRequest` | – | – | `ml_engine_cancel_request` |
-| `startStream` | `host`, `w`, `h`, `fps`, `bitrate`, `rikey` (hex), `rikeyid`, `appVer`, `gfeVer`, `rtspUrl`, `codecMode`, `videoCodec` (`H264`/`HEVC`/`AV1`), `hdr` (`true`/`false`), `audioConfig` (`Stereo`/`51Surround`/`71Surround`) | – | `ml_engine_start_session` |
+| `startStream` | `host`, `w`, `h`, `fps`, `bitrate`, `rikey` (hex), `rikeyid`, `appVer`, `gfeVer`, `rtspUrl`, `codecMode`, `videoCodec` (`H264`/`HEVC`/`AV1`), `hdr` (`true`/`false`), `audioConfig` (`Stereo`/`51Surround`/`71Surround`, the audio channel layout), `fullRange` (`true`/`false`, optional, default `false`) | – | `ml_engine_start_session_v2` when the engine has it, else `ml_engine_start_session` (keeps the encoder's default color negotiation; `fullRange` is ignored) |
 | `stopStream` | – | – | `ml_engine_stop` |
 | `sendKeyboardEvent` | `key`, `action`, `mods` | – | `ml_engine_send_key` |
 | `toggleStats` | `on` (`true`/`false`: the wanted state; absent = flip) | – (`error` = `not supported` with an engine that lacks it) | `ml_engine_get_stats`; while on and a stream runs, the host polls it every 500 ms and sends `mlstats` events |
