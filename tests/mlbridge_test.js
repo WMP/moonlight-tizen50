@@ -290,12 +290,13 @@ test('event passes string', async function () {
 
 var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'addepth', value: '8' }, { key: 'fps', value: '60' },
   { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' }];
-async function toggleStats(err) {
+async function toggleStats(err, on) {
   var n = sent.length, p = win.Module.toggleStats();
   advance(250);
   assert.strictEqual(sent.length, n + 1);
   var f = fields(sent[n]);
   assert.strictEqual(f.cmd, 'toggleStats');
+  if (on !== undefined) assert.strictEqual(f.on, on);
   reply(f.id, err ? { error: err } : {});
   try { await p; return true; } catch (e) { assert.strictEqual(e, err); return false; }
 }
@@ -304,7 +305,7 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
   var h = handled.length;
   listener(STATS);                                  // off: nothing shown
   assert.strictEqual(byId.mlstats, undefined);
-  assert.ok(await toggleStats());                   // on
+  assert.ok(await toggleStats(undefined, 'true'));  // on
   var el = byId.mlstats;
   assert.ok(el && el.style.display !== 'none' && el.id === 'mlstats');
   listener(STATS);
@@ -314,7 +315,7 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
 });
 
 test('a second toggle hides the overlay', async function () {
-  assert.ok(await toggleStats());
+  assert.ok(await toggleStats(undefined, 'false'));
   assert.strictEqual(byId.mlstats.style.display, 'none');
   listener(STATS);                                  // hidden: stays hidden
   assert.strictEqual(byId.mlstats.style.display, 'none');
@@ -329,7 +330,7 @@ test('streamTerminated hides and clears the overlay, still reaches handleMessage
   assert.strictEqual(byId.mlstats.style.display, 'none');
   assert.strictEqual(byId.mlstats.textContent, '');
   assert.strictEqual(handled.length, h + 1);
-  assert.ok(await toggleStats());                   // toggle state was reset: this is "on" again
+  assert.ok(await toggleStats(undefined, 'true'));  // toggle state was reset: this is "on" again
   assert.notStrictEqual(byId.mlstats.style.display, 'none');
   assert.ok(await toggleStats());                   // leave it off
 });

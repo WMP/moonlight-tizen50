@@ -495,14 +495,16 @@ namespace MoonlightHost
             lock (s_statsLock) { s_stats?.Dispose(); s_stats = null; }
         }
 
-        // Returns an error text, or null when ok.
-        private static string ToggleStats()
+        // on: "true"/"false" = the state the UI wants (a lost reply then cannot invert it);
+        // absent = flip. Returns an error text, or null when ok.
+        private static string ToggleStats(string on)
         {
             if (Engine.GetStats == null) return "not supported";
             lock (s_statsLock)
             {
-                if (s_stats != null) { s_stats.Dispose(); s_stats = null; }
-                else s_stats = new System.Threading.Timer(_ => StatsTick(), null, 500, 500);
+                bool want = on == null ? s_stats == null : on == "true";
+                if (!want) { s_stats?.Dispose(); s_stats = null; }
+                else if (s_stats == null) s_stats = new System.Threading.Timer(_ => StatsTick(), null, 500, 500);
             }
             return null;
         }
@@ -511,6 +513,7 @@ namespace MoonlightHost
         {
             try
             {
+                if (!s_active) return;   // no session: the counters would be stale
                 var s = new EngineStats { StructSize = Marshal.SizeOf<EngineStats>() };
                 if (Engine.GetStats(ref s) != 0) return;
                 var c = System.Globalization.CultureInfo.InvariantCulture;
@@ -626,7 +629,7 @@ namespace MoonlightHost
                         Engine.SendKey(key, action, mods);
                         return null;
                     }
-                case "toggleStats": return ToggleStats();
+                case "toggleStats": return ToggleStats(Item(b, "on"));
                 case "stun": r.Add("result", ""); return null;
                 case "wakeOnLan": return "not supported";
                 default: return "unknown cmd " + cmd;

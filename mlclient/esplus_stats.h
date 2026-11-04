@@ -41,5 +41,7 @@ uint32_t esplus_sample_seq(void);
 /* Ask the host for an IDR frame (LiRequestIdrFrame) unless one was asked less than
  * idr_cooldown_ms ago; force ignores the cooldown. Never call it with s_lock held. */
 void esplus_request_idr(int force);
+/* CLOCK_MONOTONIC in ms (sampler, IDR cooldown, arrival-mode PTS). */
+uint64_t esplus_mono_ms(void);
 
 #endif

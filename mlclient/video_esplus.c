@@ -11,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "Limelight.h"
@@ -38,11 +37,6 @@ static int s_have_arrival;
 static int64_t s_prev_pts_ms;
 static int s_have_prev;
 static uint32_t s_skip_seq;   /* sampler tick of the last late-frame skip */
-
-static uint64_t mono_ms(void) {
-  struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-  return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
-}
 
 static int ensure_scratch(size_t need) {
   if (need <= s_scratch_cap) return 0;
@@ -99,7 +93,7 @@ static int VidDecSubmit(PDECODE_UNIT du) {
   if (!s_have_base) { s_base_pts_ms = du->presentationTimeMs; s_have_base = 1; }
   int64_t pts_ms;
   if (esplus_cfg.latency_mode == ESPLUS_LAT_ARRIVAL) {
-    uint64_t now = mono_ms();
+    uint64_t now = esplus_mono_ms();
     if (!s_have_arrival) { s_arrival_base_ms = now; s_have_arrival = 1; }
     pts_ms = (int64_t)(now - s_arrival_base_ms);
   } else {

@@ -264,11 +264,12 @@
     statsOn = false;
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
   }
+  // Sends the wanted state (on), so a lost reply cannot leave the host and the overlay inverted.
   function toggleStats() {
-    return bridgeCall('toggleStats', {}, DEFAULT_TIMEOUT).then(function (r) {
-      statsOn = !statsOn;
-      var el = statsOn && statsDiv(true);
-      if (el) el.style.display = 'block'; else resetStats();
+    var want = !statsOn;
+    return bridgeCall('toggleStats', { on: String(want) }, DEFAULT_TIMEOUT).then(function (r) {
+      if (!want) resetStats();
+      else { statsOn = true; var el = statsDiv(true); if (el) el.style.display = 'block'; }
       return r;
     });
   }

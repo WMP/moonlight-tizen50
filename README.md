@@ -192,7 +192,8 @@ In all modes video PTS are strictly increasing (the player's PTS unit is 1 ms).
 **Backpressure.** A `FULL` submit is retried 3 times (2 ms apart); then the frame
 is dropped (`dropped_full`) and an IDR is requested. With `MLENGINE_DROP_AFTER_MS`
 > 0, a non-IDR frame is skipped (`dropped_late`, at most one per sampler tick) while
-`depth_ms` is above that value. IDR requests (`LiRequestIdrFrame`) are limited by
+`depth_ms` is above that value (a skip does not move the PTS timeline, so it only
+helps when the decoder falls behind; `nudge` is what lowers `depth_ms`). IDR requests (`LiRequestIdrFrame`) are limited by
 `MLENGINE_IDR_COOLDOWN_MS`.
 
 **Recovery.** When playing time stops for `MLENGINE_STALL_MS` while frames are

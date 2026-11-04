@@ -55,7 +55,7 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `startStream` | `host`, `w`, `h`, `fps`, `bitrate`, `rikey` (hex), `rikeyid`, `appVer`, `gfeVer`, `rtspUrl`, `codecMode`, `videoCodec` (`H264`/`HEVC`/`AV1`), `hdr` (`true`/`false`), `audioConfig` (`Stereo`/`51Surround`/`71Surround`) | – | `ml_engine_start_session` |
 | `stopStream` | – | – | `ml_engine_stop` |
 | `sendKeyboardEvent` | `key`, `action`, `mods` | – | `ml_engine_send_key` |
-| `toggleStats` | – | – (`error` = `not supported` with an engine that lacks it) | `ml_engine_get_stats`; while on, the host polls it every 500 ms and sends `mlstats` events |
+| `toggleStats` | `on` (`true`/`false`: the wanted state; absent = flip) | – (`error` = `not supported` with an engine that lacks it) | `ml_engine_get_stats`; while on and a stream runs, the host polls it every 500 ms and sends `mlstats` events |
 | `stun` | – | `result` = `""` | none (not supported yet) |
 | `wakeOnLan` | `mac` | `error` = `not supported` | none (not supported yet) |
 | `setLog` | `on` (`true`/`false`) | – | `ml_engine_set_log_cb` (works also when the engine did not load) |

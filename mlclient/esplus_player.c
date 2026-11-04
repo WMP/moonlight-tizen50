@@ -51,7 +51,7 @@ static int mlc_env_int(const char *name, int def) {
   char *end;
   if (!v || !*v) return def;
   long n = strtol(v, &end, 10);
-  return *end ? def : (int)n;
+  return *end || n < 0 ? def : (int)n;   /* every knob is a non-negative amount */
 }
 
 static void load_cfg(void) {
@@ -87,12 +87,11 @@ static volatile uint32_t s_tick_seq;
 int32_t esplus_correction_ms(void) { return s_corr_ms; }
 uint32_t esplus_sample_seq(void) { return s_tick_seq; }
 
-static uint64_t mono_ms(void);
 static pthread_mutex_t s_idr_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t s_idr_last_ms; static int s_idr_have;
 
 void esplus_request_idr(int force) {
-  uint64_t now = mono_ms();
+  uint64_t now = esplus_mono_ms();
   pthread_mutex_lock(&s_idr_mu);
   int go = force || !s_idr_have || now - s_idr_last_ms >= (uint64_t)esplus_cfg.idr_cooldown_ms;
   if (go) { s_idr_have = 1; s_idr_last_ms = now; }
@@ -189,7 +188,7 @@ void esplus_sample_tick(uint64_t now_ms) {
   if (idr) esplus_request_idr(1);
 }
 
-static uint64_t mono_ms(void) {
+uint64_t esplus_mono_ms(void) {
   struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
   return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
 }
@@ -204,7 +203,7 @@ static void *sampler(void *arg) {
     if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
     if (pthread_cond_timedwait(&s_smp_cv, &s_smp_mu, &t) == 0 || s_smp_stop) continue;
     pthread_mutex_unlock(&s_smp_mu);
-    esplus_sample_tick(mono_ms());
+    esplus_sample_tick(esplus_mono_ms());
     pthread_mutex_lock(&s_smp_mu);
   }
   pthread_mutex_unlock(&s_smp_mu);
@@ -224,6 +223,7 @@ static void sampler_stop(void) {   /* never call with s_lock held: the tick take
   if (!s_smp_run) return;
   pthread_mutex_lock(&s_smp_mu); s_smp_stop = 1; pthread_cond_signal(&s_smp_cv); pthread_mutex_unlock(&s_smp_mu);
   pthread_join(s_smp_th, NULL);
+  pthread_cond_destroy(&s_smp_cv);   /* sampler_start inits it again */
   s_smp_run = 0;
   MLT("sampler stopped");
 }
@@ -258,6 +258,7 @@ esplusplayer_handle esplus_create_open(void) {
     load_cfg();
     memset((void *)&esplus_stats, 0, sizeof esplus_stats);   /* new session */
     s_conflicted = 0; s_error_pending = 0;
+    pthread_mutex_lock(&s_idr_mu); s_idr_have = 0; pthread_mutex_unlock(&s_idr_mu);   /* no cooldown from the last session */
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
     s_pl = esplusplayer_create();
