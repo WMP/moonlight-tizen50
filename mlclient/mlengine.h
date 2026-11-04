@@ -74,6 +74,17 @@ typedef struct ml_engine_stats {
 } ml_engine_stats;
 int ml_engine_get_stats(ml_engine_stats *out);
 
+/* Same as ml_engine_start_session(), plus the encoder color configuration:
+ * full_range != 0 selects the full color range, 0 the limited range.
+ * The colorspace is derived from the stream: Rec.2020 for HDR (HEVC only),
+ * Rec.709 otherwise. */
+int  ml_engine_start_session_v2(const char *host, int width, int height, int fps,
+                                int bitrate_kbps, const char *rikey_hex, int rikeyid,
+                                const char *app_version, const char *gfe_version,
+                                const char *rtsp_url, int server_codec_mode_support,
+                                const char *video_codec, int hdr,
+                                const char *audio_config, int full_range);
+
 #ifdef __cplusplus
 }
 #endif
