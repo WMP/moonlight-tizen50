@@ -14,7 +14,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 #include "mltrace.h"
 
@@ -39,22 +41,71 @@ static void *s_disp, *s_win;
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile int s_prepared, s_prepare_ok, s_started;
 
+esplus_stats_t esplus_stats;
+esplus_cfg_t esplus_cfg;
+static volatile int s_conflicted;   /* set by the resource-conflicted callback; cleared per session */
+
+static int mlc_env_int(const char *name, int def) {
+  const char *v = getenv(name);
+  char *end;
+  if (!v || !*v) return def;
+  long n = strtol(v, &end, 10);
+  return *end ? def : (int)n;
+}
+
+static void load_cfg(void) {
+  const char *m = getenv("MLENGINE_LATENCY_MODE");
+  esplus_cfg.latency_mode = !m ? ESPLUS_LAT_OFF : !strcmp(m, "nudge") ? ESPLUS_LAT_NUDGE
+                          : !strcmp(m, "arrival") ? ESPLUS_LAT_ARRIVAL : ESPLUS_LAT_OFF;
+  esplus_cfg.target_depth_ms = mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 50);
+  esplus_cfg.nudge_max_ms_per_s = mlc_env_int("MLENGINE_NUDGE_MAX_MS_PER_S", 10);
+  esplus_cfg.drop_after_ms = mlc_env_int("MLENGINE_DROP_AFTER_MS", 0);
+  esplus_cfg.depth_poll_ms = mlc_env_int("MLENGINE_DEPTH_POLL_MS", 250);
+  esplus_cfg.stall_ms = mlc_env_int("MLENGINE_STALL_MS", 700);
+  /* 0 = never recover. Recommended 3, once validated on a TV. */
+  esplus_cfg.recover_max = mlc_env_int("MLENGINE_RECOVER_MAX", 0);
+  esplus_cfg.recover_back_ms = mlc_env_int("MLENGINE_RECOVER_BACK_MS", 250);
+  esplus_cfg.idr_cooldown_ms = mlc_env_int("MLENGINE_IDR_COOLDOWN_MS", 500);
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d idr_cd=%d",
+      esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
+      esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
+      esplus_cfg.idr_cooldown_ms);
+}
+
 static int s_ecore;   /* 1 while we hold an ecore_init()/ecore_wl2_init() reference */
 
 static void on_prepared(int ok) { s_prepare_ok = ok; s_prepared = 1; PLOG("prepare_async_done=%d\n", ok); MLT("cb prepare_async_done ok=%d", ok); }
 static void on_ready(uint32_t st) { (void)st; MLT("cb ready_to_prepare stream=%u", st); }
-static void on_error(uint32_t e) { PLOG("player error 0x%x\n", e); MLT("cb player error 0x%x", e); }
-static void on_buffer(uint32_t st, uint32_t s) { if (s) PLOG("OVERRUN stream=%u\n", st); }
+/* Player callbacks may run on player threads while we hold s_lock inside a player call:
+ * they must never take s_lock or call the player; atomics and flags only. */
+static void on_error(uint32_t e) {
+  __atomic_fetch_add(&esplus_stats.errors, 1, __ATOMIC_RELAXED);
+  __atomic_store_n(&esplus_stats.last_error, e, __ATOMIC_RELAXED);
+  PLOG("player error 0x%x\n", e); MLT("cb player error 0x%x", e);
+}
+static void on_buffer(uint32_t st, uint32_t s) {
+  if (s == 0) __atomic_fetch_add(&esplus_stats.underruns, 1, __ATOMIC_RELAXED);
+  else if (s == 1) __atomic_fetch_add(&esplus_stats.overruns, 1, __ATOMIC_RELAXED);
+  if (s) PLOG("OVERRUN stream=%u\n", st);
+}
+static void on_conflict(void) {
+  s_conflicted = 1; esplus_stats.recovery_state = 2;
+  PLOG("resource conflict\n"); MLT("cb resource_conflicted");
+}
 
 /* idempotent: create + open the player once. */
 esplusplayer_handle esplus_create_open(void) {
   pthread_mutex_lock(&s_lock);
   if (!s_pl) {
+    load_cfg();
+    memset((void *)&esplus_stats, 0, sizeof esplus_stats);   /* new session */
+    s_conflicted = 0;
     s_pl = esplusplayer_create();
     MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {
       esplusplayer_set_error_cb(s_pl, on_error);
       esplusplayer_set_buffer_status_cb(s_pl, on_buffer);
+      esplusplayer_set_resource_conflicted_cb(s_pl, on_conflict);
       esplusplayer_set_ready_to_prepare_cb(s_pl, on_ready);
       esplusplayer_set_prepare_async_done_cb(s_pl, on_prepared);
       int ok = esplusplayer_open(s_pl);
@@ -147,6 +198,8 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
     s_started = 1; int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
+  if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS && pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO)
+    __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
   /* shortcut: sample per-frame trace (first 30, then every 300th, plus failures);
      raise the rate here if a hang needs every frame. Counter is under s_lock. */
   static unsigned n; n++;

@@ -6,6 +6,8 @@
  */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 int ecore_cnt, wl2_cnt, disp_ok = 1, win_ok = 1, calls_off_main;
 int ecore_init(void) { return ++ecore_cnt; }
@@ -26,17 +28,23 @@ esplusplayer_handle esplusplayer_create(void) { return (esplusplayer_handle)&pl;
 int esplusplayer_open(esplusplayer_handle h) { (void)h; return 1; }
 int esplusplayer_close(esplusplayer_handle h) { (void)h; return 1; }
 int esplusplayer_stop(esplusplayer_handle h) { (void)h; return 1; }
-void esplusplayer_set_error_cb(esplusplayer_handle h, esplusplayer_error_cb c) { (void)h;(void)c; }
-void esplusplayer_set_buffer_status_cb(esplusplayer_handle h, esplusplayer_buffer_status_cb c) { (void)h;(void)c; }
+static esplusplayer_error_cb cb_error;
+static esplusplayer_buffer_status_cb cb_buffer;
+static esplusplayer_resource_conflicted_cb cb_conflict;
+void esplusplayer_set_error_cb(esplusplayer_handle h, esplusplayer_error_cb c) { (void)h; cb_error = c; }
+void esplusplayer_set_buffer_status_cb(esplusplayer_handle h, esplusplayer_buffer_status_cb c) { (void)h; cb_buffer = c; }
+void esplusplayer_set_resource_conflicted_cb(esplusplayer_handle h, esplusplayer_resource_conflicted_cb c) { (void)h; cb_conflict = c; }
 void esplusplayer_set_ready_to_prepare_cb(esplusplayer_handle h, esplusplayer_ready_to_prepare_cb c) { (void)h;(void)c; }
 void esplusplayer_set_prepare_async_done_cb(esplusplayer_handle h, esplusplayer_prepare_async_done_cb c) { (void)h;(void)c; }
 int esplusplayer_prepare_async(esplusplayer_handle h) { (void)h; return 1; }
 int esplusplayer_start(esplusplayer_handle h) { (void)h; return 1; }
-int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return 4; }
+static int submit_ret = 4;
+int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
 int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y;(void)ww;(void)hh; return 1; }
 extern esplusplayer_handle esplus_create_open(void);
 extern int esplus_set_window(int, int);
 extern void esplus_close(void);
+extern int esplus_submit(const esplusplayer_es_packet *pkt);
 int main(void) {
   /* the host app already holds one ecore reference */
   ecore_cnt = 1;
@@ -52,5 +60,17 @@ int main(void) {
   win_ok = 0; esplus_create_open(); assert(esplus_set_window(1280, 720) == -1); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 5: no player */
   assert(esplus_set_window(1280, 720) == -1 && ecore_cnt == 1);
+  /* 6: counters. Only video SUCCESS counts as submitted; callbacks bump the rest. */
+  win_ok = 1; esplus_create_open();
+  assert(esplus_stats.submitted == 0 && cb_error && cb_buffer && cb_conflict);
+  esplusplayer_es_packet v = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, 40000000ull, 0}, a = v;
+  a.type = ESPLUSPLAYER_STREAM_TYPE_AUDIO;
+  esplus_submit(&v); esplus_submit(&a); submit_ret = 3; esplus_submit(&v); submit_ret = 4;
+  assert(esplus_stats.submitted == 1);
+  cb_buffer(1, 0); cb_buffer(1, 1); cb_buffer(1, 1); cb_error(0x42); cb_error(0x43);
+  assert(esplus_stats.underruns == 1 && esplus_stats.overruns == 2 && esplus_stats.errors == 2 && esplus_stats.last_error == 0x43);
+  cb_conflict(); assert(esplus_stats.recovery_state == 2);
+  esplus_close(); esplus_create_open(); assert(esplus_stats.submitted == 0 && esplus_stats.recovery_state == 0);   /* new session */
+  esplus_close();
   puts("ecore balance ok"); return 0;
 }
