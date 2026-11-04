@@ -19,9 +19,11 @@ void mldiag_video_setup(int fmt, int w, int h, int fps, int rc);
 void mldiag_video_du(int is_idr);                         /* every decode unit */
 void mldiag_submit(int is_video, int ok, int status);     /* esplus_submit result: ok != 0 = success, else the player status (0 = NOT_PREPARED) */
 void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done) or "start" */
-/* Build, store and print the line. extra values come from the caller. */
+/* Build, store and print the line. extra values come from the caller; enc_* are the
+   negotiated encryption features (supported by the host / requested by it / enabled). */
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,
-                 int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error);
+                 int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error,
+                 unsigned enc_supported, unsigned enc_requested, unsigned enc_enabled);
 /* Returns the stored code (0 = none); copies the line (NUL-terminated, truncated) if buf && len > 0. */
 int mldiag_last(char *buf, int len);
 

@@ -67,11 +67,11 @@ void mldiag_cc_line(const char *line) {
   else if (strstr(b, "Network dropped")) INC(C_DROP);
   else if (strstr(b, "Waiting for IDR frame")) INC(C_WAITIDR);
   else if (strstr(b, "Invalid last payload length")) INC(C_BADLEN);
-  else if (strstr(b, "Failed to decrypt video packet")) INC(C_DECRYPT);
+  else if (strstr(b, "Failed to decrypt") || strstr(b, "Discarding unencrypted packet")) INC(C_DECRYPT);   /* video and control */
   else if (strstr(b, "Depacketizer detected corrupt frame") || strstr(b, "FEC recovery returned corrupt") ||
            strstr(b, "Recovery error")) INC(C_CORRUPT);
   else if (strstr(b, "Unrecognized frame type")) INC(C_UNKFT);
-  else if (strstr(b, "Requesting IDR frame") || strstr(b, "Sending RFI request") ||
+  else if (strstr(b, "Requesting IDR frame") || strstr(b, "IDR frame request sent") || strstr(b, "Sending RFI request") ||
            strstr(b, "Sending speculative RFI")) INC(C_IDRREQ);
   else if (strstr(b, "Recovered ")) INC(C_FEC);
   else if (strstr(b, "Video decode unit queue overflow")) INC(C_QOVF);
@@ -128,16 +128,17 @@ static void add_lines(int *po, char (*ring)[LINE_MAX_CC + 1], int ringn, int sta
 }
 
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,
-                 int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error) {
+                 int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error,
+                 unsigned enc_supported, unsigned enc_requested, unsigned enc_enabled) {
   long long t = now_ms();
   pthread_mutex_lock(&s_mu);
   int o = 0;
   s_out[0] = 0;
   ADD("ML-ERROR code=%d name=%s stage=%s", code, code_name(code), stage >= 0 && stage_name ? stage_name : "-");
-  ADD(" t=%lldms | cfg %dx%d@%d br=%d pkt=%d fmts=0x%x cs=%d cr=%d audio=0x%x scm=0x%x enc=0x%x app=%s gfe=%s hostflags=0x%x rtt=%d/%d",
+  ADD(" t=%lldms | cfg %dx%d@%d br=%d pkt=%d fmts=0x%x cs=%d cr=%d audio=0x%x scm=0x%x enc=0x%x encf=0x%x/0x%x/0x%x app=%s gfe=%s hostflags=0x%x rtt=%d/%d",
       t - s_t0, s_cfg.width, s_cfg.height, s_cfg.fps, s_cfg.bitrate_kbps, s_cfg.packet_size,
       s_cfg.supported_video_formats, s_cfg.color_space, s_cfg.color_range, s_cfg.audio_config,
-      s_cfg.server_codec_mode_support, s_cfg.encryption_flags, s_appver, s_gfever,
+      s_cfg.server_codec_mode_support, s_cfg.encryption_flags, enc_supported, enc_requested, enc_enabled, s_appver, s_gfever,
       host_feature_flags, rtt, rtt_var);
   long long fdu = s_first_du_ms;
   char fduS[24], fpS[24];

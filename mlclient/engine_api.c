@@ -42,12 +42,16 @@ void ml_engine_set_log_cb(ml_engine_log_cb cb) {
 static STREAM_CONFIGURATION g_sc;  /* static: held by moonlight-common-c for the session */
 static SERVER_INFORMATION g_si;
 
+/* moonlight-common-c session globals (Connection.c), set by the RTSP handshake. */
+extern uint32_t EncryptionFeaturesSupported, EncryptionFeaturesRequested, EncryptionFeaturesEnabled;
+
 /* Build the one-line failure report (also in release) from the engine counters. */
 static void report_failure(int code, int stage) {
   uint32_t rtt = 0, var = 0;
   if (!LiGetEstimatedRttInfo(&rtt, &var)) rtt = var = 0;
   mldiag_fail(code, stage, stage >= 0 ? LiGetStageName(stage) : NULL, (int)LiGetHostFeatureFlags(),
-              (int)rtt, (int)var, esplus_stats.errors, esplus_stats.last_error);
+              (int)rtt, (int)var, esplus_stats.errors, esplus_stats.last_error,
+              EncryptionFeaturesSupported, EncryptionFeaturesRequested, EncryptionFeaturesEnabled);
   char line[2048]; mldiag_last(line, sizeof line);
   MLT("%s", line);
 }

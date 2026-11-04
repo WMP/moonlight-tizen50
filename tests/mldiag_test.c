@@ -7,7 +7,7 @@
 
 static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74" };
 
-static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0); }
+static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0, 0, 0, 0); }
 
 int main(void) {
   char buf[4096];
@@ -29,10 +29,10 @@ int main(void) {
   mldiag_video_du(0); mldiag_video_du(1);
   mldiag_submit(1, 1, 4); mldiag_submit(0, 1, 4); mldiag_submit(0, 0, 3); mldiag_submit(0, 0, 0);   /* 0 = NOT_PREPARED: a failure */
   mldiag_player("open", 1); mldiag_player("win", 0); mldiag_player("prep", 1); mldiag_player("pdone", 1); mldiag_player("start", 1);
-  mldiag_fail(-101, -1, NULL, 0, 2, 1, 7, 9);
+  mldiag_fail(-101, -1, NULL, 0, 2, 1, 7, 9, 0x7, 0x0, 0x1);
   assert(mldiag_last(buf, sizeof buf) == -101);
   assert(strncmp(buf, "ML-ERROR code=-101 name=NO_VIDEO_FRAME stage=- t=", 49) == 0);
-  assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
+  assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 encf=0x7/0x0/0x1 app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
   assert(strstr(buf, "first_pkt_ms=12"));
   assert(strstr(buf, "du=2 idr=1"));
   assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 vsub=1 asub=3 subfail=2/0 err=7/9"));
@@ -40,9 +40,17 @@ int main(void) {
   assert(!strchr(buf, '\n'));
   puts(buf);
 
+  /* IDR request and control decrypt messages (the #13 case) */
+  mldiag_reset(&CFG);
+  mldiag_cc_line("IDR frame request sent\n");
+  mldiag_cc_line("Failed to decrypt control packet of size 40\n");
+  mldiag_cc_line("Discarding unencrypted packet on encrypted control stream: 0302\n");
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "decrypt=2 ") && strstr(buf, "idrreq=1 "));
+
   /* name mapping for an unknown code; stage name */
   mldiag_reset(&CFG);
-  mldiag_fail(-7, 3, "RTSP handshake", 0, 0, 0, 0, 0);
+  mldiag_fail(-7, 3, "RTSP handshake", 0, 0, 0, 0, 0, 0, 0, 0);
   assert(mldiag_last(buf, sizeof buf) == -7);
   assert(strstr(buf, "name=OTHER stage=RTSP handshake"));
 
