@@ -121,26 +121,72 @@ static pthread_mutex_t s_smp_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_smp_cv;
 static int s_smp_run, s_smp_stop;
 
+/* Watchdog state, under s_lock (reset per session in esplus_create_open). */
+static volatile int s_error_pending;   /* set by on_error; the tick recovers, the callback must not */
+static uint64_t s_stall_play, s_stall_t, s_last_recover_ms;   /* s_stall_t 0 = no sample yet */
+static uint32_t s_stall_sub;
+static int s_stall_armed, s_recover_count, s_have_recover, s_off_logged;
+
+/* Flushing seek a little behind the last video PTS. Returns 1 when the caller must force an IDR
+ * after releasing s_lock. Does not wait for seek_done; never ends the session. */
+static int recover(const char *why, uint64_t now_ms) {
+  if (esplus_cfg.recover_max == 0) {
+    if (!s_off_logged) { s_off_logged = 1; MLT("recovery off (%s)", why); }
+    return 0;
+  }
+  if (esplus_stats.recovery_state == 2 || s_conflicted) return 0;
+  if (s_have_recover && now_ms - s_last_recover_ms < 2000) return 0;
+  if (s_recover_count >= esplus_cfg.recover_max) {
+    esplus_stats.recovery_state = 2; MLT("recovery gave up"); PLOG("recovery gave up\n");
+    return 0;
+  }
+  esplus_stats.recovery_state = 1;
+  __atomic_fetch_add(&esplus_stats.recoveries, 1, __ATOMIC_RELAXED);
+  s_recover_count++; s_have_recover = 1; s_last_recover_ms = now_ms;
+  uint64_t target = s_last_video_pts_ms > (uint64_t)esplus_cfg.recover_back_ms
+                  ? s_last_video_pts_ms - (uint64_t)esplus_cfg.recover_back_ms : 0;
+  int ok = esplusplayer_seek(s_pl, target);
+  PLOG("recover (%s) seek %llu ms -> %d\n", why, (unsigned long long)target, ok);
+  MLT("recover (%s) seek %llu ms -> %d", why, (unsigned long long)target, ok);
+  s_corr_us = 0; s_corr_ms = 0;
+  s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted;
+  esplus_stats.recovery_state = 0;
+  return 1;
+}
+
 /* One sampler step; the thread calls it with the monotonic clock, the host test with a fake one. */
 void esplus_sample_tick(uint64_t now_ms) {
+  int idr = 0;
   pthread_mutex_lock(&s_lock);
-  uint64_t play;
-  if (s_pl && s_started && esplusplayer_get_playing_time(s_pl, &play)) {
-    esplus_stats.playing_ms = (uint32_t)play;
-    esplus_stats.depth_ms = (int32_t)(s_last_video_pts_ms - play);
-    esplus_stats.audio_depth_ms = (int32_t)(s_last_audio_pts_ms - play);
-    if (!s_fps_t0) { s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted; }
-    else if (now_ms - s_fps_t0 >= 1000) {
-      esplus_stats.fps_submitted = esplus_stats.submitted - s_fps_sub0;
-      s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted;
+  if (s_pl && s_started) {
+    const char *why = NULL;
+    uint64_t play;
+    if (esplusplayer_get_playing_time(s_pl, &play)) {
+      esplus_stats.playing_ms = (uint32_t)play;
+      esplus_stats.depth_ms = (int32_t)(s_last_video_pts_ms - play);
+      esplus_stats.audio_depth_ms = (int32_t)(s_last_audio_pts_ms - play);
+      if (!s_fps_t0) { s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted; }
+      else if (now_ms - s_fps_t0 >= 1000) {
+        esplus_stats.fps_submitted = esplus_stats.submitted - s_fps_sub0;
+        s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted;
+      }
+      if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
+      s_tick_prev_ms = now_ms;
+      MLT("stats depth=%dms audio=%dms fps=%u submitted=%u", esplus_stats.depth_ms,
+          esplus_stats.audio_depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
+      /* stall: playing time stopped while we keep submitting. Armed after the first non-zero time. */
+      if (!s_stall_t || play != s_stall_play) {
+        s_stall_play = play; s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted;
+        if (play > 0) s_stall_armed = 1;
+      } else if (s_stall_armed && now_ms - s_stall_t > (uint64_t)esplus_cfg.stall_ms
+                 && esplus_stats.submitted != s_stall_sub) why = "stall";
     }
-    if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
-    s_tick_prev_ms = now_ms;
-    MLT("stats depth=%dms audio=%dms fps=%u submitted=%u", esplus_stats.depth_ms,
-        esplus_stats.audio_depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
+    if (__atomic_exchange_n(&s_error_pending, 0, __ATOMIC_RELAXED)) why = "error";
+    if (why && !s_conflicted) idr = recover(why, now_ms);
   }
   s_tick_seq++;
   pthread_mutex_unlock(&s_lock);
+  if (idr) esplus_request_idr(1);
 }
 
 static uint64_t mono_ms(void) {
@@ -189,6 +235,7 @@ static void on_ready(uint32_t st) { (void)st; MLT("cb ready_to_prepare stream=%u
 /* Player callbacks may run on player threads while we hold s_lock inside a player call:
  * they must never take s_lock or call the player; atomics and flags only. */
 static void on_error(uint32_t e) {
+  s_error_pending = 1;
   __atomic_fetch_add(&esplus_stats.errors, 1, __ATOMIC_RELAXED);
   __atomic_store_n(&esplus_stats.last_error, e, __ATOMIC_RELAXED);
   PLOG("player error 0x%x\n", e); MLT("cb player error 0x%x", e);
@@ -198,6 +245,7 @@ static void on_buffer(uint32_t st, uint32_t s) {
   else if (s == 1) __atomic_fetch_add(&esplus_stats.overruns, 1, __ATOMIC_RELAXED);
   if (s) PLOG("OVERRUN stream=%u\n", st);
 }
+static void on_seek_done(void) { MLT("cb seek_done"); }
 static void on_conflict(void) {
   s_conflicted = 1; esplus_stats.recovery_state = 2;
   PLOG("resource conflict\n"); MLT("cb resource_conflicted");
@@ -209,13 +257,16 @@ esplusplayer_handle esplus_create_open(void) {
   if (!s_pl) {
     load_cfg();
     memset((void *)&esplus_stats, 0, sizeof esplus_stats);   /* new session */
-    s_conflicted = 0;
+    s_conflicted = 0; s_error_pending = 0;
+    s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
+    s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
     s_pl = esplusplayer_create();
     MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {
       esplusplayer_set_error_cb(s_pl, on_error);
       esplusplayer_set_buffer_status_cb(s_pl, on_buffer);
       esplusplayer_set_resource_conflicted_cb(s_pl, on_conflict);
+      esplusplayer_set_seek_done_cb(s_pl, on_seek_done);
       esplusplayer_set_ready_to_prepare_cb(s_pl, on_ready);
       esplusplayer_set_prepare_async_done_cb(s_pl, on_prepared);
       int ok = esplusplayer_open(s_pl);

@@ -45,6 +45,9 @@ int esplusplayer_start(esplusplayer_handle h) { (void)h; return 1; }
 static int submit_ret = 4;
 int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
 int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y;(void)ww;(void)hh; return 1; }
+static int seek_calls; static uint64_t seek_target;
+int esplusplayer_seek(esplusplayer_handle h, uint64_t t) { (void)h; seek_calls++; seek_target = t; return 1; }
+void esplusplayer_set_seek_done_cb(esplusplayer_handle h, esplusplayer_seek_done_cb c) { (void)h;(void)c; }
 static int idr_calls;
 void LiRequestIdrFrame(void) { idr_calls++; }
 extern esplusplayer_handle esplus_create_open(void);
@@ -112,6 +115,33 @@ int main(void) {
   esplus_request_idr(0); esplus_request_idr(0); assert(idr_calls == 1);
   esplus_request_idr(1); assert(idr_calls == 2);
   esplus_close();
+  /* c: watchdog. RECOVER_MAX=0 (default): a stall never seeks. */
+  begin(); vsub(1000); play_ms = 100;
+  esplus_sample_tick(1000); vsub(1010); esplus_sample_tick(1800); vsub(1020); esplus_sample_tick(5000);
+  assert(seek_calls == 0 && esplus_stats.recoveries == 0);
+  esplus_close();
+  /* RECOVER_MAX=2: seek behind the last PTS + forced IDR; 2 s spacing; then give up */
+  setenv("MLENGINE_RECOVER_MAX", "2", 1);
+  begin(); idr_calls = 0; vsub(1000); play_ms = 100;
+  esplus_sample_tick(1000); vsub(1010); esplus_sample_tick(1500); assert(seek_calls == 0);   /* not stalled long enough */
+  esplus_sample_tick(1800);                                  /* stalled 800 ms while submitting */
+  assert(seek_calls == 1 && seek_target == 1010 - 250 && idr_calls == 1 && esplus_stats.recoveries == 1 && esplus_stats.recovery_state == 0);
+  vsub(1020); esplus_sample_tick(2600); assert(seek_calls == 1);   /* within 2 s of the last recovery */
+  vsub(1030); esplus_sample_tick(3900); assert(seek_calls == 2 && idr_calls == 2 && seek_target == 1030 - 250);
+  vsub(1040); esplus_sample_tick(4700); assert(seek_calls == 2);
+  vsub(1050); esplus_sample_tick(6000); assert(seek_calls == 2 && esplus_stats.recovery_state == 2);   /* gave up */
+  vsub(1060); esplus_sample_tick(9000); assert(seek_calls == 2 && esplus_stats.recoveries == 2);
+  esplus_close();
+  /* an error callback recovers on the next tick, not in the callback */
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  cb_error(7); assert(seek_calls == 0); esplus_sample_tick(1100); assert(seek_calls == 1);
+  esplus_close();
+  /* d: after a resource conflict nothing seeks */
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  cb_conflict(); assert(esplus_stats.recovery_state == 2);
+  vsub(1010); cb_error(7); esplus_sample_tick(2000); assert(seek_calls == 0);
+  esplus_close();
+  unsetenv("MLENGINE_RECOVER_MAX");
   /* e: sampler thread starts at prepare, stops promptly at close */
   setenv("MLENGINE_DEPTH_POLL_MS", "50", 1);
   begin(); play_calls = 0;
