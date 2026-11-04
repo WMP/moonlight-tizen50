@@ -172,12 +172,31 @@ hinges on the process start context:
 
 ## 8. Baselines still to collect (open items)
 
-- [ ] mlDiag after a manual start (`app_launcher -s`) — will pin down what
-      exactly differs in the working context (label? cgroup/dotnetzone?
-      `__K_RELOCATE_BELOW`?) from the web-launched one. Does not block the
-      loader.
+- [x] mlDiag after a manual start (`app_launcher -s`) — **collected
+      2026-11-04 (root SSH)**. Surprising result: the manual-start context
+      is **identical** to the web-launched one — same process label
+      (`User::Pkg::org.moonlight.host`), same uid 5001/gid 100,
+      `CapEff=0`, `Seccomp=0`, same cgroup
+      `6:devices:/lxc.payload/dotnetzone` (with
+      `devices.list = a *:* rwm`), shared pid/ipc/net namespaces with the
+      system (only the mnt ns differs), and
+      `__K_RELOCATE_BELOW=com.samsung.tv.csfs` is present in **both**
+      launch bundles (it is not the discriminator of the start path).
+      Yet in the manual process memfd-dlopen **succeeds**
+      (`/proc/<pid>/maps` clean, no new UEP denials in dmesg), while in
+      the web-launched process the same file gets EPERM. Conclusion: the
+      difference is not in any attribute visible in `/proc` — it is
+      in-Task state (most plausible mechanism: a **`PF_UEP_*`-style
+      exemption issued by launchpad on `app_launcher -s` and inherited by
+      children** — to be confirmed in launchpad/libaul code).
+      Practically: no static test can tell the "good" context apart, so
+      until the mechanism is located, the manual loader remains the only
+      working route for web-launched processes.
 - [ ] An empirical rpc-port test: does a started-by-rpc process get the
-      exec-mmap right (§6)?
+      exec-mmap right (§6). Given the baseline above, rpc-port is still
+      worth testing — the start goes through amd/launchpad (not through a
+      web-app child), so there is a real chance it receives the same
+      exemption as a manual start.
 
 ## 9. Reproducing the diagnosis
 
