@@ -86,6 +86,15 @@ Android). It shows the web UI console, and on request the host and engine log to
    mlDebug(true)    // host (+ engine) lines in this console
    mlDebug(false)   // turn it off
    ```
+   **Engine start-up diagnostics** (debug packages log them at host start, as
+   `[MLHOST] diag#1 ...` lines ending with `diag#1 summary: ...`):
+
+   ```js
+   mlDiag()           // the host runs its engine load checks again: [MLDIAG] lines
+   mlDiag('launch')   // start the host in each way the UI can: [mldiag] lines
+   ```
+
+   If no `[MLHOST]` line comes at all, the host did not start: run `mlDiag('launch')`.
 4. Do what fails (add a host, pair, start a stream), then save the console to a
    file (desktop Chrome: right-click in the console → *Save as…*; Android: share).
 
@@ -103,6 +112,7 @@ The console also shows the base UI's own lines (`[index.js, …]`, `[utils.js, �
 | `[mltrace]` | debug console relay (`pkg/ui/mltrace.js`) | debug packages |
 | `[MLHOST]` | .NET host | debug packages; normal ones after `mlDebug(true)` |
 | `[MLENGINE]` | native engine (pairing, RTSP, video/audio setup) | debug packages |
+| `[MLDIAG]` / `[mldiag]` | host engine checks / UI host-start test (`mlDiag`) | on request; `diag#` lines at host start in debug packages |
 
 The `App Version` line names the build: `Moonlight v<ver> (tizen50-core <variant>
 <commit>, UI <base UI version>)`. Check it first: it tells which package was tested.
@@ -114,7 +124,8 @@ expression, a leading `-` hides matches):
 
 | Show | Filter |
 |------|--------|
-| only this project's lines | `/\[(mlbridge|mltrace|MLHOST|MLENGINE)\]|tizen50-core/` |
+| only this project's lines | `/\[(mlbridge|mltrace|MLHOST|MLENGINE|MLDIAG|mldiag)\]|tizen50-core/` |
+| only the diagnostics | `/diag#|\[(MLDIAG|mldiag)\]|host start/` |
 | only host + engine | `/\[(MLHOST|MLENGINE)\]/` |
 | the bridge round-trips | `/\[mlbridge\] (call|sent|reply|timeout|joined|startHost)/` |
 | one command (e.g. id 28) | `/id=28\b/` |

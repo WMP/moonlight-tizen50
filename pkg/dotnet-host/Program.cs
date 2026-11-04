@@ -45,7 +45,11 @@ namespace MoonlightHost
     // lines so the start-up (engine load) is visible when it is turned on later.
     internal static class UiLog
     {
-        private const int Keep = 100, MaxLine = 1000;   // one message port message is ~4 KB max
+#if DEBUG
+        private const int Keep = 1000, MaxLine = 1000;   // room for the start-up diagnostics (Diag.cs)
+#else
+        private const int Keep = 100, MaxLine = 1000;    // one message port message is ~4 KB max
+#endif
         private static readonly Queue<KeyValuePair<string, string>> s_recent = new Queue<KeyValuePair<string, string>>();
         private static volatile bool s_on;
         private static readonly Engine.LogCbDelegate s_engineCb = OnEngineLine;   // kept alive for native code
@@ -96,15 +100,19 @@ namespace MoonlightHost
         [DllImport("libdl.so.2")]                       public  static extern IntPtr dlsym(IntPtr handle, string symbol);
         [DllImport("libdl.so.2")]                       private static extern IntPtr dlerror();
 
+        // Load the engine image from an anonymous fd. The fd must stay open for process life.
         public static IntPtr LoadFromMemory(byte[] so)
         {
-            // Route 1 (preferred): memfd - load the engine image from an anonymous fd.
-            // The fd must stay open for process life.
-            // Route 2 (fallback): a C# ELF32-ARM loader for targets where memfd is
-            // refused. NOT implemented here yet; add if a target returns an mmap error.
+            return Open("/proc/self/fd/" + CreateMemfd(so), "memfd");
+        }
+
+        // An anonymous fd holding the bytes of so (also used by Diag.cs).
+        public static int CreateMemfd(byte[] so)
+        {
             int fd = syscall_memfd(SYS_memfd_create_arm, "mlengine", MFD_CLOEXEC);
+            int e = Marshal.GetLastWin32Error();
             Log.Trace("memfd fd=" + fd);
-            if (fd < 0) throw new InvalidOperationException("memfd_create(syscall 385) failed: " + Marshal.GetLastWin32Error());
+            if (fd < 0) throw new InvalidOperationException("memfd_create(syscall 385) failed: errno " + e);
 
             var pin = GCHandle.Alloc(so, GCHandleType.Pinned);
             try
@@ -121,8 +129,7 @@ namespace MoonlightHost
             }
             finally { pin.Free(); }
             Log.Trace("wrote " + so.Length + " bytes to memfd " + fd);
-
-            return Open("/proc/self/fd/" + fd, "memfd");
+            return fd;
         }
 
         // The runtime binds a P/Invoke (and PtrToStringAnsi's helper) on first use with its
@@ -152,7 +159,7 @@ namespace MoonlightHost
 
         // The engine's own libraries (build-engine-so.sh link line): when the engine does
         // not load, name the first of them that does not load by itself.
-        private static readonly string[] EngineDeps = {
+        internal static readonly string[] EngineDeps = {
             "libesplusplayer.so", "libecore_wl2.so.1", "libecore.so.1",
             "libcrypto.so.1.0.0", "libssl.so.1.0.0", "libcurl.so.4",
         };
@@ -233,16 +240,20 @@ namespace MoonlightHost
         public static void Load(string soPath)
         {
             byte[] bytes = File.ReadAllBytes(soPath);
-            Log.Trace("engine .so " + soPath + " (" + bytes.Length + " bytes)");
+            Log.Info("engine load: " + soPath + " (" + bytes.Length + " bytes), trying memfd");
             IntPtr h;
-            try { h = MemLoader.LoadFromMemory(bytes); }
+            try { h = MemLoader.LoadFromMemory(bytes); Log.Info("engine load: branch=memfd ok"); }
             catch (Exception memErr)
             {
                 // The standard way: dlopen the packaged file itself. Report both reasons
                 // if this fails too.
-                Log.Error("engine from memory failed: " + memErr.Message + "; trying the packaged file");
-                try { h = MemLoader.Open(soPath, "file"); }
-                catch (Exception fileErr) { throw new InvalidOperationException(memErr.Message + "; " + fileErr.Message); }
+                Log.Error("engine load: branch=memfd failed: " + memErr.Message + "; trying the packaged file");
+                try { h = MemLoader.Open(soPath, "file"); Log.Info("engine load: branch=file ok"); }
+                catch (Exception fileErr)
+                {
+                    Log.Error("engine load: branch=file failed: " + fileErr.Message);
+                    throw new InvalidOperationException(memErr.Message + "; " + fileErr.Message);
+                }
             }
             Start   = MemLoader.GetDelegate<StartDelegate>(h,   "ml_engine_start");
             Running = MemLoader.GetDelegate<RunningDelegate>(h, "ml_engine_running");
@@ -479,6 +490,12 @@ namespace MoonlightHost
         private static string Execute(Tizen.Applications.Bundle b, string cmd, Dictionary<string, object> r)
         {
             if (cmd == "setLog") { UiLog.Enable(Item(b, "on") == "true"); return null; }   // works without the engine too
+            if (cmd == "diag")                                                              // also without the engine
+            {
+                if (Item(b, "rerun") == "true") Diag.Run("run on request from the UI");
+                r.Add("report", Diag.Report());
+                return null;
+            }
             if (!Engine.Loaded) return "engine not loaded: " + Engine.LoadError;
             switch (cmd)
             {
@@ -602,6 +619,12 @@ namespace MoonlightHost
                     Path.Combine(bin, "..", "lib", "libmlengine.so"),
                     Path.Combine(DirectoryInfo.Resource, "lib", "libmlengine.so"),
                 };
+                Diag.Setup(DirectoryInfo.Data, DirectoryInfo.Resource, tried);
+#if DEBUG
+                try { Diag.Run("start-up, before the engine load"); }
+                catch (Exception e) { Log.Error("diagnostics failed: " + e); }   // never block the real load
+#endif
+                foreach (var t in tried) Log.Trace("engine candidate " + t + " exists=" + File.Exists(t));
                 string soPath = Array.Find(tried, File.Exists);
                 if (soPath == null) throw new FileNotFoundException("libmlengine.so not found in: " + string.Join(", ", tried));
                 Engine.Load(soPath);
