@@ -64,6 +64,8 @@ The point of this repo is to improve the client itself:
     and range, audio config, server codec mode, encryption flags, server versions;
   - counters of each step: packets, frames, IDR frames, player open/window/prepare/prepare-done/start,
     submits per stream type and their failures;
+  - control-stream encryption check (messages, failures, IV length, self-decrypt result) and whether the
+    session key and key id match the `/launch` or `/resume` request;
   - the counted moonlight-common-c log messages and the first and last library log lines.
 - **The line must reach the user.** The engine returns it with `ml_engine_last_error()`,
   the host writes it to dlog and sends it in the `diag` field of `streamTerminated`, and

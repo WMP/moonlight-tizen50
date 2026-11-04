@@ -102,7 +102,9 @@ static int start_connection(void) {
   mldiag_cfg dc = { g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, g_sc.packetSize,
                     g_sc.supportedVideoFormats, g_sc.colorSpace, g_sc.colorRange, g_sc.audioConfiguration,
                     g_si.serverCodecModeSupport, g_sc.encryptionFlags,
-                    g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion };
+                    g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion,
+                    (const unsigned char *)g_sc.remoteInputAesKey, 0 };
+  { unsigned id; memcpy(&id, g_sc.remoteInputAesIv, 4); dc.rikeyid = (int)ntohl(id); }   /* rikeyid is the IV's first 4 bytes, big-endian */
   mldiag_reset(&dc);
   int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
   if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("start_connection -> 1 (LiStartConnection %d)", err); return 1; }

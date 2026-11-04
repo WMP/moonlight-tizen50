@@ -11,6 +11,8 @@ typedef struct {
   int width, height, fps, bitrate_kbps, packet_size, supported_video_formats, color_space,
       color_range, audio_config, server_codec_mode_support, encryption_flags;
   const char *app_version, *gfe_version;   /* copied; may be NULL */
+  const unsigned char *aes_key;            /* 16 bytes, compare only (never stored or printed); NULL = unknown */
+  int rikeyid;                             /* compare only */
 } mldiag_cfg;
 
 void mldiag_reset(const mldiag_cfg *cfg);                 /* session start: clears everything */
@@ -19,6 +21,11 @@ void mldiag_video_setup(int fmt, int w, int h, int fps, int rc);
 void mldiag_video_du(int is_idr);                         /* every decode unit */
 void mldiag_submit(int is_video, int ok, int status);     /* esplus_submit result: ok != 0 = success, else the player status (0 = NOT_PREPARED) */
 void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done) or "start" */
+/* /launch or /resume URL about to be sent: remembers the mode, rikey and rikeyid (not printed). The next
+   mldiag_reset(cfg) compares them with the session's key and forgets them. Survives mldiag_reset. */
+void mldiag_note_launch(const char *url);
+/* One control-stream AES-GCM encrypt: ok = real result, ivlen, verify: 1 decrypt check ok, 0 failed, -1 not done. */
+unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify);   /* returns this session's message number (1, 2, ...) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,

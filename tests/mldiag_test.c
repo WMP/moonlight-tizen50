@@ -5,7 +5,7 @@
 #include <string.h>
 #include "mldiag.h"
 
-static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74" };
+static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74", NULL, 0 };
 
 static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0, 0, 0, 0); }
 
@@ -32,7 +32,7 @@ int main(void) {
   mldiag_fail(-101, -1, NULL, 0, 2, 1, 7, 9, 0x7, 0x0, 0x1);
   assert(mldiag_last(buf, sizeof buf) == -101);
   assert(strncmp(buf, "ML-ERROR code=-101 name=NO_VIDEO_FRAME stage=- t=", 49) == 0);
-  assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 encf=0x7/0x0/0x1 app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
+  assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 encf=0x7/0x0/0x1 launch=- rikey=- rikeyid=- app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
   assert(strstr(buf, "first_pkt_ms=12"));
   assert(strstr(buf, "du=2 idr=1"));
   assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 vsub=1 asub=3 subfail=2/0 err=7/9"));
@@ -81,6 +81,36 @@ int main(void) {
   assert(strlen(small) == 9 && strncmp(small, "ML-ERROR ", 9) == 0);
   assert(mldiag_last(NULL, 100) == -101);
   assert(mldiag_last(buf, 0) == -101);
+
+  /* launch / resume key check; the note is consumed by one reset */
+  static const unsigned char KEY[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff };
+  unsigned char key2[16]; memcpy(key2, KEY, 16); key2[15] ^= 1;
+  mldiag_cfg kc = CFG; kc.aes_key = KEY; kc.rikeyid = -5;
+  mldiag_note_launch("https://h:47984/resume?uniqueid=x&rikey=00112233445566778899AABBCCDDEEFF&rikeyid=-5");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=resume rikey=ok rikeyid=ok "));
+  assert(!strstr(buf, "00112233") && !strstr(buf, "aabbcc"));
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=- rikey=- rikeyid=- "));
+  kc.aes_key = key2; kc.rikeyid = 7;
+  mldiag_note_launch("https://h/launch?rikey=00112233445566778899aabbccddeeff&rikeyid=-5&x=1");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=launch rikey=DIFF rikeyid=DIFF "));
+  mldiag_note_launch("https://h/launch?rikey=0011&rikeyid=1");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=launch rikey=bad rikeyid=DIFF "));
+  mldiag_note_launch("https://h/launch?rikey=zz112233445566778899aabbccddeeff");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "rikey=bad rikeyid=- "));
+
+  /* control stream encrypt counters */
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | ctl enc=0 fail=0 iv=- verify=0/0/0 "));
+  mldiag_ctl_encrypt(1, 12, 1); mldiag_ctl_encrypt(1, 12, 1); mldiag_ctl_encrypt(1, 16, 0); mldiag_ctl_encrypt(0, 16, -1); mldiag_ctl_encrypt(1, 12, -1);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | ctl enc=5 fail=1 iv=12 verify=2/1/2 "));
+  puts(buf);
 
   /* reset clears */
   mldiag_reset(&CFG);

@@ -17,6 +17,7 @@
 #include "http.h"
 #include "mkcert.h"
 #include "mlengine.h"
+#include "mldiag.h"
 #include "mltrace.h"
 #include "pairing.h"
 
@@ -85,6 +86,7 @@ int ml_engine_open_url(const char *url, const char *ppk, unsigned char **out, in
   char *full = NULL;
   const char *u = url;
   if (strstr(url, "/launch?") || strstr(url, "/resume?")) {
+    mldiag_note_launch(url);
     const char *q = LiGetLaunchUrlQueryParameters();
     size_t n = strlen(url) + strlen(q) + 1;
     full = malloc(n);
