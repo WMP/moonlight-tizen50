@@ -13,7 +13,8 @@ root with plain paths.
 
 Applied automatically by `.github/workflows/sync-from-clean.yml`:
 
-1. the clean upstream's files are laid down at the repo root (upstream code only,
+1. the clean upstream's files (default branch, or the branch given in the
+   manual run's `core_branch` input) are laid down at the repo root (upstream code only,
    not its repo-level `AGENTS.md`; this repo's own `patches/`, sync workflow and
    `FUNDING.yml` are preserved);
 2. `git apply patches/*.patch` re-adds this layer;
