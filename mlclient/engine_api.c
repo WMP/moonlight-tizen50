@@ -114,7 +114,7 @@ int ml_engine_start(const char *host, int appId, const char *pin,
 
   LiInitializeStreamConfiguration(&g_sc);
   g_sc.width = width; g_sc.height = height; g_sc.fps = fps; g_sc.bitrate = bitrate_kbps;
-  g_sc.packetSize = 1024;
+  g_sc.packetSize = 1392;   /* LAN packet size used by GameStream clients (fewer packets, less FEC overhead at high bitrates) */
   g_sc.supportedVideoFormats = VIDEO_FORMAT_H264;   /* HEVC later */
   g_sc.colorSpace = COLORSPACE_REC_709;
   g_sc.colorRange = COLOR_RANGE_LIMITED;
@@ -212,7 +212,7 @@ static int start_session_impl(const char *host, int width, int height, int fps, 
 
   LiInitializeStreamConfiguration(&g_sc);
   g_sc.width = width; g_sc.height = height; g_sc.fps = fps; g_sc.bitrate = bitrate_kbps;
-  g_sc.packetSize = 1024;
+  g_sc.packetSize = 1392;   /* LAN packet size used by GameStream clients (fewer packets, less FEC overhead at high bitrates) */
   if (video_codec && !strcmp(video_codec, "HEVC"))
     g_sc.supportedVideoFormats = hdr ? VIDEO_FORMAT_H265_MAIN10 : VIDEO_FORMAT_H265;
   else {
