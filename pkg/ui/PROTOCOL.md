@@ -59,6 +59,7 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `stun` | – | `result` = `""` | none (not supported yet) |
 | `wakeOnLan` | `mac` | `error` = `not supported` | none (not supported yet) |
 | `setLog` | `on` (`true`/`false`) | – | `ml_engine_set_log_cb` (works also when the engine did not load) |
+| `diag` | `rerun` (`true`: run the checks again now) | `report` (the lines of the last run, `\n`-separated) | none; works also when the engine did not load (see below) |
 
 An engine error becomes `error` = the engine return code as a decimal string (the
 same values the WASM build rejects with, for example `-1` = GS_FAILED).
@@ -67,7 +68,8 @@ same values the WASM build rejects with, for example `-1` = GS_FAILED).
 
 After `setLog on=true` the host sends log lines to the UI port: `log` (the line, at
 most 1000 characters) and `tag` (`MLHOST` or `MLENGINE`), no `id`. It first sends its
-last 100 `MLHOST` lines, then new ones as they are written. Engine lines exist only in
+last 100 `MLHOST` lines (debug builds: 1000, so the start-up diagnostics fit), then new
+ones as they are written. Engine lines exist only in
 debug builds. `mlbridge.js` prints them with `console.log('[<tag>] <line>')`. The UI
 sends `setLog` from `mlDebug(true|false)` and at start-up when it is on: remembered
 on, or not set and this is a debug package (`ML_TRACE`). The dlog output (`MLHOST`, `MLENGINE`, `MLUI`) does not change.
@@ -96,3 +98,19 @@ engine then fails video setup cleanly: `startStream` replies `error` and the UI 
 If that happens on the TV, the alternative is a small UI app in the same `.tpk` that
 owns the overlay window only while a stream runs (the stream takes the screen anyway);
 the host keeps the engine and the message ports.
+
+## Engine start-up diagnostics
+
+`pkg/dotnet-host/Diag.cs` logs how the host was started (decoded launch arguments), its
+process context (ids, capabilities, security label, cgroup, parent), where the engine
+file lies (size, sha256, mount, extended attributes), and then tries each way of loading
+`libmlengine.so` on its own: mmap probe + `dlopen` of the packaged file and of its
+resolved path, the memfd route, a copy in the data folder (diagnostic only), and each
+engine dependency. Every line is `diag#<run> <step>: ...` with the branch taken
+(`branch=ok|failed|...`), errno and `dlerror` text; the last line is `summary`.
+
+Debug builds run it at start-up, before the real load. The lines reach the UI console
+with the log forward above, and `<data>/mlhost-diag.log`. In the UI console:
+`mlDiag()` sends `diag` with `rerun=true` and prints the report as `[MLDIAG]` lines;
+`mlDiag('launch')` starts the host in each way the UI can (`launch`, then
+`launchAppControl`) while it does not run and prints `[mldiag]` lines after each.
