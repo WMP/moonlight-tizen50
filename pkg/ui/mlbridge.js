@@ -289,6 +289,7 @@
     }
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
+      if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
       if (String(m.event).indexOf('streamTerminated') === 0) resetStats();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
