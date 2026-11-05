@@ -338,7 +338,7 @@ int esplus_set_window(int w, int h) {
   return 0;
 }
 
-/* called from video start, after both streams are added. */
+/* called from audio start (audio_opus.c), after both stream infos are added. */
 void esplus_prepare(void) {
   int ok = esplusplayer_prepare_async(s_pl);
   MLT("esplus_prepare prepare_async -> %d", ok);
