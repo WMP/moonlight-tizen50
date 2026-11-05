@@ -55,6 +55,8 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `startStream` | `host`, `w`, `h`, `fps`, `bitrate`, `rikey` (hex), `rikeyid`, `appVer`, `gfeVer`, `rtspUrl`, `codecMode`, `videoCodec` (`H264`/`HEVC`/`AV1`), `hdr` (`true`/`false`), `audioConfig` (`Stereo`/`51Surround`/`71Surround`, the audio channel layout), `fullRange` (`true`/`false`, optional, default `false`) | – | `ml_engine_start_session_v2` when the engine has it, else `ml_engine_start_session` (keeps the encoder's default color negotiation; `fullRange` is ignored) |
 | `stopStream` | – | – | `ml_engine_stop` |
 | `sendKeyboardEvent` | `key`, `action`, `mods` | – | `ml_engine_send_key` |
+| `gamepadArrival` | `index` (0..15), `mask` (active pad bits), `type` (0 unknown, 1 Xbox, 2 PS, 3 Nintendo), `buttons` (supported button flags), `caps` (1 = analog triggers); all decimal | none: no reply, handled in order on the port thread | `ml_engine_gamepad_arrival` |
+| `gamepadState` | `index`, `mask`, `buttons`, `lt`, `rt` (0..255), `lsx`, `lsy`, `rsx`, `rsy` (-32768..32767); all decimal. All zero values with a mask without the bit of `index` = pad removed | none: no reply, handled in order on the port thread (not in a task, so states keep their order) | `ml_engine_gamepad_state` |
 | `toggleStats` | `on` (`true`/`false`: the wanted state; absent = flip) | – (`error` = `not supported` with an engine that lacks it) | `ml_engine_get_stats`; while on and a stream runs, the host polls it every 500 ms and sends `mlstats` events |
 | `stun` | – | `result` = `""` | none (not supported yet) |
 | `wakeOnLan` | `mac` | `error` = `not supported` | none (not supported yet) |

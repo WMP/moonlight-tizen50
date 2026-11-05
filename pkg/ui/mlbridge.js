@@ -276,6 +276,134 @@
     });
   }
 
+
+  // --- Gamepad input: port of wasm/gamepad.cpp PollGamepads() (no WASM module polls here) ---
+  // While a stream runs, navigator.getGamepads() is polled and changes go to the host as
+  // gamepadArrival / gamepadState (no reply, see PROTOCOL.md). Not ported: mouse emulation,
+  // rumble, touchpad/motion/battery.
+  var PAD_MAX = 16, PAD_MS = 8, padTimer = null, padSlots = [], padFlipAB = false, padFlipXY = false;
+  var F = { A: 0x1000, B: 0x2000, X: 0x4000, Y: 0x8000, UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, PLAY: 0x10, BACK: 0x20,
+            LS: 0x40, RS: 0x80, LB: 0x100, RB: 0x200, SPECIAL: 0x400 };
+  var PAD_FLAGS = [F.A, F.B, F.X, F.Y, F.LB, F.RB, 0, 0, F.BACK, F.PLAY, F.LS, F.RS, F.UP, F.DOWN, F.LEFT, F.RIGHT, F.SPECIAL];
+  var STOP_COMBO = F.BACK | F.PLAY | F.LB | F.RB, STATS_COMBO = F.BACK | F.LB | F.RB | F.X;
+
+  // Same A<->B / X<->Y swaps as the C++ tables (GetButtonFlags and GetSupportedButtons).
+  function padFlag(i) {
+    var f = PAD_FLAGS[i];
+    if (padFlipAB && i < 2) return PAD_FLAGS[1 - i];
+    if (padFlipXY && i >= 2 && i < 4) return PAD_FLAGS[5 - i];
+    return f;
+  }
+  function padButtonFlags(g) {
+    var r = 0, n = Math.min(g.buttons.length, PAD_FLAGS.length);
+    for (var i = 0; i < n; i++) if (g.buttons[i].pressed) r |= padFlag(i);
+    return r;
+  }
+  function padSupported(n) {
+    var r = 0;
+    for (var i = 0; i < Math.min(n, 17); i++) r |= padFlag(i);
+    return r;
+  }
+  function padType(id) {
+    var l = String(id || '').toLowerCase();
+    if (!l) return 0;
+    function has(x) { return l.indexOf(x) >= 0; }
+    if (has('vendor: 054c') || has('vendor:054c') || l.indexOf('054c-') === 0 || has('dualsense') || has('dualshock') ||
+        has('playstation') || has('sony interactive entertainment') || has('sony computer entertainment')) return 2;
+    if (has('vendor: 045e') || has('vendor:045e') || l.indexOf('045e-') === 0 || has('xbox')) return 1;
+    if (has('vendor: 057e') || has('vendor:057e') || l.indexOf('057e-') === 0 || has('nintendo') || has('joy-con')) return 3;
+    return 0;
+  }
+  function padSnapshot(g) {
+    var b = [], a = [], i;
+    for (i = 0; i < g.buttons.length && i < 64; i++) b.push({ p: !!g.buttons[i].pressed, v: g.buttons[i].value });
+    for (i = 0; i < g.axes.length && i < 64; i++) a.push(g.axes[i]);
+    return { nb: g.buttons.length, na: g.axes.length, b: b, a: a };
+  }
+  // Against a stable baseline: slow movement adds up, static axes and small noise do not.
+  function padChanged(g, base) {
+    var i, v;
+    for (i = 0; i < g.buttons.length && i < 64; i++) {
+      if (!!g.buttons[i].pressed !== base.b[i].p) return true;
+      v = g.buttons[i].value;
+      if (isFinite(v)) {
+        if (isFinite(base.b[i].v) && Math.abs(v - base.b[i].v) > 0.01) return true;
+        if (!isFinite(base.b[i].v)) base.b[i].v = v;
+      }
+    }
+    for (i = 0; i < g.axes.length && i < 64; i++) {
+      v = g.axes[i];
+      if (isFinite(v)) {
+        if (isFinite(base.a[i]) && Math.abs(v - base.a[i]) > 0.01) return true;
+        if (!isFinite(base.a[i])) base.a[i] = v;
+      }
+    }
+    return false;
+  }
+
+  // Fire and forget: the host needs an id, but nothing is pending and no reply comes.
+  // Without a connection the message is dropped (a stale pad state must not be queued).
+  function padSend(cmd, f) {
+    if (!remotePort) return false;
+    var m = [{ key: 'cmd', value: cmd }, { key: 'id', value: String(nextId++) }];
+    for (var k in f) m.push({ key: k, value: String(f[k]) });
+    try { remotePort.sendMessage(m, localPort); return true; }
+    catch (e) { trace('pad send failed', e && (e.name || e.message || e)); remotePort = null; scheduleRetry(); return false; }
+  }
+  function padAxis(g, i) { var v = g.axes[i]; return isFinite(v) ? v : 0; }
+  function padTrigger(g, i) { var b = g.buttons[i]; return b && isFinite(b.value) ? b.value : 0; }
+
+  function pollPads() {
+    var gps = (typeof navigator !== 'undefined' && navigator.getGamepads) ? navigator.getGamepads() : null;
+    if (!gps) return;
+    var mask = 0, removed = [], arrived = [], i;
+    for (i = 0; i < PAD_MAX; i++) {
+      var st = padSlots[i] || (padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false });
+      var g = gps[i], connected = !!(g && g.connected), id = connected ? String(g.id) : '';
+      var ts = connected ? g.timestamp : 0, same = st.id === id;
+      var layout = connected && st.baseline && st.baseline.nb === g.buttons.length && st.baseline.na === g.axes.length;
+      var real = connected && ((isFinite(ts) && ts > 0) || (same && (st.validated || (layout && padChanged(g, st.baseline)))));
+      if (st.announced && (!real || !same)) { removed.push(i); st.announced = false; }
+      if (!connected) { padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false }; continue; }
+      if (!same) { st = padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false }; }
+      st.id = id;
+      if (!real) { if (!st.baseline || !layout) st.baseline = padSnapshot(g); continue; }
+      st.validated = true;
+      mask |= 1 << i;
+      if (!st.announced) arrived.push(i);
+    }
+    removed.forEach(function (n) {
+      padSlots[n].last = null;
+      padSend('gamepadState', { index: n, mask: mask & ~(1 << n), buttons: 0, lt: 0, rt: 0, lsx: 0, lsy: 0, rsx: 0, rsy: 0 });
+    });
+    arrived.forEach(function (n) {   // a failed send leaves it un-announced: the next poll retries
+      var g = gps[n];
+      if (padSend('gamepadArrival', { index: n, mask: mask, type: padType(g.id), buttons: padSupported(g.buttons.length),
+                                      caps: g.buttons.length > 7 ? 1 : 0 })) padSlots[n].announced = true;
+    });
+    for (i = 0; i < PAD_MAX; i++) {
+      if (!(mask & (1 << i)) || !padSlots[i].announced) continue;
+      var p = gps[i], fl = padButtonFlags(p);
+      if (fl === STOP_COMBO) { window.Module.stopStream().then(null, function () {}); return; }
+      if (fl === STATS_COMBO) { if (!padSlots[i].combo) { padSlots[i].combo = true; window.Module.toggleStats(); } }
+      else padSlots[i].combo = false;
+      var t = { index: i, mask: mask, buttons: fl, lt: Math.round(padTrigger(p, 6) * 255), rt: Math.round(padTrigger(p, 7) * 255),
+                lsx: Math.round(padAxis(p, 0) * 32767), lsy: Math.round(-padAxis(p, 1) * 32767),
+                rsx: Math.round(padAxis(p, 2) * 32767), rsy: Math.round(-padAxis(p, 3) * 32767) };
+      var key = [t.mask, t.buttons, t.lt, t.rt, t.lsx, t.lsy, t.rsx, t.rsy].join(',');
+      if (padSlots[i].last !== key && padSend('gamepadState', t)) padSlots[i].last = key;
+    }
+  }
+  function startPads() {
+    if (padTimer) return;
+    padSlots = [];
+    padTimer = setInterval(function () { try { pollPads(); } catch (e) { console.warn('[mlbridge] gamepad poll failed:', e); } }, PAD_MS);
+  }
+  function stopPads() {
+    if (padTimer) clearInterval(padTimer);
+    padTimer = null; padSlots = [];   // the next stream announces the pads again
+  }
+
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
@@ -290,7 +418,8 @@
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
-      if (String(m.event).indexOf('streamTerminated') === 0) resetStats();
+      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); }
+      else if (m.event === 'Connection Established') startPads();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
     }
@@ -330,7 +459,9 @@
     makeCert: function () { return call('makeCert', {}); },
     httpInit: function (cert, key, uniqueId) { return call('httpInit', { cert: cert, key: key, uniqueId: uniqueId }); },
     startRequest: function () {
-      var a = arguments; // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
+      var a = arguments;
+      padFlipAB = !!a[16]; padFlipXY = !!a[17];   // a[14] rumble and a[15] mouse emulation: not ported
+      // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
@@ -338,7 +469,7 @@
         audioConfig: a[19], videoCodec: a[24], hdr: String(!!a[25]), fullRange: String(!!a[26])
       });
     },
-    stopRequest: function () { return call('stopStream', {}); },
+    stopRequest: function () { stopPads(); return call('stopStream', {}); },
     cancelRequest: function () { return call('cancelRequest', {}); },
     toggleStats: toggleStats,
   };
@@ -384,7 +515,7 @@
     sendKeyboardEvent: function (keyCode, keyAction, modifiers) {
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
-    stopStream: function () { return bridgeCall('stopStream', {}); },
+    stopStream: function () { stopPads(); return bridgeCall('stopStream', {}); },
     // the yellow-key caller ignores the promise: log a failure instead of an unhandled rejection
     toggleStats: function () { return toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); }); },
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled

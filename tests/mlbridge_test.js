@@ -3,6 +3,7 @@ var fs = require('fs'), vm = require('vm'), assert = require('assert');
 
 var logs = [], warns = [], errs = [], timers = [], now = 0, tid = 1;
 var byId = {}, domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
+var cleared = {}, pads = [];
 var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
@@ -37,14 +38,18 @@ var sandbox = {
   },
   console: { log: function () { logs.push([].join.call(arguments, ' ')); }, warn: function () { warns.push([].join.call(arguments, ' ')); }, error: function () { errs.push([].join.call(arguments, ' ')); } },
   setTimeout: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f }); return tid++; },
-  clearTimeout: function (id) { timers = timers.filter(function (t) { return t.id !== id; }); }
+  clearTimeout: function (id) { cleared[id] = true; timers = timers.filter(function (t) { return t.id !== id; }); },
+  setInterval: function (f, ms) { timers.push({ id: tid, at: now + ms, f: f, every: ms }); return tid++; },
+  navigator: { getGamepads: function () { return pads; } }
 };
+sandbox.clearInterval = sandbox.clearTimeout;
 function advance(ms) {
   var end = now + ms;
   for (;;) {
     timers.sort(function (a, b) { return a.at - b.at; });
     if (!timers.length || timers[0].at > end) break;
     var t = timers.shift(); now = t.at; t.f();
+    if (t.every && !cleared[t.id]) { t.at = now + t.every; timers.push(t); }
   }
   now = end;
 }
@@ -408,6 +413,110 @@ test('a rejected toggleStats leaves the overlay hidden', async function () {
   reply(fields(sent[n]).id, { error: 'not supported' });
   assert.strictEqual(await p, undefined);
   assert.ok(warns.slice(w).join('\n').indexOf('not supported') >= 0);
+});
+
+function mkpad(id, ts, over) {
+  var g = { connected: true, id: id, timestamp: ts, buttons: [], axes: [0, 0, 0, 0] };
+  for (var i = 0; i < 17; i++) g.buttons.push({ pressed: false, value: 0 });
+  over = over || {};
+  for (var b in (over.b || {})) { g.buttons[b].pressed = over.b[b] > 0; g.buttons[b].value = over.b[b]; }
+  (over.a || []).forEach(function (v, i) { g.axes[i] = v; });
+  return g;
+}
+function padMsgs() { return sent.map(fields).filter(function (f) { return /^gamepad/.test(f.cmd); }); }
+
+test('gamepad: no polling before Connection Established; placeholder pad is not announced', async function () {
+  sent.length = 0; pads = [mkpad('Xbox Wireless Controller', 0)];
+  advance(100);
+  assert.strictEqual(padMsgs().length, 0);
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(100);
+  assert.strictEqual(padMsgs().length, 0, 'timestamp 0 and no input change');
+  pads = [mkpad('Xbox Wireless Controller', 0, { b: { 0: 1 } })];   // input change: now real
+  advance(8);
+  var m = padMsgs();
+  assert.strictEqual(m.length, 2);
+  assert.strictEqual(m[0].cmd, 'gamepadArrival');
+});
+
+test('gamepad: one arrival, state only on change, Y inverted, triggers scaled, no pending or reply', async function () {
+  sent.length = 0;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);   // reset
+  var t0 = timers.length;
+  pads = [mkpad('Xbox 360 (STANDARD GAMEPAD Vendor: 045e)', 5, { b: { 0: 1, 6: 1, 7: 0.5 }, a: [0.25, 0.25, -1, 1] })];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(80);
+  var m = padMsgs();
+  assert.strictEqual(m.length, 2, 'arrival + one state, then no change');
+  assert.strictEqual(m[0].cmd, 'gamepadArrival');
+  assert.strictEqual(m[0].index, '0'); assert.strictEqual(m[0].mask, '1'); assert.strictEqual(m[0].type, '1');
+  assert.strictEqual(m[0].caps, '1'); assert.strictEqual(m[0].buttons, String(0x1000 | 0x2000 | 0x4000 | 0x8000 | 0x300 | 0x30 | 0xC0 | 0xF | 0x400));
+  assert.strictEqual(m[1].cmd, 'gamepadState');
+  var want = { index: '0', mask: '1', buttons: String(0x1000), lt: '255', rt: '128', lsx: '8192', lsy: '-8192', rsx: '-32767', rsy: '-32767' };
+  for (var k in want) assert.strictEqual(m[1][k], want[k], k);
+  assert.ok(Object.keys(fields(sent[0])).indexOf('id') >= 0);
+  pads[0].axes[0] = 0;
+  advance(8);
+  assert.strictEqual(padMsgs().length, 3);
+  assert.strictEqual(padMsgs()[2].lsx, '0');
+  var h = handled.length;
+  reply(fields(sent[0]).id, {});            // a reply for a pad id is ignored without error
+  assert.strictEqual(handled.length, h);
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+});
+
+test('gamepad: flipAB mapping and removal message', async function () {
+  sent.length = 0;
+  var a = []; a[16] = true; a[17] = false;
+  var p = win.sendMessage('startRequest', a);
+  reply(fields(sent[0]).id, {}); await p;
+  sent.length = 0;
+  pads = [null, mkpad('PS DualSense', 3, { b: { 0: 1 } })];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(8);
+  var m = padMsgs();
+  assert.strictEqual(m[0].index, '1'); assert.strictEqual(m[0].mask, '2'); assert.strictEqual(m[0].type, '2');
+  assert.strictEqual(m[1].buttons, String(0x2000), 'A sends B');
+  pads = [];
+  advance(8);
+  var r = padMsgs().pop();
+  assert.strictEqual(r.cmd, 'gamepadState'); assert.strictEqual(r.index, '1'); assert.strictEqual(r.mask, '0');
+  ['buttons', 'lt', 'rt', 'lsx', 'lsy', 'rsx', 'rsy'].forEach(function (k) { assert.strictEqual(r[k], '0', k); });
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+});
+
+test('gamepad: stop combo stops the stream; poll stops after streamTerminated and the next stream announces again', async function () {
+  sent.length = 0;
+  pads = [mkpad('x', 4, { b: { 8: 1, 9: 1, 4: 1, 5: 1 } })];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(8);
+  var cmds = sent.map(fields).map(function (f) { return f.cmd; });
+  assert.ok(cmds.indexOf('stopStream') >= 0, cmds.join());
+  assert.strictEqual(padMsgs().filter(function (f) { return f.cmd === 'gamepadState'; }).length, 0, 'combo is not sent as input');
+  sent.length = 0; advance(100);
+  assert.strictEqual(sent.length, 0, 'polling stopped');
+  pads = [mkpad('x', 4)];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(8);
+  assert.strictEqual(padMsgs()[0].cmd, 'gamepadArrival');
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  sent.length = 0; advance(100);
+  assert.strictEqual(sent.length, 0);
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(8);
+  assert.strictEqual(padMsgs()[0].cmd, 'gamepadArrival', 'announced again');
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  pads = [];
+});
+
+test('gamepad: stats combo toggles once per press', async function () {
+  sent.length = 0;
+  pads = [mkpad('x', 4, { b: { 8: 1, 4: 1, 5: 1, 2: 1 } })];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(80);
+  assert.strictEqual(sent.map(fields).filter(function (f) { return f.cmd === 'toggleStats'; }).length, 1);
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  pads = [];
 });
 
 test('trace hides secrets', async function () {
