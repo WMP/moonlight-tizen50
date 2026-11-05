@@ -269,6 +269,10 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int LastErrorDelegate(byte[] buf, int len);
         public static LastErrorDelegate     LastError;   // null with an engine that lacks it
         public static StartSessionV2Delegate StartSessionV2;   // null with an engine that lacks it
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GamepadArrivalDelegate(int index, int mask, int type, uint buttons, int caps);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GamepadStateDelegate(int index, int mask, int buttons, int lt, int rt, int lsx, int lsy, int rsx, int rsy);
+        public static GamepadArrivalDelegate GamepadArrival;   // null with an engine that lacks it
+        public static GamepadStateDelegate   GamepadState;     // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -310,6 +314,10 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { StartSessionV2 = null; }
             try { LastError = MemLoader.GetDelegate<LastErrorDelegate>(h, "ml_engine_last_error"); }
             catch (EntryPointNotFoundException) { LastError = null; }
+            try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
+            catch (EntryPointNotFoundException) { GamepadArrival = null; }
+            try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
+            catch (EntryPointNotFoundException) { GamepadState = null; }
             Loaded = true;
         }
     }
@@ -338,6 +346,8 @@ namespace MoonlightHost
             Log.Trace("command port 'moonlight' listening");
         }
 
+        private static readonly object s_engineLock = new object();   // start/stop: command threads and Poll
+
         private static void Poll()
         {
             try
@@ -348,6 +358,9 @@ namespace MoonlightHost
                     int code = ReadLastError(out string diag);
                     if (diag != null) Log.Error(diag);
                     SendTerminated("streamTerminated: " + code, diag);
+                    // the host dropped the stream: stop the connection now, or its audio keeps
+                    // feeding the player and the overlay stays taken until the next start
+                    lock (s_engineLock) { if (Engine.Running() == 0) Engine.Stop(); }
                 }
             }
             catch (Exception ex) { Log.Error("monitor failed: " + ex.Message); }
@@ -381,11 +394,34 @@ namespace MoonlightHost
                 string cmd = Item(b, "cmd");
                 if (id == null) { Log.Error("command without id ignored: " + cmd); return; }
                 if (Item(b, "total") != null) { b = Join(id, b); if (b == null) return; }   // not all parts yet
+                if (cmd == "gamepadArrival" || cmd == "gamepadState") { Gamepad(b, cmd); return; }   // inline: a task per state would reorder them
                 Log.Trace("cmd " + cmd + " id=" + id);
                 string replyApp = s_uiApp, replyPort = s_uiPort;
                 Task.Run(() => Run(b, cmd ?? "", id, replyApp, replyPort));
             }
             catch (Exception ex) { Log.Error("command receive failed: " + ex.Message); }
+        }
+
+        private static bool s_padWarned;   // one log line at most for dropped pad commands
+
+        // Pad input: no reply, runs on the port callback so the order is kept. The engine calls are cheap.
+        private static void Gamepad(Tizen.Applications.Bundle b, string cmd)
+        {
+            bool arrival = cmd == "gamepadArrival";
+            string[] keys = arrival ? new[] { "index", "mask", "type", "buttons", "caps" }
+                                    : new[] { "index", "mask", "buttons", "lt", "rt", "lsx", "lsy", "rsx", "rsy" };
+            var v = new int[keys.Length];
+            bool ok = (arrival ? Engine.GamepadArrival : (Delegate)Engine.GamepadState) != null;
+            string why = ok ? null : "engine lacks it";
+            for (int i = 0; ok && i < keys.Length; i++)
+                if (!int.TryParse(Item(b, keys[i]), out v[i])) { ok = false; why = "bad args"; }
+            if (!ok)
+            {
+                if (!s_padWarned) { s_padWarned = true; Log.Error(cmd + " dropped: " + why); }
+                return;
+            }
+            if (arrival) Engine.GamepadArrival(v[0], v[1], v[2], unchecked((uint)v[3]), v[4]);
+            else Engine.GamepadState(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
         }
 
         private static void Run(Tizen.Applications.Bundle b, string cmd, string id, string app, string port)
@@ -668,17 +704,20 @@ namespace MoonlightHost
                             return "bad args";
                         if (!int.TryParse(Item(b, "codecMode"), out codec)) codec = 0;   // optional: engine defaults to H.264
                         int fullRange = Item(b, "fullRange") == "true" ? 1 : 0;   // optional: absent = limited
-                        if (Engine.StartSessionV2 != null)
-                            return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
-                                                            Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
-                                                            codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
-                                                            Item(b, "audioConfig"), fullRange));
-                        return Rc(Engine.StartSession(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
-                                                      Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
-                                                      codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
-                                                      Item(b, "audioConfig")));
+                        lock (s_engineLock)
+                        {
+                            if (Engine.StartSessionV2 != null)
+                                return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
+                                                                Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
+                                                                codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
+                                                                Item(b, "audioConfig"), fullRange));
+                            return Rc(Engine.StartSession(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
+                                                          Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
+                                                          codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
+                                                          Item(b, "audioConfig")));
+                        }
                     }
-                case "stopStream": Engine.Stop(); return null;
+                case "stopStream": lock (s_engineLock) Engine.Stop(); return null;
                 case "sendKeyboardEvent":
                     {
                         int key, action, mods;

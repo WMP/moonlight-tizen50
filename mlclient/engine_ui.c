@@ -17,6 +17,7 @@
 #include "http.h"
 #include "mkcert.h"
 #include "mlengine.h"
+#include "mldiag.h"
 #include "mltrace.h"
 #include "pairing.h"
 
@@ -79,12 +80,18 @@ int ml_engine_http_init(const char *cert_pem, const char *key_pem, const char *u
 }
 
 int ml_engine_open_url(const char *url, const char *ppk, unsigned char **out, int *out_len) {
-  MLT("ml_engine_open_url url=%s ppk=%s", url ? url : "(null)", ppk && *ppk ? "(set)" : "(none)");
+  { /* the trace stops before rikey= (session key) */
+    const char *u0 = url ? url : "(null)", *rk = strstr(u0, "rikey=");
+    MLT("ml_engine_open_url url=%.*s%s ppk=%s", rk ? (int)(rk - u0) : (int)strlen(u0), u0, rk ? "rikey=(hidden)" : "",
+        ppk && *ppk ? "(set)" : "(none)");
+    (void)rk;   /* MLT is empty in release */
+  }
   if (!url || !out || !out_len) return GS_INVALID;
   *out = NULL; *out_len = 0;
   char *full = NULL;
   const char *u = url;
   if (strstr(url, "/launch?") || strstr(url, "/resume?")) {
+    mldiag_note_launch(url);
     const char *q = LiGetLaunchUrlQueryParameters();
     size_t n = strlen(url) + strlen(q) + 1;
     full = malloc(n);
@@ -126,6 +133,35 @@ void ml_engine_cancel_request(void) { MLT("ml_engine_cancel_request"); http_canc
 void ml_engine_send_key(int key_code, int key_action, int modifiers) {
   MLT("ml_engine_send_key code=%d action=%d mod=%d", key_code, key_action, modifiers);
   LiSendKeyboardEvent((short)key_code, (char)key_action, (char)modifiers);
+}
+
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+static int g_pad_traced;   /* state lines traced since the last arrival: the UI sends ~100/s */
+
+int ml_engine_gamepad_arrival(int index, int active_mask, int type, unsigned int supported_buttons,
+                              int capabilities) {
+  if (index < 0 || index > 15 || !ml_engine_running()) return -1;
+  g_pad_traced = 0;
+  int rc = LiSendControllerArrivalEvent((uint8_t)index, (uint16_t)active_mask, (uint8_t)type,
+                                        supported_buttons, (uint16_t)capabilities);
+  MLT("ml_engine_gamepad_arrival idx=%d mask=0x%x type=%d buttons=0x%x caps=0x%x -> %d", index,
+      active_mask, type, supported_buttons, capabilities, rc);
+  return rc;
+}
+
+int ml_engine_gamepad_state(int index, int active_mask, int buttons, int left_trigger,
+                            int right_trigger, int ls_x, int ls_y, int rs_x, int rs_y) {
+  if (index < 0 || index > 15 || !ml_engine_running()) return -1;
+  int rc = LiSendMultiControllerEvent((short)index, (short)active_mask, buttons,
+                                      (unsigned char)clampi(left_trigger, 0, 255),
+                                      (unsigned char)clampi(right_trigger, 0, 255),
+                                      (short)clampi(ls_x, -32768, 32767), (short)clampi(ls_y, -32768, 32767),
+                                      (short)clampi(rs_x, -32768, 32767), (short)clampi(rs_y, -32768, 32767));
+  if (rc != 0 || g_pad_traced < 5) {
+    g_pad_traced++;
+    MLT("ml_engine_gamepad_state idx=%d mask=0x%x btn=0x%x -> %d", index, active_mask, buttons, rc);
+  }
+  return rc;
 }
 
 void ml_engine_free(void *p) { free(p); }

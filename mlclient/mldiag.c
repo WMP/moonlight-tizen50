@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "mldiag.h"
@@ -13,20 +14,26 @@
 
 static pthread_mutex_t s_mu = PTHREAD_MUTEX_INITIALIZER;
 static mldiag_cfg s_cfg;
-static char s_appver[64], s_gfever[64];
+static char s_appver[64], s_gfever[64], s_rtsp[12] = "-";
 static long long s_t0;
 static char s_first[FIRST_N][LINE_MAX_CC + 1], s_last[LAST_N][LINE_MAX_CC + 1];
 static int s_nlines;                      /* total cc lines seen */
 static char s_out[OUT_MAX]; static int s_code;
 static int s_vfmt, s_vw, s_vh, s_vfps, s_vrc, s_vset;
-static int s_win = -99, s_prep = -99, s_start = -99;   /* -99 = not reached */
+static int s_open = -99, s_win = -99, s_prep = -99, s_pdone = -99, s_start = -99;   /* -99 = not reached */
 static int s_first_pkt_ms = -1, s_sub_last_bad;
 static long long s_first_du_ms = -1;
 
 /* hot counters: __atomic */
 enum { C_UNREC, C_DROP, C_WAITIDR, C_BADLEN, C_DECRYPT, C_CORRUPT, C_UNKFT, C_IDRREQ, C_FEC, C_QOVF,
-       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_N };
+       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_N };
 static unsigned s_c[C_N];
+static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
+/* the noted /launch or /resume (survives mldiag_reset until one reset consumes it) */
+static int s_ln_mode;                     /* 0 none, 1 launch, 2 resume */
+static int s_ln_keyok, s_ln_idok, s_ln_id;
+static unsigned char s_ln_key[16];
+static char s_launch[8] = "-", s_rikey[8] = "-", s_rikeyid[8] = "-";   /* per session result */
 #define INC(i) __atomic_fetch_add(&s_c[i], 1, __ATOMIC_RELAXED)
 #define GET(i) __atomic_load_n(&s_c[i], __ATOMIC_RELAXED)
 
@@ -35,12 +42,40 @@ static long long now_ms(void) {
   return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+void mldiag_note_launch(const char *url) {
+  if (!url) return;
+  pthread_mutex_lock(&s_mu);
+  s_ln_mode = strstr(url, "/resume?") ? 2 : 1;
+  s_ln_keyok = s_ln_idok = 0;
+  const char *k = strstr(url, "rikey=");
+  if (k) {
+    k += 6;
+    int n = 0;
+    while (n < 32 && ((k[n] >= '0' && k[n] <= '9') || (k[n] >= 'a' && k[n] <= 'f') || (k[n] >= 'A' && k[n] <= 'F'))) n++;
+    if (n == 32 && (k[32] == 0 || k[32] == '&')) {
+      for (int i = 0; i < 16; i++) { char h[3] = { k[2 * i], k[2 * i + 1], 0 }; s_ln_key[i] = (unsigned char)strtoul(h, NULL, 16); }
+      s_ln_keyok = 1;
+    }
+  }
+  const char *id = strstr(url, "rikeyid=");
+  if (id) { s_ln_id = (int)strtol(id + 8, NULL, 10); s_ln_idok = 1; }
+  pthread_mutex_unlock(&s_mu);
+}
+
+unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify) {
+  unsigned n = INC(C_CTLENC) + 1;
+  if (!ok) INC(C_CTLFAIL);
+  __atomic_store_n(&s_ctl_iv, ivlen, __ATOMIC_RELAXED);
+  INC(verify > 0 ? C_VOK : verify == 0 ? C_VFAIL : C_VNA);
+  return n;
+}
+
 void mldiag_reset(const mldiag_cfg *cfg) {
   pthread_mutex_lock(&s_mu);
-  memset(s_c, 0, sizeof s_c);
+  memset(s_c, 0, sizeof s_c); s_ctl_iv = -1;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
-  s_vset = 0; s_win = s_prep = s_start = -99; s_first_pkt_ms = -1; s_sub_last_bad = 0; s_first_du_ms = -1;
+  s_vset = 0; s_open = s_win = s_prep = s_pdone = s_start = -99; s_first_pkt_ms = -1; s_sub_last_bad = 0; s_first_du_ms = -1;
   memset(&s_cfg, 0, sizeof s_cfg);
   if (cfg) {
     s_cfg = *cfg;
@@ -48,6 +83,15 @@ void mldiag_reset(const mldiag_cfg *cfg) {
     snprintf(s_gfever, sizeof s_gfever, "%s", cfg->gfe_version ? cfg->gfe_version : "");
   } else s_appver[0] = s_gfever[0] = 0;
   s_cfg.app_version = s_appver; s_cfg.gfe_version = s_gfever;
+  snprintf(s_rtsp, sizeof s_rtsp, "%s", cfg && cfg->rtsp_scheme ? cfg->rtsp_scheme : "-");
+  snprintf(s_launch, sizeof s_launch, "-"); snprintf(s_rikey, sizeof s_rikey, "-"); snprintf(s_rikeyid, sizeof s_rikeyid, "-");
+  if (cfg && s_ln_mode) {
+    snprintf(s_launch, sizeof s_launch, "%s", s_ln_mode == 2 ? "resume" : "launch");
+    if (!s_ln_keyok) snprintf(s_rikey, sizeof s_rikey, "bad");
+    else if (cfg->aes_key) snprintf(s_rikey, sizeof s_rikey, "%s", memcmp(cfg->aes_key, s_ln_key, 16) ? "DIFF" : "ok");
+    if (s_ln_idok) snprintf(s_rikeyid, sizeof s_rikeyid, "%s", cfg->rikeyid == s_ln_id ? "ok" : "DIFF");
+  }
+  if (cfg) { s_ln_mode = 0; memset(s_ln_key, 0, sizeof s_ln_key); }   /* one launch per session */
   s_t0 = now_ms();
   pthread_mutex_unlock(&s_mu);
 }
@@ -67,11 +111,11 @@ void mldiag_cc_line(const char *line) {
   else if (strstr(b, "Network dropped")) INC(C_DROP);
   else if (strstr(b, "Waiting for IDR frame")) INC(C_WAITIDR);
   else if (strstr(b, "Invalid last payload length")) INC(C_BADLEN);
-  else if (strstr(b, "Failed to decrypt video packet")) INC(C_DECRYPT);
+  else if (strstr(b, "Failed to decrypt") || strstr(b, "Discarding unencrypted packet")) INC(C_DECRYPT);   /* video and control */
   else if (strstr(b, "Depacketizer detected corrupt frame") || strstr(b, "FEC recovery returned corrupt") ||
            strstr(b, "Recovery error")) INC(C_CORRUPT);
   else if (strstr(b, "Unrecognized frame type")) INC(C_UNKFT);
-  else if (strstr(b, "Requesting IDR frame") || strstr(b, "Sending RFI request") ||
+  else if (strstr(b, "Requesting IDR frame") || strstr(b, "IDR frame request sent") || strstr(b, "Sending RFI request") ||
            strstr(b, "Sending speculative RFI")) INC(C_IDRREQ);
   else if (strstr(b, "Recovered ")) INC(C_FEC);
   else if (strstr(b, "Video decode unit queue overflow")) INC(C_QOVF);
@@ -97,14 +141,15 @@ void mldiag_video_du(int is_idr) {
   pthread_mutex_unlock(&s_mu);
 }
 
-void mldiag_submit(int is_video, int status) {
+void mldiag_submit(int is_video, int ok, int status) {
   INC(is_video ? C_VSUB : C_ASUB);
-  if (status != 0) { INC(C_SUBFAIL); __atomic_store_n(&s_sub_last_bad, status, __ATOMIC_RELAXED); }
+  if (!ok) { INC(C_SUBFAIL); __atomic_store_n(&s_sub_last_bad, status, __ATOMIC_RELAXED); }
 }
 
 void mldiag_player(const char *what, int rc) {
   pthread_mutex_lock(&s_mu);
-  if (!strcmp(what, "win")) s_win = rc; else if (!strcmp(what, "prep")) s_prep = rc; else if (!strcmp(what, "start")) s_start = rc;
+  if (!strcmp(what, "open")) s_open = rc; else if (!strcmp(what, "pdone")) s_pdone = rc;
+  else if (!strcmp(what, "win")) s_win = rc; else if (!strcmp(what, "prep")) s_prep = rc; else if (!strcmp(what, "start")) s_start = rc;
   pthread_mutex_unlock(&s_mu);
 }
 
@@ -127,16 +172,17 @@ static void add_lines(int *po, char (*ring)[LINE_MAX_CC + 1], int ringn, int sta
 }
 
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,
-                 int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error) {
+                 int rtt, int rtt_var, unsigned player_errors, unsigned player_last_error,
+                 unsigned enc_supported, unsigned enc_requested, unsigned enc_enabled) {
   long long t = now_ms();
   pthread_mutex_lock(&s_mu);
   int o = 0;
   s_out[0] = 0;
   ADD("ML-ERROR code=%d name=%s stage=%s", code, code_name(code), stage >= 0 && stage_name ? stage_name : "-");
-  ADD(" t=%lldms | cfg %dx%d@%d br=%d pkt=%d fmts=0x%x cs=%d cr=%d audio=0x%x scm=0x%x enc=0x%x app=%s gfe=%s hostflags=0x%x rtt=%d/%d",
+  ADD(" t=%lldms | cfg %dx%d@%d br=%d pkt=%d fmts=0x%x cs=%d cr=%d audio=0x%x scm=0x%x enc=0x%x encf=0x%x/0x%x/0x%x rtsp=%s launch=%s rikey=%s rikeyid=%s app=%s gfe=%s hostflags=0x%x rtt=%d/%d",
       t - s_t0, s_cfg.width, s_cfg.height, s_cfg.fps, s_cfg.bitrate_kbps, s_cfg.packet_size,
       s_cfg.supported_video_formats, s_cfg.color_space, s_cfg.color_range, s_cfg.audio_config,
-      s_cfg.server_codec_mode_support, s_cfg.encryption_flags, s_appver, s_gfever,
+      s_cfg.server_codec_mode_support, s_cfg.encryption_flags, enc_supported, enc_requested, enc_enabled, s_rtsp, s_launch, s_rikey, s_rikeyid, s_appver, s_gfever,
       host_feature_flags, rtt, rtt_var);
   long long fdu = s_first_du_ms;
   char fduS[24], fpS[24];
@@ -145,8 +191,12 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   if (s_vset) ADD(" | video setup=0x%x %dx%d@%d rc=%d", s_vfmt, s_vw, s_vh, s_vfps, s_vrc);
   else ADD(" | video setup=none");
   ADD(" du=%u idr=%u first_du_ms=%s first_pkt_ms=%s", GET(C_DU), GET(C_IDR), fduS, fpS);
-  ADD(" | player win=%d prep=%d start=%d vsub=%u asub=%u subfail=%u/%d err=%u/%u", s_win, s_prep, s_start,
+  ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d vsub=%u asub=%u subfail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, player_errors, player_last_error);
+  char ivS[16];
+  int civ = __atomic_load_n(&s_ctl_iv, __ATOMIC_RELAXED);
+  if (civ < 0) snprintf(ivS, sizeof ivS, "-"); else snprintf(ivS, sizeof ivS, "%d", civ);
+  ADD(" | ctl enc=%u fail=%u iv=%s verify=%u/%u/%u", GET(C_CTLENC), GET(C_CTLFAIL), ivS, GET(C_VOK), GET(C_VFAIL), GET(C_VNA));
   ADD(" | cc unrec=%u drop=%u waitidr=%u badlen=%u decrypt=%u corrupt=%u unkft=%u idrreq=%u fec=%u qovf=%u droplim=%u",
       GET(C_UNREC), GET(C_DROP), GET(C_WAITIDR), GET(C_BADLEN), GET(C_DECRYPT), GET(C_CORRUPT), GET(C_UNKFT),
       GET(C_IDRREQ), GET(C_FEC), GET(C_QOVF), GET(C_DROPLIM));

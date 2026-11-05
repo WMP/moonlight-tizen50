@@ -91,6 +91,14 @@ int  ml_engine_start_session_v2(const char *host, int width, int height, int fps
  * to len). Works in release builds. */
 int  ml_engine_last_error(char *buf, int len);
 
+/* Gamepad input from the UI (pkg/ui/PROTOCOL.md gamepadArrival/gamepadState). Both return the
+ * LiSend* result, or -1 when index is not 0..15 or no stream runs. Triggers are clamped to
+ * 0..255, sticks to -32768..32767. */
+int ml_engine_gamepad_arrival(int index, int active_mask, int type, unsigned int supported_buttons,
+                              int capabilities);
+int ml_engine_gamepad_state(int index, int active_mask, int buttons, int left_trigger,
+                            int right_trigger, int ls_x, int ls_y, int rs_x, int rs_y);
+
 #ifdef __cplusplus
 }
 #endif
