@@ -27,6 +27,8 @@ void mldiag_player(const char *what, int rc);             /* "open", "win", "pre
 void mldiag_note_launch(const char *url);
 /* One control-stream AES-GCM encrypt: ok = real result, ivlen, verify: 1 decrypt check ok, 0 failed, -1 not done. */
 unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify);   /* returns this session's message number (1, 2, ...) */
+/* One pad call (UI gamepad input): arrival != 0 = arrival else state; rc != 0 = failure (counted, last rc kept). */
+void mldiag_pad(int arrival, int rc);
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,

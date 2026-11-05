@@ -26,8 +26,9 @@ static long long s_first_du_ms = -1;
 
 /* hot counters: __atomic */
 enum { C_UNREC, C_DROP, C_WAITIDR, C_BADLEN, C_DECRYPT, C_CORRUPT, C_UNKFT, C_IDRREQ, C_FEC, C_QOVF,
-       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_N };
+       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_PADARR, C_PADST, C_PADFAIL, C_N };
 static unsigned s_c[C_N];
+static int s_pad_rc;                      /* last failed pad call rc */
 static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
 /* the noted /launch or /resume (survives mldiag_reset until one reset consumes it) */
 static int s_ln_mode;                     /* 0 none, 1 launch, 2 resume */
@@ -70,9 +71,14 @@ unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify) {
   return n;
 }
 
+void mldiag_pad(int arrival, int rc) {
+  INC(arrival ? C_PADARR : C_PADST);
+  if (rc != 0) { INC(C_PADFAIL); __atomic_store_n(&s_pad_rc, rc, __ATOMIC_RELAXED); }
+}
+
 void mldiag_reset(const mldiag_cfg *cfg) {
   pthread_mutex_lock(&s_mu);
-  memset(s_c, 0, sizeof s_c); s_ctl_iv = -1;
+  memset(s_c, 0, sizeof s_c); s_ctl_iv = -1; s_pad_rc = 0;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
   s_vset = 0; s_open = s_win = s_prep = s_pdone = s_start = -99; s_first_pkt_ms = -1; s_sub_last_bad = 0; s_first_du_ms = -1;
@@ -197,6 +203,7 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   int civ = __atomic_load_n(&s_ctl_iv, __ATOMIC_RELAXED);
   if (civ < 0) snprintf(ivS, sizeof ivS, "-"); else snprintf(ivS, sizeof ivS, "%d", civ);
   ADD(" | ctl enc=%u fail=%u iv=%s verify=%u/%u/%u", GET(C_CTLENC), GET(C_CTLFAIL), ivS, GET(C_VOK), GET(C_VFAIL), GET(C_VNA));
+  ADD(" | pad arr=%u st=%u fail=%u/%d", GET(C_PADARR), GET(C_PADST), GET(C_PADFAIL), __atomic_load_n(&s_pad_rc, __ATOMIC_RELAXED));
   ADD(" | cc unrec=%u drop=%u waitidr=%u badlen=%u decrypt=%u corrupt=%u unkft=%u idrreq=%u fec=%u qovf=%u droplim=%u",
       GET(C_UNREC), GET(C_DROP), GET(C_WAITIDR), GET(C_BADLEN), GET(C_DECRYPT), GET(C_CORRUPT), GET(C_UNKFT),
       GET(C_IDRREQ), GET(C_FEC), GET(C_QOVF), GET(C_DROPLIM));

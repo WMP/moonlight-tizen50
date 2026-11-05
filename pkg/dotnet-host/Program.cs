@@ -405,8 +405,15 @@ namespace MoonlightHost
                 if (!s_padWarned) { s_padWarned = true; Log.Error(cmd + " dropped: " + why); }
                 return;
             }
-            if (arrival) Engine.GamepadArrival(v[0], v[1], v[2], unchecked((uint)v[3]), v[4]);
-            else Engine.GamepadState(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
+            // TryEnter, never a blocking lock: Stop/start hold s_engineLock while they wait for the main loop (this thread).
+            // A dropped state is resent by the UI keepalive.
+            if (!Monitor.TryEnter(s_engineLock)) return;
+            try
+            {
+                if (arrival) Engine.GamepadArrival(v[0], v[1], v[2], unchecked((uint)v[3]), v[4]);
+                else Engine.GamepadState(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
+            }
+            finally { Monitor.Exit(s_engineLock); }
         }
 
         private static void Run(Tizen.Applications.Bundle b, string cmd, string id, string app, string port)

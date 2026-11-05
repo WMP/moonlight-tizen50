@@ -281,7 +281,7 @@
   // While a stream runs, navigator.getGamepads() is polled and changes go to the host as
   // gamepadArrival / gamepadState (no reply, see PROTOCOL.md). Not ported: mouse emulation,
   // rumble, touchpad/motion/battery.
-  var PAD_MAX = 16, PAD_MS = 8, padTimer = null, padSlots = [], padFlipAB = false, padFlipXY = false;
+  var PAD_MAX = 16, PAD_MS = 8, PAD_STICK_EPS = 327, PAD_KEEPALIVE = 32, padTraceFail = false, padTimer = null, padSlots = [], padFlipAB = false, padFlipXY = false;
   var F = { A: 0x1000, B: 0x2000, X: 0x4000, Y: 0x8000, UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, PLAY: 0x10, BACK: 0x20,
             LS: 0x40, RS: 0x80, LB: 0x100, RB: 0x200, SPECIAL: 0x400 };
   var PAD_FLAGS = [F.A, F.B, F.X, F.Y, F.LB, F.RB, 0, 0, F.BACK, F.PLAY, F.LS, F.RS, F.UP, F.DOWN, F.LEFT, F.RIGHT, F.SPECIAL];
@@ -348,7 +348,10 @@
     var m = [{ key: 'cmd', value: cmd }, { key: 'id', value: String(nextId++) }];
     for (var k in f) m.push({ key: k, value: String(f[k]) });
     try { remotePort.sendMessage(m, localPort); return true; }
-    catch (e) { trace('pad send failed', e && (e.name || e.message || e)); remotePort = null; scheduleRetry(); return false; }
+    catch (e) {   // the port is shared: only the normal command path may drop it
+      if (!padTraceFail) { padTraceFail = true; trace('pad send failed', e && (e.name || e.message || e)); }
+      return false;
+    }
   }
   function padAxis(g, i) { var v = g.axes[i]; return isFinite(v) ? v : 0; }
   function padTrigger(g, i) { var b = g.buttons[i]; return b && isFinite(b.value) ? b.value : 0; }
@@ -358,14 +361,14 @@
     if (!gps) return;
     var mask = 0, removed = [], arrived = [], i;
     for (i = 0; i < PAD_MAX; i++) {
-      var st = padSlots[i] || (padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false });
+      var st = padSlots[i] || (padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false, since: 0 });
       var g = gps[i], connected = !!(g && g.connected), id = connected ? String(g.id) : '';
       var ts = connected ? g.timestamp : 0, same = st.id === id;
       var layout = connected && st.baseline && st.baseline.nb === g.buttons.length && st.baseline.na === g.axes.length;
       var real = connected && ((isFinite(ts) && ts > 0) || (same && (st.validated || (layout && padChanged(g, st.baseline)))));
       if (st.announced && (!real || !same)) { removed.push(i); st.announced = false; }
-      if (!connected) { padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false }; continue; }
-      if (!same) { st = padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false }; }
+      if (!connected) { padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false, since: 0 }; continue; }
+      if (!same) { st = padSlots[i] = { validated: false, announced: false, baseline: null, id: '', last: null, combo: false, since: 0 }; }
       st.id = id;
       if (!real) { if (!st.baseline || !layout) st.baseline = padSnapshot(g); continue; }
       st.validated = true;
@@ -390,13 +393,19 @@
       var t = { index: i, mask: mask, buttons: fl, lt: Math.round(padTrigger(p, 6) * 255), rt: Math.round(padTrigger(p, 7) * 255),
                 lsx: Math.round(padAxis(p, 0) * 32767), lsy: Math.round(-padAxis(p, 1) * 32767),
                 rsx: Math.round(padAxis(p, 2) * 32767), rsy: Math.round(-padAxis(p, 3) * 32767) };
-      var key = [t.mask, t.buttons, t.lt, t.rt, t.lsx, t.lsy, t.rsx, t.rsy].join(',');
-      if (padSlots[i].last !== key && padSend('gamepadState', t)) padSlots[i].last = key;
+      var l = padSlots[i].last, drift = function (a, b) { return Math.abs(a - b) > PAD_STICK_EPS; };
+      // send on a real change, a stick move > ~1 %, or every PAD_KEEPALIVE polls (recovers a dropped state, ends a drift exactly)
+      if (!l || ++padSlots[i].since >= PAD_KEEPALIVE || l.mask !== t.mask || l.buttons !== t.buttons || l.lt !== t.lt || l.rt !== t.rt ||
+          drift(l.lsx, t.lsx) || drift(l.lsy, t.lsy) || drift(l.rsx, t.rsx) || drift(l.rsy, t.rsy)) {
+        if (padSend('gamepadState', t)) { padSlots[i].last = t; padSlots[i].since = 0; }
+      }
     }
   }
+  // Registered first (mlbridge loads before index.js): the hidden menu must not react to the pad during a stream.
+  if (window.addEventListener) window.addEventListener('gamepadinputchanged', function (e) { if (padTimer) e.stopImmediatePropagation(); }, true);
   function startPads() {
     if (padTimer) return;
-    padSlots = [];
+    padSlots = []; padTraceFail = false;
     padTimer = setInterval(function () { try { pollPads(); } catch (e) { console.warn('[mlbridge] gamepad poll failed:', e); } }, PAD_MS);
   }
   function stopPads() {

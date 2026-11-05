@@ -4,7 +4,8 @@ var fs = require('fs'), vm = require('vm'), assert = require('assert');
 var logs = [], warns = [], errs = [], timers = [], now = 0, tid = 1;
 var byId = {}, domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
 var cleared = {}, pads = [];
-var win = { ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
+var padListener = null, padCapture = null;
+var win = { addEventListener: function (ev, f, cap) { if (ev === 'gamepadinputchanged') { padListener = f; padCapture = cap; } }, ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
   ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
@@ -517,6 +518,53 @@ test('gamepad: stats combo toggles once per press', async function () {
   assert.strictEqual(sent.map(fields).filter(function (f) { return f.cmd === 'toggleStats'; }).length, 1);
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   pads = [];
+});
+
+test('gamepad: stick noise is not sent; > 1 % is; keepalive resends the exact state after 32 polls', async function () {
+  sent.length = 0;
+  pads = [mkpad('x', 5, { b: { 0: 1 }, a: [0.25, 0, 0, 0] })];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(8 * 2);
+  assert.strictEqual(padMsgs().length, 2, 'arrival + state');
+  pads[0].axes[0] = 0.2501;   // noise
+  advance(8 * 10);
+  assert.strictEqual(padMsgs().length, 2, 'noise not sent');
+  pads[0].axes[0] = 0.27;     // > 327
+  advance(8);
+  assert.strictEqual(padMsgs().length, 3);
+  assert.strictEqual(padMsgs()[2].lsx, String(Math.round(0.27 * 32767)));
+  advance(8 * 30);
+  assert.strictEqual(padMsgs().length, 3, 'no keepalive yet');
+  advance(8 * 2);
+  assert.strictEqual(padMsgs().length, 4, 'keepalive');
+  assert.strictEqual(padMsgs()[3].lsx, padMsgs()[2].lsx);
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  pads = [];
+});
+
+test('gamepadinputchanged is stopped while polling only', async function () {
+  assert.strictEqual(padCapture, true);
+  var n = 0, ev = { stopImmediatePropagation: function () { n++; } };
+  padListener(ev); assert.strictEqual(n, 0, 'not polling');
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  padListener(ev); assert.strictEqual(n, 1, 'polling');
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  padListener(ev); assert.strictEqual(n, 1, 'stopped again');
+});
+
+test('gamepad: a failing pad send does not drop the port', async function () {
+  sent.length = 0; hostDead = true;
+  pads = [mkpad('x', 5, { b: { 0: 1 } })];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  advance(8 * 3);
+  hostDead = false;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  pads = [];
+  var l = launches;
+  var p = win.Module.toggleStats(); advance(250);
+  assert.ok(sent.map(fields).some(function (f) { return f.cmd === 'toggleStats'; }), 'normal command sent');
+  assert.strictEqual(launches, l, 'no reconnect');
+  reply(fields(sent[sent.length - 1]).id, {}); await p;
 });
 
 test('trace hides secrets', async function () {
