@@ -23,7 +23,7 @@ TVL=$DEPS/tv-libs/usr/lib
 # Applied to the submodule checkout before compiling; idempotent (reverse-check -> skip).
 # A1 (fork brightcraft/moonlight-tizen) makes these unnecessary and they become no-ops.
 HERE=$(cd "$(dirname "$0")" && pwd)
-for p in "$HERE"/patches/*.patch; do
+for p in "$HERE"/common-c-patches/*.patch; do
   [ -e "$p" ] || continue
   if git -C "$MLT" apply --check "$p" 2>/dev/null; then
     git -C "$MLT" apply "$p"; echo "patched: $(basename "$p")"

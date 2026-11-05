@@ -1,9 +1,15 @@
-# patches/
+# common-c-patches/
 
 `-core` patches applied to the **vendored** `moonlight-common-c` inside the
 `third_party/moonlight-tizen` submodule, at build time by `build-deps-lib.sh`
 (idempotent: a reverse-check skips an already-applied patch). The submodule tree
 and its pin are not changed.
+
+The directory is not called `patches/` on purpose: a repository that consumes
+this project with an overlay keeps its own overlay `patches/` directory, which
+its sync excludes (see `.github/workflows/dev-loop.yml`). A `patches/` here would
+collide with it, so `build-deps-lib.sh` would pick up the overlay patches and the
+fix below would not reach the build.
 
 ## 0001-control-plaintext-when-not-negotiated.patch (#13)
 
