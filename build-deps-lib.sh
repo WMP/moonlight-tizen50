@@ -19,7 +19,7 @@ OBJD=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-
 C=$MLT/moonlight-common-c
 TVL=$DEPS/tv-libs/usr/lib
 
-# -core patches to the vendored moonlight-common-c (control-stream encryption fix, #13).
+# -core patches to the vendored moonlight-common-c (see common-c-patches/README.md; none at the moment).
 # Applied to the submodule checkout before compiling; idempotent (reverse-check -> skip).
 # A1 (fork brightcraft/moonlight-tizen) makes these unnecessary and they become no-ops.
 HERE=$(cd "$(dirname "$0")" && pwd)

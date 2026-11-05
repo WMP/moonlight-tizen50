@@ -80,7 +80,12 @@ int ml_engine_http_init(const char *cert_pem, const char *key_pem, const char *u
 }
 
 int ml_engine_open_url(const char *url, const char *ppk, unsigned char **out, int *out_len) {
-  MLT("ml_engine_open_url url=%s ppk=%s", url ? url : "(null)", ppk && *ppk ? "(set)" : "(none)");
+  { /* the trace stops before rikey= (session key) */
+    const char *u0 = url ? url : "(null)", *rk = strstr(u0, "rikey=");
+    MLT("ml_engine_open_url url=%.*s%s ppk=%s", rk ? (int)(rk - u0) : (int)strlen(u0), u0, rk ? "rikey=(hidden)" : "",
+        ppk && *ppk ? "(set)" : "(none)");
+    (void)rk;   /* MLT is empty in release */
+  }
   if (!url || !out || !out_len) return GS_INVALID;
   *out = NULL; *out_len = 0;
   char *full = NULL;
