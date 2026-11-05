@@ -34,6 +34,9 @@ void ecore_wl2_window_show(void *w);
 void ecore_wl2_window_alpha_set(void *w, unsigned char alpha);
 void ecore_wl2_window_free(void *w);
 void ecore_wl2_display_flush(void *d);
+/* weak: NULL if the TV's libecore_wl2 does not export them */
+void ecore_wl2_display_screen_size_get(void *d, int *w, int *h) __attribute__((weak));
+void ecore_wl2_display_sync(void *d) __attribute__((weak));   /* roundtrip: the outputs are known after it */
 void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *data), void *data);
 
 #define PLOG(...) fprintf(stderr, "[esplus] " __VA_ARGS__)
@@ -292,16 +295,30 @@ static void *win_create_main(void *arg) {
   s_disp = ecore_wl2_display_connect(NULL);
   MLT("ecore_wl2_display_connect -> %p", s_disp);
   if (!s_disp) { PLOG("display_connect failed (XDG_RUNTIME_DIR/WAYLAND_DISPLAY?)\n"); r->rc = -1; return NULL; }
-  s_win = ecore_wl2_window_new(s_disp, NULL, 0, 0, r->w, r->h);
+  /* The window and the display area take the whole screen, not the stream size (#17). */
+  int sw = 0, sh = 0;
+  const char *src = "no symbol, fallback";
+  if (ecore_wl2_display_screen_size_get) {
+    if (ecore_wl2_display_sync) ecore_wl2_display_sync(s_disp);   /* right after connect no wl_output is known yet */
+    ecore_wl2_display_screen_size_get(s_disp, &sw, &sh);
+    src = sw > 0 && sh > 0 ? "api" : "api 0x0, fallback";
+  }
+  /* shortcut: 1920x1080 when the screen size is unknown (no symbol, or no output);
+     upgrade if a TV with another UI plane size shows a small or cut picture. */
+  if (sw <= 0 || sh <= 0) { sw = 1920; sh = 1080; }
+  MLT("win: screen %dx%d (%s; stream %dx%d)", sw, sh, src, r->w, r->h); (void)src;
+  s_win = ecore_wl2_window_new(s_disp, NULL, 0, 0, sw, sh);
   MLT("ecore_wl2_window_new -> %p", s_win);
   if (!s_win) { PLOG("window_new failed\n"); r->rc = -1; return NULL; }
   ecore_wl2_window_alpha_set(s_win, 1);
   ecore_wl2_window_show(s_win);
   ecore_wl2_display_flush(s_disp);
   MLT("window shown");
-  int ok = esplusplayer_set_ecore_display(s_pl, ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY, s_win, 0, 0, r->w, r->h);
+  int ok = esplusplayer_set_ecore_display(s_pl, ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY, s_win, 0, 0, sw, sh);
   MLT("esplusplayer_set_ecore_display(OVERLAY) -> %d", ok);
   if (!ok) { PLOG("set_ecore_display failed\n"); r->rc = -2; return NULL; }
+  int dm = esplusplayer_set_display_mode(s_pl, ESPLUSPLAYER_DISPLAY_MODE_LETTER_BOX);   /* keep the aspect ratio */
+  MLT("esplusplayer_set_display_mode(LETTER_BOX) -> %d", dm); (void)dm;
   r->rc = 0;
   return NULL;
 }
@@ -315,7 +332,8 @@ static void *win_destroy_main(void *arg) {
   return NULL;
 }
 
-/* video setup supplies the window (it has width/height). */
+/* called from video setup. w/h (the stream size) are only checked and traced: the window
+   and the display area take the screen size (win_create_main, #17). */
 int esplus_set_window(int w, int h) {
   MLT("esplus_set_window %dx%d pl=%p", w, h, (void *)s_pl);
   if (!s_pl) { MLT("esplus_set_window -> -1 (no player)"); return -1; }

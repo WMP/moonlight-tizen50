@@ -23,6 +23,9 @@ void ecore_wl2_window_show(void *x) { (void)x; }
 void ecore_wl2_window_alpha_set(void *x, unsigned char a) { (void)x;(void)a; }
 void ecore_wl2_window_free(void *x) { (void)x; }
 void ecore_wl2_display_flush(void *x) { (void)x; }
+int scr_w, scr_h, syncs;   /* screen size the stubbed API reports (0x0 = no output) */
+void ecore_wl2_display_screen_size_get(void *x, int *ww, int *hh) { (void)x; *ww = scr_w; *hh = scr_h; }
+void ecore_wl2_display_sync(void *x) { (void)x; syncs++; }
 void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *), void *data) { return cb(data); }
 static int pl;
 esplusplayer_handle esplusplayer_create(void) { return (esplusplayer_handle)&pl; }
@@ -44,7 +47,9 @@ int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *t) { (void)h;
 int esplusplayer_start(esplusplayer_handle h) { (void)h; return 1; }
 static int submit_ret = 4;
 int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
-int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y;(void)ww;(void)hh; return 1; }
+static int disp_w, disp_h, disp_mode = -1;
+int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y; disp_w = ww; disp_h = hh; return 1; }
+int esplusplayer_set_display_mode(esplusplayer_handle h, esplusplayer_display_mode m) { (void)h; disp_mode = (int)m; return 1; }
 static int seek_calls; static uint64_t seek_target;
 int esplusplayer_seek(esplusplayer_handle h, uint64_t t) { (void)h; seek_calls++; seek_target = t; return 1; }
 void esplusplayer_set_seek_done_cb(esplusplayer_handle h, esplusplayer_seek_done_cb c) { (void)h;(void)c; }
@@ -66,7 +71,13 @@ int main(void) {
   esplus_create_open(); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 2: success, then close */
   esplus_create_open(); assert(esplus_set_window(1280, 720) == 0); assert(ecore_cnt == 2 && wl2_cnt == 1);
+  /* #17: the API reports 0x0 (no output) -> 1920x1080 fallback, after a sync; letterboxed */
+  assert(disp_w == 1920 && disp_h == 1080 && disp_mode == ESPLUSPLAYER_DISPLAY_MODE_LETTER_BOX && syncs == 1);
   esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+  /* #17: the API reports the screen -> the display area is the screen, not the stream */
+  scr_w = 3840; scr_h = 2160; esplus_create_open(); assert(esplus_set_window(1280, 720) == 0);
+  assert(disp_w == 3840 && disp_h == 2160 && syncs == 2);
+  esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0); scr_w = scr_h = 0;
   /* 3: no display (service without display access) -> error, balanced, close is a no-op */
   disp_ok = 0; esplus_create_open(); assert(esplus_set_window(1280, 720) == -1); assert(ecore_cnt == 1 && wl2_cnt == 0);
   esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0); disp_ok = 1;
