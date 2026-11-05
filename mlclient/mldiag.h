@@ -13,6 +13,7 @@ typedef struct {
   const char *app_version, *gfe_version;   /* copied; may be NULL */
   const unsigned char *aes_key;            /* 16 bytes, compare only (never stored or printed); NULL = unknown */
   int rikeyid;                             /* compare only */
+  const char *rtsp_scheme;                 /* "rtsp" or "rtspenc" (copied; no secret); NULL = unknown */
 } mldiag_cfg;
 
 void mldiag_reset(const mldiag_cfg *cfg);                 /* session start: clears everything */

@@ -99,11 +99,17 @@ static int start_connection(void) {
       g_sc.bitrate, g_sc.supportedVideoFormats, g_sc.audioConfiguration, g_sc.packetSize);
   fprintf(stderr, "[ml] LiStartConnection %dx%d@%d %dkbps -> %s\n",
           g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, (const char *)g_si.address);
+  char rtspscheme[12] = "-";   /* "rtsp" or "rtspenc": which RTSP transport the host gave us (no secret) */
+  if (g_si.rtspSessionUrl) {
+    const char *sep = strstr(g_si.rtspSessionUrl, "://");
+    int n = sep ? (int)(sep - g_si.rtspSessionUrl) : 0;
+    if (n > 0 && n < (int)sizeof rtspscheme) { memcpy(rtspscheme, g_si.rtspSessionUrl, (size_t)n); rtspscheme[n] = 0; }
+  }
   mldiag_cfg dc = { g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, g_sc.packetSize,
                     g_sc.supportedVideoFormats, g_sc.colorSpace, g_sc.colorRange, g_sc.audioConfiguration,
                     g_si.serverCodecModeSupport, g_sc.encryptionFlags,
                     g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion,
-                    (const unsigned char *)g_sc.remoteInputAesKey, 0 };
+                    (const unsigned char *)g_sc.remoteInputAesKey, 0, rtspscheme };
   { unsigned id; memcpy(&id, g_sc.remoteInputAesIv, 4); dc.rikeyid = (int)ntohl(id); }   /* rikeyid is the IV's first 4 bytes, big-endian */
   mldiag_reset(&dc);
   int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);

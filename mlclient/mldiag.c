@@ -14,7 +14,7 @@
 
 static pthread_mutex_t s_mu = PTHREAD_MUTEX_INITIALIZER;
 static mldiag_cfg s_cfg;
-static char s_appver[64], s_gfever[64];
+static char s_appver[64], s_gfever[64], s_rtsp[12] = "-";
 static long long s_t0;
 static char s_first[FIRST_N][LINE_MAX_CC + 1], s_last[LAST_N][LINE_MAX_CC + 1];
 static int s_nlines;                      /* total cc lines seen */
@@ -83,6 +83,7 @@ void mldiag_reset(const mldiag_cfg *cfg) {
     snprintf(s_gfever, sizeof s_gfever, "%s", cfg->gfe_version ? cfg->gfe_version : "");
   } else s_appver[0] = s_gfever[0] = 0;
   s_cfg.app_version = s_appver; s_cfg.gfe_version = s_gfever;
+  snprintf(s_rtsp, sizeof s_rtsp, "%s", cfg && cfg->rtsp_scheme ? cfg->rtsp_scheme : "-");
   snprintf(s_launch, sizeof s_launch, "-"); snprintf(s_rikey, sizeof s_rikey, "-"); snprintf(s_rikeyid, sizeof s_rikeyid, "-");
   if (cfg && s_ln_mode) {
     snprintf(s_launch, sizeof s_launch, "%s", s_ln_mode == 2 ? "resume" : "launch");
@@ -178,10 +179,10 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   int o = 0;
   s_out[0] = 0;
   ADD("ML-ERROR code=%d name=%s stage=%s", code, code_name(code), stage >= 0 && stage_name ? stage_name : "-");
-  ADD(" t=%lldms | cfg %dx%d@%d br=%d pkt=%d fmts=0x%x cs=%d cr=%d audio=0x%x scm=0x%x enc=0x%x encf=0x%x/0x%x/0x%x launch=%s rikey=%s rikeyid=%s app=%s gfe=%s hostflags=0x%x rtt=%d/%d",
+  ADD(" t=%lldms | cfg %dx%d@%d br=%d pkt=%d fmts=0x%x cs=%d cr=%d audio=0x%x scm=0x%x enc=0x%x encf=0x%x/0x%x/0x%x rtsp=%s launch=%s rikey=%s rikeyid=%s app=%s gfe=%s hostflags=0x%x rtt=%d/%d",
       t - s_t0, s_cfg.width, s_cfg.height, s_cfg.fps, s_cfg.bitrate_kbps, s_cfg.packet_size,
       s_cfg.supported_video_formats, s_cfg.color_space, s_cfg.color_range, s_cfg.audio_config,
-      s_cfg.server_codec_mode_support, s_cfg.encryption_flags, enc_supported, enc_requested, enc_enabled, s_launch, s_rikey, s_rikeyid, s_appver, s_gfever,
+      s_cfg.server_codec_mode_support, s_cfg.encryption_flags, enc_supported, enc_requested, enc_enabled, s_rtsp, s_launch, s_rikey, s_rikeyid, s_appver, s_gfever,
       host_feature_flags, rtt, rtt_var);
   long long fdu = s_first_du_ms;
   char fduS[24], fpS[24];
