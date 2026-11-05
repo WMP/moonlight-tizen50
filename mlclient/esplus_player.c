@@ -222,7 +222,7 @@ static void sampler_stop(void) {   /* never call with s_lock held: the tick take
 
 static int s_ecore;   /* 1 while we hold an ecore_init()/ecore_wl2_init() reference */
 
-static void on_prepared(int ok) { s_prepare_ok = ok; s_prepared = 1; PLOG("prepare_async_done=%d\n", ok); MLT("cb prepare_async_done ok=%d", ok); }
+static void on_prepared(int ok) { s_prepare_ok = ok; s_prepared = 1; mldiag_player("pdone", ok); PLOG("prepare_async_done=%d\n", ok); MLT("cb prepare_async_done ok=%d", ok); }
 static void on_ready(uint32_t st) { (void)st; MLT("cb ready_to_prepare stream=%u", st); }
 /* Player callbacks may run on player threads while we hold s_lock inside a player call:
  * they must never take s_lock or call the player; atomics and flags only. */
@@ -263,6 +263,7 @@ esplusplayer_handle esplus_create_open(void) {
       esplusplayer_set_prepare_async_done_cb(s_pl, on_prepared);
       int ok = esplusplayer_open(s_pl);
       MLT("esplusplayer_open -> %d", ok);
+      mldiag_player("open", ok);
       if (!ok) { PLOG("open failed\n"); }
       else PLOG("created+opened\n");
     } else PLOG("create failed\n");
@@ -354,17 +355,20 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
     int ok = esplusplayer_start(s_pl); (void)ok; PLOG("started\n"); MLT("esplus_start -> %d", ok); mldiag_player("start", ok);
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
-  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS ? 0 : r);
+  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
     if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {
       s_last_video_pts_ms = ms; __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
     } else s_last_audio_pts_ms = ms;
   }
-  /* shortcut: sample per-frame trace (first 30, then every 300th, plus failures);
-     raise the rate here if a hang needs every frame. Counter is under s_lock. */
-  static unsigned n; n++;
-  if (n <= 30 || n % 300 == 0 || r != ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) MLT("esplus_submit #%u -> %d", n, r);
+  /* shortcut: sample per-frame trace (first 30, then every 300th, plus each change of the
+     result); raise the rate here if a hang needs every frame. Logging every failure filled
+     the console buffer and pushed the session start out of the log; failures are counted
+     in the ML-ERROR line. Counters are under s_lock. */
+  static unsigned n; static int last_r = ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS; n++;
+  if (n <= 30 || n % 300 == 0 || r != last_r) MLT("esplus_submit #%u -> %d", n, r);
+  last_r = r;
   pthread_mutex_unlock(&s_lock);
   return r;
 }

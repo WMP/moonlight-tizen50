@@ -5,9 +5,9 @@
 #include <string.h>
 #include "mldiag.h"
 
-static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74" };
+static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74", NULL, 0, NULL };
 
-static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0); }
+static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0, 0, 0, 0); }
 
 int main(void) {
   char buf[4096];
@@ -27,22 +27,34 @@ int main(void) {
   mldiag_cc_line("Video decode unit queue overflow\n");
   mldiag_video_setup(1, 1920, 1080, 60, 0);
   mldiag_video_du(0); mldiag_video_du(1);
-  mldiag_submit(1, 0); mldiag_submit(0, 0); mldiag_submit(0, 3);
-  mldiag_player("win", 0); mldiag_player("prep", 1); mldiag_player("start", 1);
-  mldiag_fail(-101, -1, NULL, 0, 2, 1, 7, 9);
+  mldiag_submit(1, 1, 4); mldiag_submit(0, 1, 4); mldiag_submit(0, 0, 3); mldiag_submit(0, 0, 0);   /* 0 = NOT_PREPARED: a failure */
+  mldiag_player("open", 1); mldiag_player("win", 0); mldiag_player("prep", 1); mldiag_player("pdone", 1); mldiag_player("start", 1);
+  mldiag_fail(-101, -1, NULL, 0, 2, 1, 7, 9, 0x7, 0x0, 0x1);
   assert(mldiag_last(buf, sizeof buf) == -101);
   assert(strncmp(buf, "ML-ERROR code=-101 name=NO_VIDEO_FRAME stage=- t=", 49) == 0);
-  assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
+  assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 encf=0x7/0x0/0x1 rtsp=- launch=- rikey=- rikeyid=- app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
   assert(strstr(buf, "first_pkt_ms=12"));
   assert(strstr(buf, "du=2 idr=1"));
-  assert(strstr(buf, "win=0 prep=1 start=1 vsub=1 asub=2 subfail=1/3 err=7/9"));
+  assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 vsub=1 asub=3 subfail=2/0 err=7/9"));
   assert(strstr(buf, "cc unrec=1 drop=1 waitidr=1 badlen=0 decrypt=0 corrupt=2 unkft=0 idrreq=2 fec=1 qovf=1 droplim=0"));
   assert(!strchr(buf, '\n'));
   puts(buf);
 
+  /* rtsp scheme shows in the cfg section */
+  { mldiag_cfg rc = CFG; rc.rtsp_scheme = "rtspenc"; mldiag_reset(&rc); fail(-101); mldiag_last(buf, sizeof buf);
+    assert(strstr(buf, "rtsp=rtspenc launch=")); }
+
+  /* IDR request and control decrypt messages (the #13 case) */
+  mldiag_reset(&CFG);
+  mldiag_cc_line("IDR frame request sent\n");
+  mldiag_cc_line("Failed to decrypt control packet of size 40\n");
+  mldiag_cc_line("Discarding unencrypted packet on encrypted control stream: 0302\n");
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "decrypt=2 ") && strstr(buf, "idrreq=1 "));
+
   /* name mapping for an unknown code; stage name */
   mldiag_reset(&CFG);
-  mldiag_fail(-7, 3, "RTSP handshake", 0, 0, 0, 0, 0);
+  mldiag_fail(-7, 3, "RTSP handshake", 0, 0, 0, 0, 0, 0, 0, 0);
   assert(mldiag_last(buf, sizeof buf) == -7);
   assert(strstr(buf, "name=OTHER stage=RTSP handshake"));
 
@@ -73,6 +85,36 @@ int main(void) {
   assert(strlen(small) == 9 && strncmp(small, "ML-ERROR ", 9) == 0);
   assert(mldiag_last(NULL, 100) == -101);
   assert(mldiag_last(buf, 0) == -101);
+
+  /* launch / resume key check; the note is consumed by one reset */
+  static const unsigned char KEY[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff };
+  unsigned char key2[16]; memcpy(key2, KEY, 16); key2[15] ^= 1;
+  mldiag_cfg kc = CFG; kc.aes_key = KEY; kc.rikeyid = -5;
+  mldiag_note_launch("https://h:47984/resume?uniqueid=x&rikey=00112233445566778899AABBCCDDEEFF&rikeyid=-5");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=resume rikey=ok rikeyid=ok "));
+  assert(!strstr(buf, "00112233") && !strstr(buf, "aabbcc"));
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=- rikey=- rikeyid=- "));
+  kc.aes_key = key2; kc.rikeyid = 7;
+  mldiag_note_launch("https://h/launch?rikey=00112233445566778899aabbccddeeff&rikeyid=-5&x=1");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=launch rikey=DIFF rikeyid=DIFF "));
+  mldiag_note_launch("https://h/launch?rikey=0011&rikeyid=1");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "launch=launch rikey=bad rikeyid=DIFF "));
+  mldiag_note_launch("https://h/launch?rikey=zz112233445566778899aabbccddeeff");
+  mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, "rikey=bad rikeyid=- "));
+
+  /* control stream encrypt counters */
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | ctl enc=0 fail=0 iv=- verify=0/0/0 "));
+  mldiag_ctl_encrypt(1, 12, 1); mldiag_ctl_encrypt(1, 12, 1); mldiag_ctl_encrypt(1, 16, 0); mldiag_ctl_encrypt(0, 16, -1); mldiag_ctl_encrypt(1, 12, -1);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | ctl enc=5 fail=1 iv=12 verify=2/1/2 "));
+  puts(buf);
 
   /* reset clears */
   mldiag_reset(&CFG);

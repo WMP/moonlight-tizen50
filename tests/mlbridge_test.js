@@ -258,8 +258,10 @@ test('mlDebug toggles host log forward; log lines go to the console', async func
   assert.strictEqual(sandbox.localStorage.getItem('mlDebug'), '1');
   reply(f.id, {});
   var before = handled.length;
+  var nlog = logs.length;
   listener([{ key: 'log', value: 'engine loaded from memory' }, { key: 'tag', value: 'MLHOST' }]);
   assert.ok(logs.indexOf('[MLHOST] engine loaded from memory') >= 0, 'printed with tag');
+  assert.strictEqual(logs.length - nlog, 1, 'one console line per forwarded line (no reply trace)');
   assert.strictEqual(handled.length, before, 'not an event');
   win.mlDebug(false);
   assert.strictEqual(fields(sent[1]).on, 'false');

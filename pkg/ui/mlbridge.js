@@ -282,11 +282,11 @@
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
     if (m.total !== undefined) { m = join(m); if (!m) return; }
     if (m.event === 'mlstats') { showStats(m); return; }   // overlay only (2/s: not traced), not for handleMessage
-    trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
-    if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug)
+    if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug); no reply trace: it doubled every line
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
       return;
     }
+    trace('reply id=' + m.id, 'keys=' + Object.keys(m).join(','), m.error ? 'error=' + m.error : '');
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing

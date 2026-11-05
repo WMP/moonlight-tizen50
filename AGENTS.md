@@ -62,8 +62,12 @@ The point of this repo is to improve the client itself:
   - error code and name, the failed stage, time since session start;
   - session config: resolution, fps, bitrate, packet size, video formats, color space
     and range, audio config, server codec mode, encryption flags, server versions;
-  - counters of each step: packets, frames, IDR frames, player window/prepare/start,
+  - counters of each step: packets, frames, IDR frames, player open/window/prepare/prepare-done/start,
     submits per stream type and their failures;
+  - control-stream encryption check (messages, failures, IV length, self-decrypt result) and whether the
+    session key and key id match the `/launch` or `/resume` request;
+  - the RTSP transport scheme (`rtsp` vs `rtspenc`) the host returned, since the encryption features
+    are read from that response;
   - the counted moonlight-common-c log messages and the first and last library log lines.
 - **The line must reach the user.** The engine returns it with `ml_engine_last_error()`,
   the host writes it to dlog and sends it in the `diag` field of `streamTerminated`, and
@@ -78,3 +82,12 @@ The point of this repo is to improve the client itself:
   3. Ask the reporter for: the `ML-ERROR` line, the full log from before `startStream`,
      the stream settings (resolution, fps, bitrate, codec, HDR) and the server name and version.
 - When you add a new failure path, add its data to the `ML-ERROR` line in the same change.
+
+## Branches and pull requests
+
+- **Every branch you push gets a pull request at once**, with a full description:
+  the goal (with a link to the issue, `Refs #n` or `Closes #n`), the changes per area,
+  how to check the result (for diagnostics: how to read the new data), the tests you ran
+  and the checks you could not run.
+- When you push more commits to the branch, update the pull request description so it
+  matches the whole branch.
