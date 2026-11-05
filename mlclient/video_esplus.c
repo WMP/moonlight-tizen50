@@ -22,6 +22,7 @@
 extern esplusplayer_handle esplus_create_open(void);
 extern esplusplayer_handle esplus_handle(void);
 extern int esplus_set_window(int w, int h);
+extern void esplus_prepare(void);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern void esplus_close(void);
 
@@ -71,7 +72,8 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
 }
 
 static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0;
-  s_arrival_base_ms = 0; s_have_arrival = 0; s_prev_pts_ms = 0; s_have_prev = 0; s_skip_seq = esplus_sample_seq() - 1; }
+  s_arrival_base_ms = 0; s_have_arrival = 0; s_prev_pts_ms = 0; s_have_prev = 0; s_skip_seq = esplus_sample_seq() - 1;
+  esplus_prepare(); }
 static void VidDecStop(void) {}
 static void VidDecCleanup(void) { MLT("video cleanup"); esplus_close(); free(s_scratch); s_scratch = NULL; s_scratch_cap = 0; }
 

@@ -25,7 +25,6 @@
 extern esplusplayer_handle esplus_create_open(void);
 extern esplusplayer_handle esplus_handle(void);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
-extern void esplus_prepare(void);
 
 #define ALOG(...) fprintf(stderr, "[audio] " __VA_ARGS__)
 
@@ -78,9 +77,7 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
   return 0;
 }
 
-/* common-c starts audio (stage 10) after video (stage 9): this is the first point where both
-   stream infos are added, and prepare_async must come after all of them. */
-static void ar_start(void) { esplus_prepare(); }
+static void ar_start(void) {}
 static void ar_stop(void) {}
 static void ar_cleanup(void) {}
 
