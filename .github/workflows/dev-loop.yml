@@ -1,0 +1,231 @@
+name: Dev loop (sync a branch, build, report in the PR)
+
+# One run = bring a branch of this project (SOURCE_REPO below) into the repository
+# that runs the workflow, build the release + debug packages from that exact tree,
+# and post the result in the branch's pull request.
+#
+# It only does something in a repository that consumes this project with an
+# overlay (a patches/ directory and a sync-from-clean.yml workflow whose rsync
+# --exclude list is reused here, so both syncs lay the tree down the same way).
+# In SOURCE_REPO itself the run stops with a notice.
+#
+# Branch mapping (same as sync-from-clean.yml):
+#   source main      -> sync/main, PR into main
+#   source <feature> -> <feature>, PR into main
+# The branch must contain pkg/ci-build-packages.sh (merge main into it first).
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_branch:
+        description: 'Branch of the source repo to sync and build (empty = its default branch)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
+env:
+  SOURCE_REPO: WMP/moonlight-tizen50-core
+  # Passed via env, never inlined in run:.
+  CORE_BRANCH: ${{ inputs.core_branch }}
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only in a consuming repository
+        id: where
+        run: |
+          if [ "$GITHUB_REPOSITORY" = "$SOURCE_REPO" ]; then
+            echo "::notice::dev-loop syncs $SOURCE_REPO into the repository that runs it; run it in the target repository, not here."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout this repo
+        if: steps.where.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          # Full history: the sync merge must carry the source commits as ancestors.
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Resolve and fetch the source branch
+        if: steps.where.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          SRC_URL="https://github.com/$SOURCE_REPO.git"
+          if [ -n "$CORE_BRANCH" ]; then
+            git check-ref-format --branch "$CORE_BRANCH" >/dev/null \
+              || { echo "::error::invalid branch name: $CORE_BRANCH"; exit 1; }
+            CORE_REF=$CORE_BRANCH
+          else
+            CORE_REF="$(git ls-remote --symref "$SRC_URL" HEAD | awk '/^ref:/ {sub("refs/heads/","",$2); print $2}')"
+            [ -n "$CORE_REF" ] || { echo "::error::could not resolve the default branch of $SRC_URL"; exit 1; }
+          fi
+          git fetch --no-tags "$SRC_URL" "+refs/heads/$CORE_REF:refs/remotes/core/$CORE_REF" \
+            || { echo "::error::branch $CORE_REF not found in $SOURCE_REPO"; exit 1; }
+          if [ "$CORE_REF" = main ]; then TARGET_BRANCH=sync/main; else TARGET_BRANCH=$CORE_REF; fi
+          {
+            echo "CORE_REF=$CORE_REF"
+            echo "CORE_SHA=$(git rev-parse --short "refs/remotes/core/$CORE_REF")"
+            echo "TARGET_BRANCH=$TARGET_BRANCH"
+          } >> "$GITHUB_ENV"
+
+      - name: List the source commits this run brings in
+        if: steps.where.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          # New since the last push of the target branch (or since main for a new branch).
+          PREV=()
+          if git rev-parse -q --verify "refs/remotes/origin/$TARGET_BRANCH" >/dev/null; then
+            PREV=("^refs/remotes/origin/$TARGET_BRANCH")
+          fi
+          git log --no-merges --format='- `%h` %s — %an, %ad' --date=short \
+            ^origin/main "${PREV[@]}" "refs/remotes/core/$CORE_REF" > /tmp/commits.md
+          [ -s /tmp/commits.md ] || echo "- (no new source commits; overlay/build refresh only)" > /tmp/commits.md
+          cat /tmp/commits.md
+
+      - name: Merge source history, then rebuild the tree
+        if: steps.where.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          SYNC_WF=.github/workflows/sync-from-clean.yml
+          [ -f "$SYNC_WF" ] && [ -d patches ] \
+            || { echo "::error::this repository has no $SYNC_WF + patches/; dev-loop has nothing to overlay"; exit 1; }
+          git config user.name  github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git switch -C "$TARGET_BRANCH" origin/main
+
+          if git merge-base --is-ancestor "refs/remotes/core/$CORE_REF" HEAD; then
+            echo "source $CORE_REF is already an ancestor of main; overlay refresh only"
+          else
+            git merge --allow-unrelated-histories --no-ff -s ours -m \
+              "sync: merge source $CORE_REF history ($CORE_SHA); tree rebuilt on top" \
+              "refs/remotes/core/$CORE_REF"
+          fi
+
+          # The same rsync exclusions as the sync workflow (single source of truth there).
+          mapfile -t EXCLUDES < <(grep -oE -- "--exclude='[^']+'" "$SYNC_WF" | sed -E "s/^--exclude='(.*)'$/--exclude=\1/")
+          [ "${#EXCLUDES[@]}" -gt 0 ] || { echo "::error::no --exclude list found in $SYNC_WF"; exit 1; }
+          printf '%s\n' "${EXCLUDES[@]}"
+
+          rm -rf /tmp/clean
+          mkdir /tmp/clean
+          git archive "refs/remotes/core/$CORE_REF" | tar -x -C /tmp/clean
+          rsync -a --delete "${EXCLUDES[@]}" /tmp/clean/ ./
+
+          for p in patches/*.patch; do
+            echo "applying $p"
+            git apply --whitespace=nowarn "$p" \
+              || { echo "::error::$p no longer applies to $CORE_REF ($CORE_SHA) — the source changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
+          done
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "tree unchanged after the rebuild; nothing to commit"
+          else
+            git commit -m "sync: rebuild the tree as source $CORE_REF ($CORE_SHA) + overlay"
+          fi
+
+      - name: Push the branch and open/update the PR
+        if: steps.where.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The branch is generated: replace whatever was there before.
+          git push --force origin "$TARGET_BRANCH"
+          if git diff --quiet origin/main "$TARGET_BRANCH"; then
+            echo "the rebuilt tree matches main already; no PR"
+            exit 0
+          fi
+          cat > /tmp/pr-body.md <<EOF
+          Dev-loop sync of source \`$CORE_REF\` (\`$CORE_SHA\`), run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}.
+
+          The branch merges the source history first (original commits, authors and
+          trees preserved), then rebuilds the tree as source + \`patches/\`.
+          Build results are posted as comments below.
+          EOF
+          TITLE="Sync from clean upstream (core $CORE_REF @ $CORE_SHA)"
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$TARGET_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file /tmp/pr-body.md
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$TARGET_BRANCH" \
+              --title "$TITLE" --body-file /tmp/pr-body.md
+            PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$TARGET_BRANCH" --state open --json number --jq '.[0].number')
+          fi
+          echo "PR_NUMBER=$PR" >> "$GITHUB_ENV"
+
+      - name: Check for TV libraries secrets
+        id: gate
+        if: steps.where.outputs.run == 'true'
+        run: |
+          if [ -n "${{ secrets.TV_LIBS_URL }}" ] && [ -n "${{ secrets.TV_LIBS_TOKEN }}" ]; then
+            echo "have_libs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_libs=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TV_LIBS_URL / TV_LIBS_TOKEN not set — skipping native package build."
+          fi
+
+      - name: Compute version
+        if: steps.gate.outputs.have_libs == 'true'
+        run: |
+          set -euo pipefail
+          [ -f pkg/ci-build-packages.sh ] \
+            || { echo "::error::$CORE_REF has no pkg/ci-build-packages.sh — merge the source main into it first"; exit 1; }
+          # branch slug + commit: feature/x -> feature-x-1a2b3c4 (file-name safe)
+          SLUG=$(printf '%s' "$CORE_REF" | tr -c 'A-Za-z0-9._-' '-')
+          echo "VER=$SLUG-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "BUILD_COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build packages (image, TV libraries, release + debug)
+        id: build
+        if: steps.gate.outputs.have_libs == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TV_LIBS_URL: ${{ secrets.TV_LIBS_URL }}
+          TV_LIBS_TOKEN: ${{ secrets.TV_LIBS_TOKEN }}
+        run: bash pkg/ci-build-packages.sh
+
+      - name: Upload artifacts
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonlight-packages
+          path: out/*
+          if-no-files-found: error
+
+      - name: Comment the result in the PR
+        if: always() && env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: ${{ steps.build.outcome || 'skipped' }}
+        run: |
+          set -euo pipefail
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            echo "### Dev loop: \`$CORE_REF\` @ \`$CORE_SHA\` — build **$BUILD**"
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo "#### Source commits in this run"
+            cat /tmp/commits.md
+            echo
+            echo "#### Artifacts (\`moonlight-packages\`)"
+            if [ "$BUILD" = success ] && ls out/* >/dev/null 2>&1; then
+              echo '| file | size |'
+              echo '|---|---|'
+              for f in out/*; do echo "| \`${f#out/}\` | $(numfmt --to=iec --suffix=B "$(stat -c %s "$f")") |"; done
+              echo
+              echo 'Debug (trace) builds: the `-debug` files. Install both the .tpk and the .wgt; the UI starts the host by itself.'
+            else
+              echo "- none (build $BUILD; see the run log)"
+            fi
+          } > /tmp/comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
