@@ -25,7 +25,7 @@ FLAGS="--sysroot=$DEPS/sysroot $ARCH $OPT -std=gnu11 -Wall -Wextra -fPIC"
 INC="-I$C/src -I$OUT -I$HERE -I$MLT/libgamestream -I$BPD/ossl-inc -I$BPD/curl759/include"
 
 # engine objects (everything except the thin main.c)
-for src in cert_init engine_api engine_ui video_esplus audio_opus esplus_player gs_client input_evdev mldiag; do
+for src in cert_init engine_api engine_ui video_esplus audio_opus esplus_player gs_client input_evdev mldiag ctlcrypto; do
   "$GCC" $FLAGS $INC -c "$HERE/$src.c" -o "$OUT/$src.o"
 done
 
@@ -37,10 +37,10 @@ done
 # (that loader can't do R_ARM_TLS_*); verified: no _Thread_local in the
 # engine/moonlight-common-c.
 "$GCC" --sysroot=$DEPS/sysroot $ARCH $LOPT -shared -Wl,-soname,libmlengine.so \
-  -Wl,--hash-style=both \
+  -Wl,--hash-style=both -Wl,--wrap=PltEncryptMessage \
   -o "$OUT/libmlengine.so" \
   "$OUT"/cert_init.o "$OUT"/engine_api.o "$OUT"/engine_ui.o "$OUT"/video_esplus.o "$OUT"/audio_opus.o \
-  "$OUT"/esplus_player.o "$OUT"/gs_client.o "$OUT"/input_evdev.o "$OUT"/mldiag.o \
+  "$OUT"/esplus_player.o "$OUT"/gs_client.o "$OUT"/input_evdev.o "$OUT"/mldiag.o "$OUT"/ctlcrypto.o \
   "$DEPSBUILD"/obj/*.o "$DEPSBUILD"/gs/*.o "$DEPSBUILD/libmbedcrypto_tv.a" \
   -L"$TVL" -Wl,-rpath-link,"$TVL" -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs \
   -l:libesplusplayer.so -l:libecore_wl2.so.1 -l:libecore.so.1 \

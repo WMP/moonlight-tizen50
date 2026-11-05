@@ -88,12 +88,13 @@ One line, sections separated by ` | `. It is built when a session fails (also in
 An event with `diag` can be larger than one message, so the host sends it like a large reply:
 as ordered parts with its own id (`ev<n>`, never a command id); the UI joins them first.
 
-`ML-ERROR code=<n> name=<NAME> stage=<stage|-> t=<ms> | cfg ... | video ... | player ... | cc ... | cc-first: ... | cc-last: ...`
+`ML-ERROR code=<n> name=<NAME> stage=<stage|-> t=<ms> | cfg ... | video ... | player ... | ctl ... | cc ... | cc-first: ... | cc-last: ...`
 
 - `code`, `name`: the termination code (`-100` NO_VIDEO_TRAFFIC, `-101` NO_VIDEO_FRAME, `-102` UNEXPECTED_EARLY_TERMINATION, `-103` PROTECTED_CONTENT, `-104` FRAME_CONVERSION, other: OTHER). `stage`: the failed connection stage, or `-`. `t`: ms since session start.
-- `cfg`: the requested stream (size, fps, bitrate, packet size, formats, color, audio, server codec support, encryption, server versions, host feature flags, RTT/variance). No address, key or PIN.
+- `cfg`: the requested stream (size, fps, bitrate, packet size, formats, color, audio, server codec support, requested encryption (`enc`), the negotiated encryption features `encf=<host supported>/<host requested>/<enabled>` (bits: 0x1 control stream v2, 0x2 video, 0x4 audio), `rtsp=<rtsp|rtspenc|->` (the RTSP transport the host gave: `rtspenc` = encrypted RTSP; the encryption features are read from this response), `launch=<launch|resume|->`, `rikey=<ok|DIFF|bad|->`, `rikeyid=<ok|DIFF|->` (the key and id of the session compared with the ones in the `/launch` or `/resume` URL that started it: `DIFF` = the server got another key than the client uses, `bad` = the URL key was not 32 hex chars, `-` = unknown), server versions, host feature flags, RTT/variance). No address, key or PIN.
 - `video`: sink setup result, decode units (`du`), IDR frames (`idr`), ms to the first decode unit, ms to the first video packet.
-- `player`: window/prepare/start results (`-99` = not reached), packets submitted (`vsub`, `asub`), failed submits (`subfail=<count>/<last status>`), player errors (`err=<count>/<last>`).
+- `player`: results of `open`, window (`win`), `prepare_async` (`prep`), the prepare-done callback (`pdone`) and `start` (`-99` = not reached), packets submitted (`vsub`, `asub`), failed submits (`subfail=<count>/<last status>`, status `0` = NOT_PREPARED), player errors (`err=<count>/<last>`).
+- `ctl`: control-stream encryption: `enc` = AES-GCM messages encrypted, `fail` = encrypt calls that failed, `iv` = IV length of the last one (12 = V2, 16 = V1), `verify=<ok>/<fail>/<not verified>`: each message is decrypted again with OpenSSL and compared with the plaintext. How to read it: `verify=N/0/0` while the server logs decrypt errors means the key or the IV convention differs (check `rikey`, `rikeyid`, `iv`); `verify` with fails means the client crypto is wrong on this device.
 - `cc`: counters of moonlight-common-c log messages (lost frames, IDR requests, FEC recoveries, and so on).
 - `cc-first`, `cc-last`: the first 4 and the last 8 moonlight-common-c log lines.
 

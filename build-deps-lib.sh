@@ -18,6 +18,22 @@ AR=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-ar
 OBJD=$DEPS/toolchain/data/tools/arm-linux-gnueabi-gcc-6.2/bin/arm-linux-gnueabi-objdump
 C=$MLT/moonlight-common-c
 TVL=$DEPS/tv-libs/usr/lib
+
+# -core patches to the vendored moonlight-common-c (see common-c-patches/README.md; none at the moment).
+# Applied to the submodule checkout before compiling; idempotent (reverse-check -> skip).
+# A1 (fork brightcraft/moonlight-tizen) makes these unnecessary and they become no-ops.
+HERE=$(cd "$(dirname "$0")" && pwd)
+for p in "$HERE"/common-c-patches/*.patch; do
+  [ -e "$p" ] || continue
+  if git -C "$MLT" apply --check "$p" 2>/dev/null; then
+    git -C "$MLT" apply "$p"; echo "patched: $(basename "$p")"
+  elif git -C "$MLT" apply --reverse --check "$p" 2>/dev/null; then
+    echo "patched (already applied): $(basename "$p")"
+  else
+    echo "ERROR: cannot apply $(basename "$p") to $MLT" >&2; exit 1
+  fi
+done
+
 OUT=${OUT:-./deps-build}; mkdir -p "$OUT/mbedtls" "$OUT/obj" "$OUT/gs" "$OUT/shim"
 cat > "$OUT/shim/emscripten.h" <<'EOF'
 #include <stdio.h>
@@ -34,7 +50,9 @@ done
 "$AR" rcs "$OUT/libmbedcrypto_tv.a" "$OUT"/mbedtls/*.o
 
 echo "== moonlight-common-c (core + PlatformCrypto) =="
-CFLAGS="$BASE -std=gnu11 -DHAS_SOCKLEN_T -DNDEBUG -DUSE_MBEDTLS"
+# LC_LOG: Limelog goes to the logMessage callback (the engine counts it in the ML-ERROR line),
+# not only to the host's stderr
+CFLAGS="$BASE -std=gnu11 -DHAS_SOCKLEN_T -DNDEBUG -DUSE_MBEDTLS -DLC_LOG"
 CINC="-I$C/src -I$C/enet/include -I$C/reedsolomon -I$OUT/shim -I$BPD/mbedtls/include"
 for f in "$C"/src/*.c "$C"/enet/*.c "$C"/reedsolomon/rs.c; do
   b=$(basename "$f" .c); case "$b" in win32|ConnectionTester) continue;; esac

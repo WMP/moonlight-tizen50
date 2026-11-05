@@ -42,12 +42,16 @@ void ml_engine_set_log_cb(ml_engine_log_cb cb) {
 static STREAM_CONFIGURATION g_sc;  /* static: held by moonlight-common-c for the session */
 static SERVER_INFORMATION g_si;
 
+/* moonlight-common-c session globals (Connection.c), set by the RTSP handshake. */
+extern uint32_t EncryptionFeaturesSupported, EncryptionFeaturesRequested, EncryptionFeaturesEnabled;
+
 /* Build the one-line failure report (also in release) from the engine counters. */
 static void report_failure(int code, int stage) {
   uint32_t rtt = 0, var = 0;
   if (!LiGetEstimatedRttInfo(&rtt, &var)) rtt = var = 0;
   mldiag_fail(code, stage, stage >= 0 ? LiGetStageName(stage) : NULL, (int)LiGetHostFeatureFlags(),
-              (int)rtt, (int)var, esplus_stats.errors, esplus_stats.last_error);
+              (int)rtt, (int)var, esplus_stats.errors, esplus_stats.last_error,
+              EncryptionFeaturesSupported, EncryptionFeaturesRequested, EncryptionFeaturesEnabled);
   char line[2048]; mldiag_last(line, sizeof line);
   MLT("%s", line);
 }
@@ -66,12 +70,13 @@ static void cl_connTerminated(int errorCode) {
   if (errorCode != 0) report_failure(errorCode, -1);   /* before g_running = 0: the host reads it after */
   g_running = 0;
 }
+/* moonlight-common-c is built with LC_LOG (build-deps-lib.sh): Limelog formats the line
+   itself and passes it as the only argument, so it is plain text here; a '%' in it must
+   not be expanded again. */
 static void cl_logMessage(const char *format, ...) {
-  char b[512];
-  va_list a; va_start(a, format); vsnprintf(b, sizeof b, format, a); va_end(a);
-  fputs(b, stderr);
-  mldiag_cc_line(b);
-  MLT("cc: %s", b);
+  fputs(format, stderr);
+  mldiag_cc_line(format);
+  MLT("cc: %s", format);
 }
 
 static void cl_stageStarting(int stage) { (void)stage; MLT("stage %d (%s) starting", stage, LiGetStageName(stage)); }
@@ -94,10 +99,18 @@ static int start_connection(void) {
       g_sc.bitrate, g_sc.supportedVideoFormats, g_sc.audioConfiguration, g_sc.packetSize);
   fprintf(stderr, "[ml] LiStartConnection %dx%d@%d %dkbps -> %s\n",
           g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, (const char *)g_si.address);
+  char rtspscheme[12] = "-";   /* "rtsp" or "rtspenc": which RTSP transport the host gave us (no secret) */
+  if (g_si.rtspSessionUrl) {
+    const char *sep = strstr(g_si.rtspSessionUrl, "://");
+    int n = sep ? (int)(sep - g_si.rtspSessionUrl) : 0;
+    if (n > 0 && n < (int)sizeof rtspscheme) { memcpy(rtspscheme, g_si.rtspSessionUrl, (size_t)n); rtspscheme[n] = 0; }
+  }
   mldiag_cfg dc = { g_sc.width, g_sc.height, g_sc.fps, g_sc.bitrate, g_sc.packetSize,
                     g_sc.supportedVideoFormats, g_sc.colorSpace, g_sc.colorRange, g_sc.audioConfiguration,
                     g_si.serverCodecModeSupport, g_sc.encryptionFlags,
-                    g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion };
+                    g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion,
+                    (const unsigned char *)g_sc.remoteInputAesKey, 0, rtspscheme };
+  { unsigned id; memcpy(&id, g_sc.remoteInputAesIv, 4); dc.rikeyid = (int)ntohl(id); }   /* rikeyid is the IV's first 4 bytes, big-endian */
   mldiag_reset(&dc);
   int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
   if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("start_connection -> 1 (LiStartConnection %d)", err); return 1; }
@@ -170,7 +183,11 @@ int ml_engine_get_stats(ml_engine_stats *out) {
 
 int ml_engine_last_error(char *buf, int len) { return mldiag_last(buf, len); }
 
-int ml_engine_running(void) { MLT("ml_engine_running -> %d", g_running); return g_running; }
+int ml_engine_running(void) {   /* polled every 500 ms by the host: trace only changes */
+  static int last = -1; int r = g_running;
+  if (r != last) { MLT("ml_engine_running -> %d", r); last = r; }
+  return r;
+}
 
 void ml_engine_wait(void) {
   MLT("ml_engine_wait");

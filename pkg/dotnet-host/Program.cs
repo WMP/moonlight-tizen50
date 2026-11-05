@@ -338,6 +338,8 @@ namespace MoonlightHost
             Log.Trace("command port 'moonlight' listening");
         }
 
+        private static readonly object s_engineLock = new object();   // start/stop: command threads and Poll
+
         private static void Poll()
         {
             try
@@ -348,6 +350,9 @@ namespace MoonlightHost
                     int code = ReadLastError(out string diag);
                     if (diag != null) Log.Error(diag);
                     SendTerminated("streamTerminated: " + code, diag);
+                    // the host dropped the stream: stop the connection now, or its audio keeps
+                    // feeding the player and the overlay stays taken until the next start
+                    lock (s_engineLock) { if (Engine.Running() == 0) Engine.Stop(); }
                 }
             }
             catch (Exception ex) { Log.Error("monitor failed: " + ex.Message); }
@@ -668,17 +673,20 @@ namespace MoonlightHost
                             return "bad args";
                         if (!int.TryParse(Item(b, "codecMode"), out codec)) codec = 0;   // optional: engine defaults to H.264
                         int fullRange = Item(b, "fullRange") == "true" ? 1 : 0;   // optional: absent = limited
-                        if (Engine.StartSessionV2 != null)
-                            return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
-                                                            Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
-                                                            codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
-                                                            Item(b, "audioConfig"), fullRange));
-                        return Rc(Engine.StartSession(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
-                                                      Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
-                                                      codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
-                                                      Item(b, "audioConfig")));
+                        lock (s_engineLock)
+                        {
+                            if (Engine.StartSessionV2 != null)
+                                return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
+                                                                Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
+                                                                codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
+                                                                Item(b, "audioConfig"), fullRange));
+                            return Rc(Engine.StartSession(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
+                                                          Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
+                                                          codec, Item(b, "videoCodec"), Item(b, "hdr") == "true" ? 1 : 0,
+                                                          Item(b, "audioConfig")));
+                        }
                     }
-                case "stopStream": Engine.Stop(); return null;
+                case "stopStream": lock (s_engineLock) Engine.Stop(); return null;
                 case "sendKeyboardEvent":
                     {
                         int key, action, mods;
