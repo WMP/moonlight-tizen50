@@ -43,6 +43,7 @@ The point of this repo is to improve the client itself:
   test `tests/video_esplus_test.c`: PTS modes, FULL retries, late-frame cap). Needs the submodule.
   Run it after touching `mlclient/esplus_player.c`, `mlclient/esplus_stats.h` or `mlclient/video_esplus.c`.
   The same script also runs `tests/mldiag_test.c` (the `ML-ERROR` line); run it after touching `mlclient/mldiag.c`.
+  It also runs `tests/engine_pad_test.c` (gamepad calls, clamps, `pad` counters); run it after touching `mlclient/engine_pad.c`.
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching
   `pkg/ui/mlbridge.js`.
 - `BUILD_VARIANT=debug|release` (default `release`) is honoured by

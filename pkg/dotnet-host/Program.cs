@@ -254,6 +254,10 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int LastErrorDelegate(byte[] buf, int len);
         public static LastErrorDelegate     LastError;   // null with an engine that lacks it
         public static StartSessionV2Delegate StartSessionV2;   // null with an engine that lacks it
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GamepadArrivalDelegate(int index, int mask, int type, uint buttons, int caps);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GamepadStateDelegate(int index, int mask, int buttons, int lt, int rt, int lsx, int lsy, int rsx, int rsy);
+        public static GamepadArrivalDelegate GamepadArrival;   // null with an engine that lacks it
+        public static GamepadStateDelegate   GamepadState;     // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -295,6 +299,10 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { StartSessionV2 = null; }
             try { LastError = MemLoader.GetDelegate<LastErrorDelegate>(h, "ml_engine_last_error"); }
             catch (EntryPointNotFoundException) { LastError = null; }
+            try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
+            catch (EntryPointNotFoundException) { GamepadArrival = null; }
+            try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
+            catch (EntryPointNotFoundException) { GamepadState = null; }
             Loaded = true;
         }
     }
@@ -371,11 +379,41 @@ namespace MoonlightHost
                 string cmd = Item(b, "cmd");
                 if (id == null) { Log.Error("command without id ignored: " + cmd); return; }
                 if (Item(b, "total") != null) { b = Join(id, b); if (b == null) return; }   // not all parts yet
+                if (cmd == "gamepadArrival" || cmd == "gamepadState") { Gamepad(b, cmd); return; }   // inline: a task per state would reorder them
                 Log.Trace("cmd " + cmd + " id=" + id);
                 string replyApp = s_uiApp, replyPort = s_uiPort;
                 Task.Run(() => Run(b, cmd ?? "", id, replyApp, replyPort));
             }
             catch (Exception ex) { Log.Error("command receive failed: " + ex.Message); }
+        }
+
+        private static bool s_padWarned;   // one log line at most for dropped pad commands
+
+        // Pad input: no reply, runs on the port callback so the order is kept. The engine calls are cheap.
+        private static void Gamepad(Tizen.Applications.Bundle b, string cmd)
+        {
+            bool arrival = cmd == "gamepadArrival";
+            string[] keys = arrival ? new[] { "index", "mask", "type", "buttons", "caps" }
+                                    : new[] { "index", "mask", "buttons", "lt", "rt", "lsx", "lsy", "rsx", "rsy" };
+            var v = new int[keys.Length];
+            bool ok = (arrival ? Engine.GamepadArrival : (Delegate)Engine.GamepadState) != null;
+            string why = ok ? null : "engine lacks it";
+            for (int i = 0; ok && i < keys.Length; i++)
+                if (!int.TryParse(Item(b, keys[i]), out v[i])) { ok = false; why = "bad args"; }
+            if (!ok)
+            {
+                if (!s_padWarned) { s_padWarned = true; Log.Error(cmd + " dropped: " + why); }
+                return;
+            }
+            // TryEnter, never a blocking lock: Stop/start hold s_engineLock while they wait for the main loop (this thread).
+            // A dropped state is resent by the UI keepalive.
+            if (!Monitor.TryEnter(s_engineLock)) return;
+            try
+            {
+                if (arrival) Engine.GamepadArrival(v[0], v[1], v[2], unchecked((uint)v[3]), v[4]);
+                else Engine.GamepadState(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
+            }
+            finally { Monitor.Exit(s_engineLock); }
         }
 
         private static void Run(Tizen.Applications.Bundle b, string cmd, string id, string app, string port)
