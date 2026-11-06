@@ -264,7 +264,7 @@ static void on_ready(uint32_t st) { (void)st; MLT("cb ready_to_prepare stream=%u
 /* Player callbacks may run on player threads while we hold s_lock inside a player call:
  * they must never take s_lock or call the player; atomics and flags only. */
 static void on_error(uint32_t e) {
-  s_error_pending = 1;
+  s_error_pending = 1; mldiag_player("err", 0);   /* own mutex, not s_lock: allowed here */
   __atomic_fetch_add(&esplus_stats.errors, 1, __ATOMIC_RELAXED);
   __atomic_store_n(&esplus_stats.last_error, e, __ATOMIC_RELAXED);
   PLOG("player error 0x%x\n", e); MLT("cb player error 0x%x", e);
@@ -417,7 +417,7 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
   }
   int r = esplusplayer_submit_packet(s_pl, pkt);
   if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) s_vtries++;
-  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r);
+  mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r, pkt->pts / 1000000);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
     if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {
