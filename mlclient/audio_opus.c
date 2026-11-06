@@ -24,6 +24,7 @@
 
 extern esplusplayer_handle esplus_create_open(void);
 extern esplusplayer_handle esplus_handle(void);
+extern void esplus_prepare(void);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
 
 #define ALOG(...) fprintf(stderr, "[audio] " __VA_ARGS__)
@@ -77,7 +78,7 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
   return 0;
 }
 
-static void ar_start(void) {}
+static void ar_start(void) { esplus_prepare(); }   /* prepare once video has started too */
 static void ar_stop(void) {}
 static void ar_cleanup(void) {}
 

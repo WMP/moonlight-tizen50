@@ -1,13 +1,13 @@
 /*
  * esplus_player.c - one shared esplusplayer instance for both the video and audio
  * sinks (the TV allows only one player per process; a second create() deletes the
- * first). moonlight-common-c calls the sinks in this guaranteed order (from the
- * connection stages in Connection.c):
- *   AUDIO_STREAM_INIT (ar.init) -> VIDEO_STREAM_INIT (dr.setup)
- *   -> VIDEO_STREAM_START (dr.start) -> AUDIO_STREAM_START (ar.start)
- * so: first caller creates+opens the player; audio and video each add their
- * stream; the window is attached in video setup (it has the dimensions);
- * prepare+start runs from video start, by which point both streams are added.
+ * first). moonlight-common-c calls the sinks in this order (connection stages in
+ * Connection.c): video setup and video start (stage 9), then audio init and audio
+ * start (stage 10). So: the first caller creates+opens the player; audio and video
+ * each add their stream info; the window is attached in video setup (it has the
+ * dimensions); prepare runs on the second esplus_prepare() call (video start and
+ * audio start each make one), by which point both streams are added; start runs
+ * from the first submit after prepare_async_done.
  * This gives audio and video one clock (tight A/V sync), like the fork's EMSS path.
  */
 #include <pthread.h>
@@ -45,6 +45,7 @@ static esplusplayer_handle s_pl;
 static void *s_disp, *s_win;
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile int s_prepared, s_prepare_ok, s_started;   /* s_started: start() succeeded */
+static int s_prepare_calls;   /* esplus_prepare() calls this session, under s_lock */
 static int s_start_tried;   /* start() is tried once per session, under s_lock */
 
 esplus_stats_t esplus_stats;
@@ -198,6 +199,11 @@ void esplus_sample_tick(uint64_t now_ms) {
             && now_ms - s_stall_t > (uint64_t)esplus_cfg.fatal_stall_ms)
           set_fatal(ML_ERR_PLAYER_STALLED, "stall");
       }
+    } else {   /* the time cannot be read: count it as frozen (#22) */
+      if (!s_stall_t) { s_stall_t = now_ms; s_stall_vtries = s_vtries; }
+      else if (esplus_cfg.fatal_stall_ms && s_vtries != s_stall_vtries
+               && now_ms - s_stall_t > (uint64_t)esplus_cfg.fatal_stall_ms)
+        set_fatal(ML_ERR_PLAYER_STALLED, "no playing time");
     }
     int err = __atomic_exchange_n(&s_error_pending, 0, __ATOMIC_RELAXED);
     if (err) why = "error";
@@ -283,7 +289,7 @@ esplusplayer_handle esplus_create_open(void) {
     s_conflicted = 0; s_error_pending = 0; s_need_idr = 0;
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
-    s_start_tried = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
+    s_prepare_calls = 0; s_start_tried = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
     s_pl = esplusplayer_create();
     MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {
@@ -385,8 +391,14 @@ int esplus_set_window(int w, int h) {
   return 0;
 }
 
-/* called from video start, after both streams are added. */
+/* called from video start and from audio start; prepares on the second call (both streams added). */
 void esplus_prepare(void) {
+  /* a stream info added after prepare_async started gives prepare_async_done ok=0 + error 0xfe6c1008
+     and a frozen picture (#22): prepare on the second call, when both sinks have started */
+  pthread_mutex_lock(&s_lock);
+  int n = ++s_prepare_calls;
+  pthread_mutex_unlock(&s_lock);
+  if (n != 2) { MLT("esplus_prepare: %s", n < 2 ? "waiting for the other sink" : "already done"); return; }
   int ok = esplusplayer_prepare_async(s_pl);
   MLT("esplus_prepare prepare_async -> %d", ok);
   mldiag_player("prep", ok);
@@ -432,7 +444,7 @@ void esplus_close(void) {
     MLT("esplusplayer_stop -> %d, close -> %d", st, cl);
     s_pl = NULL;
   }
-  s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0;
+  s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_calls = 0;
   s_last_video_pts_ms = s_last_audio_pts_ms = 0; s_fps_t0 = 0;
   s_corr_us = 0; s_corr_ms = 0; s_tick_prev_ms = 0;
   pthread_mutex_unlock(&s_lock);

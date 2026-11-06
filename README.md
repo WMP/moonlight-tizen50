@@ -207,11 +207,11 @@ recovery. The recovery watchdog never ends the session itself.
 
 **Fatal watchdogs.** These end the session with an `ML-ERROR` line (the host reads
 it from `ml_engine_running()`) and record the raw player state (`state=`). The player
-is started once `prepare_async_done` arrives, also with ok=0 (#22). If `start()` never
+is prepared after both the video and the audio sink started, and is started once `prepare_async_done` arrives, also with ok=0 (#22). If `start()` never
 succeeds although video packets were submitted for `MLENGINE_START_TIMEOUT_MS`, the
 code is `-110` PLAYER_NOT_STARTED. If playing time stays frozen for
 `MLENGINE_FATAL_STALL_MS` while frames are submitted, the code is `-111`
-PLAYER_STALLED. With recovery on, the stall timer restarts after each recovery, so
+PLAYER_STALLED. A playing time that cannot be read counts as frozen. With recovery on, the stall timer restarts after each recovery, so
 `-111` comes only after recovery gave up.
 
 **Knobs.** Environment variables of the engine process, read once when the player
