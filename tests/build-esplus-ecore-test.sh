@@ -18,3 +18,10 @@ done
 # mldiag self-test
 gcc -std=gnu11 -Wall -Wextra -Werror -I"$R/mlclient" -o "$OUT-diag" "$HERE/mldiag_test.c" "$R/mlclient/mldiag.c" -lpthread
 "$OUT-diag"
+# control-stream encrypt check (needs OpenSSL headers)
+if printf '#include <openssl/evp.h>\n' | gcc -E - >/dev/null 2>&1; then
+  gcc -std=gnu11 -Wall -Wextra -Werror -I"$R/mlclient" -o "$OUT-ctl" "$HERE/ctlcrypto_test.c" "$R/mlclient/ctlcrypto.c" "$R/mlclient/mldiag.c" -lpthread -lcrypto
+  "$OUT-ctl"
+else
+  echo "ctlcrypto_test SKIPPED: no OpenSSL headers"
+fi
