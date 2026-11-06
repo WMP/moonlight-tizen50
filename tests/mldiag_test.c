@@ -116,6 +116,17 @@ int main(void) {
   assert(strstr(buf, " | ctl enc=5 fail=1 iv=12 verify=2/1/2 "));
   puts(buf);
 
+  /* pad counters */
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | pad arr=0 st=0 fail=0/0 | cc "));
+  mldiag_pad(1, 0); mldiag_pad(0, 0); mldiag_pad(0, -1); mldiag_pad(1, 5); mldiag_pad(0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | pad arr=2 st=3 fail=2/5 | cc "));
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | pad arr=0 st=0 fail=0/0 | cc "));
+
   /* reset clears */
   mldiag_reset(&CFG);
   assert(mldiag_last(buf, sizeof buf) == 0 && buf[0] == 0);
