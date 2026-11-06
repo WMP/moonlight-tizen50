@@ -23,6 +23,9 @@ void ecore_wl2_window_show(void *x) { (void)x; }
 void ecore_wl2_window_alpha_set(void *x, unsigned char a) { (void)x;(void)a; }
 void ecore_wl2_window_free(void *x) { (void)x; }
 void ecore_wl2_display_flush(void *x) { (void)x; }
+int scr_w, scr_h, syncs;   /* screen size the stubbed API reports (0x0 = no output) */
+void ecore_wl2_display_screen_size_get(void *x, int *ww, int *hh) { (void)x; *ww = scr_w; *hh = scr_h; }
+void ecore_wl2_display_sync(void *x) { (void)x; syncs++; }
 void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *), void *data) { return cb(data); }
 static int pl;
 esplusplayer_handle esplusplayer_create(void) { return (esplusplayer_handle)&pl; }
@@ -68,9 +71,13 @@ int main(void) {
   esplus_create_open(); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 2: success, then close */
   esplus_create_open(); assert(esplus_set_window(1280, 720) == 0); assert(ecore_cnt == 2 && wl2_cnt == 1);
-  /* #17: the display area is the screen (fallback 1920x1080 here: no screen-size symbol), letterboxed */
-  assert(disp_w == 1920 && disp_h == 1080 && disp_mode == ESPLUSPLAYER_DISPLAY_MODE_LETTER_BOX);
+  /* #17: the API reports 0x0 (no output) -> 1920x1080 fallback, after a sync; letterboxed */
+  assert(disp_w == 1920 && disp_h == 1080 && disp_mode == ESPLUSPLAYER_DISPLAY_MODE_LETTER_BOX && syncs == 1);
   esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+  /* #17: the API reports the screen -> the display area is the screen, not the stream */
+  scr_w = 3840; scr_h = 2160; esplus_create_open(); assert(esplus_set_window(1280, 720) == 0);
+  assert(disp_w == 3840 && disp_h == 2160 && syncs == 2);
+  esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0); scr_w = scr_h = 0;
   /* 3: no display (service without display access) -> error, balanced, close is a no-op */
   disp_ok = 0; esplus_create_open(); assert(esplus_set_window(1280, 720) == -1); assert(ecore_cnt == 1 && wl2_cnt == 0);
   esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0); disp_ok = 1;
