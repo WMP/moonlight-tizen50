@@ -49,7 +49,8 @@ static int start_calls, start_ret = 1;
 int esplusplayer_start(esplusplayer_handle h) { (void)h; start_calls++; return start_ret; }
 int esplusplayer_get_state(esplusplayer_handle h) { (void)h; return 2; }
 static int submit_ret = 4;
-int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
+static int sp_calls;
+int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; sp_calls++; return submit_ret; }
 static int disp_w, disp_h, disp_mode = -1;
 int esplusplayer_set_ecore_display(esplusplayer_handle h, esplusplayer_display_type t, void *win, int x, int y, int ww, int hh) { (void)h;(void)t;(void)win;(void)x;(void)y; disp_w = ww; disp_h = hh; return 1; }
 int esplusplayer_set_display_mode(esplusplayer_handle h, esplusplayer_display_mode m) { (void)h; disp_mode = (int)m; return 1; }
@@ -63,6 +64,7 @@ extern int esplus_set_window(int, int);
 extern void esplus_close(void);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern void esplus_prepare(void);
+static int asub_r(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_AUDIO, NULL, 1, pts_ms * 1000000ull, 0}; return esplus_submit(&p); }
 static void vsub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 static void asub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_AUDIO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 /* start a session on a stubbed, prepared and started player */
@@ -182,6 +184,12 @@ int main(void) {
   begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
   for (int i = 1; i <= 30; i++) { play_ms += 100; vsub(1000 + i); esplus_sample_tick(1000 + i * 1000); }
   assert(esplus_stats.fatal == 0);
+  esplus_close();
+  /* k: audio before the first accepted video packet is not passed to the player */
+  esplus_create_open(); cb_prepared(1); esplus_prepare(); esplus_prepare(); sp_calls = 0;
+  assert(asub_r(0) == 0 && sp_calls == 0);
+  vsub(0); assert(sp_calls == 1 && esplus_stats.submitted == 1);
+  assert(asub_r(20) == 4 && sp_calls == 2);
   esplus_close();
   /* i: prepare waits for the second sink (a stream added after prepare_async gives ok=0, #22) */
   setenv("MLENGINE_DEPTH_POLL_MS", "50", 1);

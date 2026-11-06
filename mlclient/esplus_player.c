@@ -415,7 +415,10 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
     int ok = esplusplayer_start(s_pl); s_started = ok ? 1 : 0;
     PLOG("start -> %d (prepare ok=%d)\n", ok, s_prepare_ok); MLT("esplus_start -> %d", ok); mldiag_player("start", ok);
   }
-  int r = esplusplayer_submit_packet(s_pl, pkt);
+  /* audio waits for the first video packet so both timelines start at PTS 0 together
+     (#22: apts1=1175 vs vpts1=0, then prepare failed) */
+  int r = pkt->type == ESPLUSPLAYER_STREAM_TYPE_AUDIO && esplus_stats.submitted == 0
+        ? ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED : esplusplayer_submit_packet(s_pl, pkt);
   if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) s_vtries++;
   mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r, pkt->pts / 1000000);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {

@@ -90,7 +90,9 @@ static void ar_decodePlay(char *data, int len) {
   if (r != ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS && r != ESPLUSPLAYER_SUBMIT_STATUS_FULL
       && r != ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED)
     ALOG("submit audio failed %d\n", r);
-  s_pts_ns += dur_ns;
+  /* NOT_PREPARED = the packet was not queued (audio waits for the first video packet): the audio PTS starts at 0 with it;
+     FULL and other failures lose their time slot, so they still advance */
+  if (r != ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED) s_pts_ns += dur_ns;
 }
 
 void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) {
