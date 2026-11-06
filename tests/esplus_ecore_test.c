@@ -44,7 +44,9 @@ void esplusplayer_set_prepare_async_done_cb(esplusplayer_handle h, esplusplayer_
 int esplusplayer_prepare_async(esplusplayer_handle h) { (void)h; return 1; }
 static uint64_t play_ms; static int play_ok = 1, play_calls;
 int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *t) { (void)h; play_calls++; *t = play_ms; return play_ok; }
-int esplusplayer_start(esplusplayer_handle h) { (void)h; return 1; }
+static int start_calls, start_ret = 1;
+int esplusplayer_start(esplusplayer_handle h) { (void)h; start_calls++; return start_ret; }
+int esplusplayer_get_state(esplusplayer_handle h) { (void)h; return 2; }
 static int submit_ret = 4;
 int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) { (void)h;(void)p; return submit_ret; }
 static int disp_w, disp_h, disp_mode = -1;
@@ -151,6 +153,42 @@ int main(void) {
   vsub(1010); cb_error(7); esplus_sample_tick(2000); assert(seek_calls == 0);
   esplus_close();
   unsetenv("MLENGINE_RECOVER_MAX");
+  /* f: prepare done with ok=0 still starts the player, once; a failed start is not retried */
+  start_calls = 0; start_ret = 1; esplus_create_open(); cb_prepared(0); esplus_prepare(); vsub(0); vsub(16);
+  assert(start_calls == 1);
+  esplus_close();
+  start_calls = 0; start_ret = 0; esplus_create_open(); cb_prepared(0); esplus_prepare(); vsub(0); vsub(16); vsub(32);
+  assert(start_calls == 1);
+  esplus_close(); start_ret = 1;
+  /* g: start watchdog */
+  setenv("MLENGINE_DEPTH_POLL_MS", "0", 1);
+  start_ret = 0; esplus_create_open(); cb_prepared(0); esplus_prepare();
+  esplus_sample_tick(1000); esplus_sample_tick(9000); assert(esplus_stats.fatal == 0);   /* no video submit yet */
+  vsub(0); esplus_sample_tick(10000); esplus_sample_tick(14999); assert(esplus_stats.fatal == 0);
+  esplus_sample_tick(15001); assert(esplus_stats.fatal == ML_ERR_PLAYER_NOT_STARTED);
+  esplus_close();
+  esplus_create_open(); assert(esplus_stats.fatal == 0);   /* prepare never done */
+  vsub(0); esplus_sample_tick(1000); esplus_sample_tick(6001); assert(esplus_stats.fatal == ML_ERR_PLAYER_NOT_STARTED);
+  esplus_close();
+  setenv("MLENGINE_START_TIMEOUT_MS", "0", 1);
+  esplus_create_open(); vsub(0); esplus_sample_tick(1000); esplus_sample_tick(900000); assert(esplus_stats.fatal == 0);
+  esplus_close(); unsetenv("MLENGINE_START_TIMEOUT_MS"); start_ret = 1;
+  /* h: fatal stall (recovery off) */
+  begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  vsub(1010); esplus_sample_tick(10000); assert(esplus_stats.fatal == 0);
+  vsub(1020); esplus_sample_tick(11001); assert(esplus_stats.fatal == ML_ERR_PLAYER_STALLED);
+  esplus_close();
+  begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  for (int i = 1; i <= 30; i++) { play_ms += 100; vsub(1000 + i); esplus_sample_tick(1000 + i * 1000); }
+  assert(esplus_stats.fatal == 0);
+  esplus_close();
+  /* started, but the playing time stays 0 while frames arrive (first frame frozen, #22) */
+  begin(); esplus_sample_tick(1000); vsub(16); esplus_sample_tick(11000); assert(esplus_stats.fatal == 0);
+  vsub(32); esplus_sample_tick(11001); assert(esplus_stats.fatal == ML_ERR_PLAYER_STALLED);
+  esplus_close();
+  /* a static picture with no new frames is not a stall */
+  begin(); play_ms = 100; esplus_sample_tick(1000); esplus_sample_tick(60000); assert(esplus_stats.fatal == 0);
+  esplus_close();
   /* e: sampler thread starts at prepare, stops promptly at close */
   setenv("MLENGINE_DEPTH_POLL_MS", "50", 1);
   begin(); play_calls = 0;

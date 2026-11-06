@@ -21,7 +21,7 @@ void mldiag_cc_line(const char *line);                    /* one moonlight-commo
 void mldiag_video_setup(int fmt, int w, int h, int fps, int rc);
 void mldiag_video_du(int is_idr);                         /* every decode unit */
 void mldiag_submit(int is_video, int ok, int status);     /* esplus_submit result: ok != 0 = success, else the player status (0 = NOT_PREPARED) */
-void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done) or "start" */
+void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done), "start" or "state" (raw esplusplayer_get_state at a fatal stop) */
 /* /launch or /resume URL about to be sent: remembers the mode, rikey and rikeyid (not printed). The next
    mldiag_reset(cfg) compares them with the session's key and forgets them. Survives mldiag_reset. */
 void mldiag_note_launch(const char *url);
