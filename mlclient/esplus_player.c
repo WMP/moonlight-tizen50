@@ -2,13 +2,12 @@
  * esplus_player.c - one shared esplusplayer instance for the VIDEO sink (the TV allows
  * only one player per process; a second create() deletes the first). The player has
  * only a video stream: platform limitation: the TV player rejects engine-fed audio
- * streams (both Opus and raw PCM), so audio goes to PulseAudio (audio_pulse.c).
+ * streams (both Opus and raw PCM), so audio is decoded by the engine (audio_opus.c) and handed to the host, which plays it with Web Audio in the UI.
  * moonlight-common-c calls the sinks in this order (connection stages in Connection.c):
  * video setup and video start (stage 9), then audio init and audio start (stage 10).
  * So: video setup creates+opens the player, attaches the window (it has the dimensions)
  * and adds the video stream info; prepare runs on the first esplus_prepare() call (video
  * start); start runs from the first submit after prepare_async_done.
- * The sampler also logs the A/V drift (audio written to PulseAudio vs the video playing time).
  */
 #include <pthread.h>
 #include <stdint.h>
@@ -135,27 +134,6 @@ static unsigned s_vtries, s_stall_vtries;   /* video packets passed to submit_pa
 static uint64_t s_start_t0;  /* tick time of the first tick after a video submit while not started; 0 = none */
 static int s_fatal_set;
 
-/* A/V drift (log only). drift = (audio written - video playing time) - baseline; the baseline is that
-   difference at the first tick with playing time > 0, so it cancels the PulseAudio buffer and the late first
-   video frame. Under s_lock. */
-static int s_drift_have, s_drift_sign;
-static int64_t s_drift_base;
-static uint64_t s_drift_t, s_drift_log_t;
-#define DRIFT_LOG_MS 250
-static void check_drift(uint64_t play_ms, uint64_t now_ms) {
-  if (play_ms == 0 || (s_drift_t && now_ms - s_drift_t < 1000)) return;
-  s_drift_t = now_ms;
-  int64_t diff = (int64_t)__atomic_load_n(&esplus_stats.audio_written_ms, __ATOMIC_RELAXED) - (int64_t)play_ms;
-  if (!s_drift_have) { s_drift_have = 1; s_drift_base = diff; return; }
-  int64_t d = diff - s_drift_base, a = d < 0 ? -d : d;
-  mldiag_drift((int)d);
-  if (a > DRIFT_LOG_MS) {
-    int sign = d < 0 ? -1 : 1;
-    if (sign != s_drift_sign || now_ms - s_drift_log_t >= 5000) { MLT("A/V drift %lld ms (audio ahead if > 0)", (long long)d); s_drift_log_t = now_ms; }
-    s_drift_sign = sign;
-  } else s_drift_sign = 0;
-}
-
 /* IDR request retry at start: the first request can be lost before the host's pipeline is up. */
 static uint64_t s_idr_t0, s_idr_last;
 static int s_idr_n;
@@ -240,7 +218,7 @@ static void rebuild_player(const char *why) {
   }
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_error_pending = 0;
   s_stall_play = s_stall_t = 0; s_stall_sub = 0; s_stall_armed = 0; s_stall_vtries = s_vtries; s_start_t0 = 0;
-  s_fps_t0 = 0; s_tick_prev_ms = 0; s_corr_us = 0; s_corr_ms = 0; s_drift_have = 0;
+  s_fps_t0 = 0; s_tick_prev_ms = 0; s_corr_us = 0; s_corr_ms = 0;
   if (!s_pl) { set_fatal(ML_ERR_PLAYER_NOT_STARTED, "rebuild: no player"); return; }   /* no tick branch runs without a player */
   ecore_main_loop_thread_safe_call_async(rebuild_display_main, (void *)(uintptr_t)s_gen);
 }
@@ -283,7 +261,6 @@ void esplus_sample_tick(uint64_t now_ms) {
       if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
       s_tick_prev_ms = now_ms;
       MLT("stats depth=%dms fps=%u submitted=%u", esplus_stats.depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
-      check_drift(play, now_ms);
       /* stall: playing time stopped while we keep submitting. Armed after the first non-zero time. */
       if (!s_stall_t || play != s_stall_play) {
         s_stall_play = play; s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted; s_stall_vtries = s_vtries;
@@ -410,7 +387,7 @@ esplusplayer_handle esplus_create_open(void) {
     s_conflicted = 0; s_error_pending = 0; s_need_idr = 0; s_rebase = 0;
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
-    s_prepare_called = 0; s_start_tried = 0; s_rebuilds = 0; s_have_vinfo = 0; s_drift_have = 0; s_drift_t = 0; s_drift_sign = 0; s_drift_log_t = 0; s_idr_t0 = s_idr_last = 0; s_idr_n = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
+    s_prepare_called = 0; s_start_tried = 0; s_rebuilds = 0; s_have_vinfo = 0; s_idr_t0 = s_idr_last = 0; s_idr_n = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
     s_pl = esplusplayer_create();
     MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {

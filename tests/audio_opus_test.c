@@ -1,6 +1,6 @@
 /*
- * Host self-test for mlclient/audio_opus.c (Opus -> PCM S16LE -> audio_pulse_write), driven through
- * AudEsplus_FillCallbacks. audio_pulse is stubbed; libopus encodes the test frames.
+ * Host self-test for mlclient/audio_opus.c (Opus -> PCM S16LE -> the host audio callback), driven through
+ * AudEsplus_FillCallbacks. The callback is a stub; libopus encodes the test frames.
  * Run: sh tests/build-esplus-ecore-test.sh
  */
 #include <assert.h>
@@ -9,19 +9,19 @@
 #include <string.h>
 #include <opus_multistream.h>
 #include "Limelight.h"
-#include "audio_pulse.h"
+#include "mlengine.h"
 #include "mldiag.h"
 
 void LiInitializeAudioCallbacks(PAUDIO_RENDERER_CALLBACKS c) { memset(c, 0, sizeof *c); }
 void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb);
 
-/* audio_pulse stub: records what audio_opus.c writes */
-static int n_open, n_close, n_drain, n_write, open_rc, open_rate, open_ch, open_lat;
-static size_t sizes[16];
-int audio_pulse_open(int rate, int channels, int latency_ms) { n_open++; open_rate = rate; open_ch = channels; open_lat = latency_ms; return open_rc; }
-int audio_pulse_write(const void *pcm, size_t bytes) { assert(pcm); if (n_write < 16) sizes[n_write] = bytes; n_write++; return 0; }
-void audio_pulse_drain(void) { n_drain++; }
-void audio_pulse_close(void) { n_close++; }
+/* the host callback stub: records what audio_opus.c hands over */
+static int n_cb, last_samples, last_ch, last_rate; static long long sum_abs;
+static void audio_cb(const short *pcm, int samples, int channels, int rate) {
+  assert(pcm);
+  for (int i = 0; i < samples * channels; i++) sum_abs += pcm[i] < 0 ? -pcm[i] : pcm[i];   /* the buffer is readable */
+  n_cb++; last_samples = samples; last_ch = channels; last_rate = rate;
+}
 
 #define MS 1000000ull
 enum { SPF = 240 };
@@ -50,45 +50,49 @@ int main(void) {
 
   for (int round = 0; round < 2; round++) {   /* round 1: cleanup, then a second init */
     mldiag_reset(NULL);
-    n_write = 0; open_rc = 0; n_open = 0;
+    n_cb = 0; ml_engine_set_audio_cb(audio_cb);
     assert(cb.init(0, &cfg, NULL, 0) == 0);
-    assert(n_open == 1 && open_rate == 48000 && open_ch == 2 && open_lat == 40);   /* MLENGINE_AUDIO_LATENCY_MS default */
     cb.start();
 
     for (int k = 0; k < 3; k++) cb.decodeAndPlaySample((char *)fr[k], fl[k]);
-    assert(n_write == 3);
-    for (int k = 0; k < 3; k++) assert(sizes[k] == SPF * 2 * 2);   /* 960 B per 5 ms frame */
+    assert(n_cb == 3 && last_samples == SPF && last_ch == 2 && last_rate == 48000);   /* 960 B per 5 ms frame */
+    assert(sum_abs > 0);
 
     cb.decodeAndPlaySample(NULL, 0);   /* loss: concealed frame */
-    assert(n_write == 4 && sizes[3] == SPF * 2 * 2);
+    assert(n_cb == 4 && last_samples == SPF);
     cb.decodeAndPlaySample((char *)fr[0], 0);   /* len 0 with data: also a loss */
-    assert(n_write == 5 && sizes[4] == SPF * 2 * 2);
+    assert(n_cb == 5 && last_samples == SPF);
 
-    char junk[3] = { (char)0xff, (char)0xff, (char)0xff };   /* undecodable: counted, nothing written */
+    char junk[3] = { (char)0xff, (char)0xff, (char)0xff };   /* undecodable: counted, no callback */
     cb.decodeAndPlaySample(junk, (int)sizeof junk);
-    assert(n_write == 5);
+    assert(n_cb == 5);
     cb.decodeAndPlaySample((char *)fr[3], fl[3]);
-    assert(n_write == 6);
+    assert(n_cb == 6);
 
     char line[4096];
+    ml_engine_set_audio_drops(7);
     mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
     assert(strstr(line, " adec=6 adec_fail=1/-4 err="));   /* -4 = OPUS_INVALID_PACKET */
+    assert(strstr(line, " | aout webaudio frames=6 bytes=5760 drops=7 | "));
 
-    n_drain = 0; cb.stop(); assert(n_drain == 1);
-    n_close = 0; cb.cleanup(); assert(n_close >= 1);
+    cb.stop(); cb.cleanup();
     cb.decodeAndPlaySample((char *)fr[0], fl[0]);   /* no decoder: ignored */
-    assert(n_write == 6);
+    assert(n_cb == 6);
   }
 
-  /* no PulseAudio: init still succeeds, decode returns early (nothing is written, nothing crashes) */
-  open_rc = -1; n_write = 0;
+  /* no callback: init still succeeds, decode returns early (no call, no crash) */
+  mldiag_reset(NULL);
+  ml_engine_set_audio_cb(NULL); n_cb = 0;
   assert(cb.init(0, &cfg, NULL, 0) == 0);
   cb.start(); cb.decodeAndPlaySample((char *)fr[0], fl[0]); cb.decodeAndPlaySample(NULL, 0); cb.stop();
-  assert(n_write == 0);
+  assert(n_cb == 0);
+  { char line[4096]; mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+    assert(strstr(line, " | aout none reason=no-callback | ") && strstr(line, " adec=0 ")); }
   cb.cleanup();
-  setenv("MLENGINE_AUDIO_LATENCY_MS", "120", 1); open_rc = 0;
-  assert(cb.init(0, &cfg, NULL, 0) == 0 && open_lat == 120);
-  cb.cleanup(); unsetenv("MLENGINE_AUDIO_LATENCY_MS");
+  /* the callback is read at init: one set later does not apply to a running session */
+  assert(cb.init(0, &cfg, NULL, 0) == 0);
+  ml_engine_set_audio_cb(audio_cb); cb.decodeAndPlaySample((char *)fr[0], fl[0]); assert(n_cb == 0);
+  cb.cleanup();
 
   cfg.channelCount = 0;
   assert(cb.init(0, &cfg, NULL, 0) == -1);

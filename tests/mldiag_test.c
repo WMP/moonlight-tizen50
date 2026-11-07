@@ -144,26 +144,24 @@ int main(void) {
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " adec=0 adec_fail=0/0 err="));
 
-  /* audio output, A/V drift, IDR retries */
+  /* audio output, IDR retries */
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " idr_retry=0 | player "));
-  assert(strstr(buf, " | aout none reason=- err=0 | ctl "));
-  mldiag_aout_open(0); mldiag_aout_state(41000, 0, 1234); mldiag_drift(-300); mldiag_drift(120); mldiag_idr_retry(); mldiag_idr_retry();
+  assert(strstr(buf, " | aout none reason=- | ctl "));
+  mldiag_aout(0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | aout none reason=no-callback | ctl "));
+  mldiag_aout(1); mldiag_aframe(960); mldiag_aframe(960); mldiag_adrops(3); mldiag_idr_retry(); mldiag_idr_retry();
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " idr_retry=2 | player "));
-  assert(strstr(buf, " | aout pulse server=default lat=41000 err=0 written_ms=1234 drift_max_ms=300 | ctl "));
-  mldiag_aout_open(1); mldiag_aout_state(5, -7, 9);
+  assert(strstr(buf, " | aout webaudio frames=2 bytes=1920 drops=3 | ctl "));
+  mldiag_adrops(0);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " | aout pulse server=native lat=5 err=-7 written_ms=9 drift_max_ms=300 | ctl "));
-  mldiag_aout_none(3, 11);
-  fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " | aout none reason=new err=11 | ctl "));
-  mldiag_aout_none(1, 0); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " | aout none reason=dlopen err=0 | "));
-  mldiag_aout_none(2, 0); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " | aout none reason=dlsym err=0 | "));
+  assert(strstr(buf, " | aout webaudio frames=2 bytes=1920 drops=0 | ctl "));
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=0 | player ") && strstr(buf, " | aout none reason=- err=0 | ctl "));
+  assert(strstr(buf, " idr_retry=0 | player ") && strstr(buf, " | aout none reason=- | ctl "));
 
   /* player rebuilds */
   mldiag_reset(&CFG);

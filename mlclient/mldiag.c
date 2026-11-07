@@ -29,13 +29,12 @@ static long long s_first_du_ms = -1;
 
 /* hot counters: __atomic */
 enum { C_UNREC, C_DROP, C_WAITIDR, C_BADLEN, C_DECRYPT, C_CORRUPT, C_UNKFT, C_IDRREQ, C_FEC, C_QOVF,
-       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_PADARR, C_PADST, C_PADFAIL, C_VSUBFAIL, C_ASUBFAIL, C_ADEC, C_ADECFAIL, C_IDRRETRY, C_REBUILD, C_N };
+       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_PADARR, C_PADST, C_PADFAIL, C_VSUBFAIL, C_ASUBFAIL, C_ADEC, C_ADECFAIL, C_IDRRETRY, C_REBUILD, C_AFRAMES, C_N };
 static unsigned s_c[C_N];
+static unsigned long long s_abytes;       /* PCM bytes handed to the audio callback */
+static int s_adrops;                      /* the host's dropped audio frames (last report) */
 static int s_adec_err;                    /* last libopus error */
-/* audio output: 0 not reached, 1 PulseAudio open, 2 none */
-static int s_aout, s_aout_native, s_aout_reason, s_aout_err;   /* reason: 1 dlopen, 2 dlsym, 3 new; err = PA error of the failed pa_simple_new */
-static unsigned s_aout_lat_us, s_aout_written_ms, s_aout_perr;
-static int s_drift_max;                   /* max |A/V drift| in ms */
+static int s_aout;                        /* audio output: 0 not reached, 1 callback present, 2 none (no callback) */
 static int s_pad_rc;                      /* last failed pad call rc */
 static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
 /* the noted /launch or /resume (survives mldiag_reset until one reset consumes it) */
@@ -85,17 +84,9 @@ void mldiag_pad(int arrival, int rc) {
   if (rc != 0) { INC(C_PADFAIL); __atomic_store_n(&s_pad_rc, rc, __ATOMIC_RELAXED); }
 }
 
-void mldiag_aout_open(int native) { pthread_mutex_lock(&s_mu); s_aout = 1; s_aout_native = native; pthread_mutex_unlock(&s_mu); }
-void mldiag_aout_none(int reason, int err) { pthread_mutex_lock(&s_mu); s_aout = 2; s_aout_reason = reason; s_aout_err = err; pthread_mutex_unlock(&s_mu); }
-void mldiag_aout_state(unsigned lat_us, int err, unsigned written_ms) {
-  __atomic_store_n(&s_aout_lat_us, lat_us, __ATOMIC_RELAXED);
-  __atomic_store_n(&s_aout_perr, (unsigned)err, __ATOMIC_RELAXED);
-  __atomic_store_n(&s_aout_written_ms, written_ms, __ATOMIC_RELAXED);
-}
-void mldiag_drift(int ms) {
-  int a = ms < 0 ? -ms : ms, m = __atomic_load_n(&s_drift_max, __ATOMIC_RELAXED);
-  while (a > m && !__atomic_compare_exchange_n(&s_drift_max, &m, a, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
-}
+void mldiag_aout(int has_cb) { __atomic_store_n(&s_aout, has_cb ? 1 : 2, __ATOMIC_RELAXED); }
+void mldiag_aframe(int bytes) { INC(C_AFRAMES); __atomic_fetch_add(&s_abytes, (unsigned long long)bytes, __ATOMIC_RELAXED); }
+void mldiag_adrops(int dropped) { __atomic_store_n(&s_adrops, dropped, __ATOMIC_RELAXED); }
 void mldiag_idr_retry(void) { INC(C_IDRRETRY); }
 void mldiag_rebuild(void) { INC(C_REBUILD); }
 
@@ -107,7 +98,7 @@ void mldiag_adec(int ok, int err) {
 void mldiag_reset(const mldiag_cfg *cfg) {
   pthread_mutex_lock(&s_mu);
   memset(s_c, 0, sizeof s_c); s_ctl_iv = -1; s_pad_rc = 0; s_adec_err = 0;
-  s_aout = s_aout_native = s_aout_reason = s_aout_err = 0; s_aout_lat_us = s_aout_written_ms = s_aout_perr = 0; s_drift_max = 0;
+  s_aout = 0; s_abytes = 0; s_adrops = 0;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
   s_vset = 0; s_open = s_win = s_prep = s_pdone = s_start = s_state = -99; s_first_pkt_ms = -1; s_sub_last_bad = s_vfail_last = s_afail_last = 0;
@@ -247,11 +238,10 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   for (int i = 0; i < 4; i++) { if (ev[i] < 0 || s_t_prep < 0) snprintf(tS[i], sizeof tS[i], "-"); else snprintf(tS[i], sizeof tS[i], "%lld", ev[i] - s_t_prep); }
   for (int i = 0; i < 2; i++) { if (pv[i] < 0) snprintf(pS[i], sizeof pS[i], "-"); else snprintf(pS[i], sizeof pS[i], "%lld", pv[i]); }
   ADD(" | prep-t pdone=%s err=%s v1=%s a1=%s vpts1=%s apts1=%s", tS[0], tS[1], tS[2], tS[3], pS[0], pS[1]);
-  if (s_aout == 1)
-    ADD(" | aout pulse server=%s lat=%u err=%d written_ms=%u drift_max_ms=%d", s_aout_native ? "native" : "default",
-        GET_A(s_aout_lat_us), (int)GET_A(s_aout_perr), GET_A(s_aout_written_ms), GET_A(s_drift_max));
+  if (GET_A(s_aout) == 1)
+    ADD(" | aout webaudio frames=%u bytes=%llu drops=%d", GET(C_AFRAMES), GET_A(s_abytes), GET_A(s_adrops));
   else
-    ADD(" | aout none reason=%s err=%d", s_aout_reason == 1 ? "dlopen" : s_aout_reason == 2 ? "dlsym" : s_aout_reason == 3 ? "new" : "-", s_aout_err);
+    ADD(" | aout none reason=%s", GET_A(s_aout) == 2 ? "no-callback" : "-");
   char ivS[16];
   int civ = __atomic_load_n(&s_ctl_iv, __ATOMIC_RELAXED);
   if (civ < 0) snprintf(ivS, sizeof ivS, "-"); else snprintf(ivS, sizeof ivS, "%d", civ);

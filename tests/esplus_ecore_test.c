@@ -220,27 +220,8 @@ int main(void) {
   /* a static picture with no new frames is not a stall */
   begin(); play_ms = 100; esplus_sample_tick(1000); esplus_sample_tick(60000); assert(esplus_stats.fatal == 0);
   esplus_close();
-  /* m: A/V drift = (audio written - playing time) - baseline; the baseline is taken at the first tick with
-     playing time > 0; about one sample per second; the max |drift| goes to the ML-ERROR line */
+  /* m: IDR retry at the start */
   { char line[4096];
-    mldiag_reset(NULL); mldiag_aout_open(0);
-    begin(); vsub(1000);
-    esplus_stats.audio_written_ms = 1000; play_ms = 0; esplus_sample_tick(1000);   /* playing time 0: no baseline yet */
-    play_ms = 500; esplus_sample_tick(2000);                        /* baseline = 1000 - 500 */
-    esplus_stats.audio_written_ms = 1500; play_ms = 1000; esplus_sample_tick(3000);   /* drift 0 */
-    mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, "drift_max_ms=0 |"));
-    esplus_stats.audio_written_ms = 2400; play_ms = 1500; esplus_sample_tick(3500);   /* less than 1 s since the last sample: skipped */
-    mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, "drift_max_ms=0 |"));
-    esplus_sample_tick(4000);                                       /* (2400-1500) - 500 = 400 */
-    mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, "drift_max_ms=400 |"));
-    esplus_stats.audio_written_ms = 1000; play_ms = 2000; esplus_sample_tick(5000);   /* (1000-2000) - 500 = -1500 */
-    esplus_stats.audio_written_ms = 2500; play_ms = 2500; esplus_sample_tick(6000);   /* -500: the max stays */
-    mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, "drift_max_ms=1500 |"));
-    esplus_close();
     /* IDR retry at the start: only while no video packet reached the player */
     mldiag_reset(NULL);
     esplus_create_open(); esplus_prepare(); idr_calls = 0;

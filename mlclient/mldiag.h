@@ -31,12 +31,11 @@ unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify);   /* returns this se
 void mldiag_pad(int arrival, int rc);
 /* Audio: one libopus decode: ok != 0 = decoded packet, else a failure (err = opus code, last kept). */
 void mldiag_adec(int ok, int err);
-/* Audio output (audio_pulse.c): PulseAudio is open (native = the "unix:/run/pulse/native" retry worked) or not available
-   (reason 1 dlopen, 2 dlsym, 3 pa_simple_new with err = its PA error). _state is called about once per second. */
-void mldiag_aout_open(int native);
-void mldiag_aout_none(int reason, int err);
-void mldiag_aout_state(unsigned lat_us, int err, unsigned written_ms);
-void mldiag_drift(int ms);            /* one A/V drift sample (ms, signed): the max |value| is kept */
+/* Audio output (audio_opus.c): the host audio callback is present or not (at audio init). One frame handed to it (bytes of PCM).
+   The host's dropped audio frames of this session (ml_engine_set_audio_drops; last report kept). */
+void mldiag_aout(int has_cb);
+void mldiag_aframe(int bytes);
+void mldiag_adrops(int dropped);
 void mldiag_rebuild(void);            /* one player rebuild (esplus_player.c) */
 void mldiag_idr_retry(void);          /* one IDR request retry at the start (no video packet yet) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the

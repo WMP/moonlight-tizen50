@@ -152,7 +152,7 @@ parts and replacing the EMSS video/audio path with a native engine built on
 | | |
 |---|---|
 | **Reused unchanged** | `moonlight-common-c` (streaming core), `libgamestream` (pairing/HTTP), the web UI (host list, pairing, app grid, settings) |
-| **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c` + `audio_pulse.c`, the WASM transport → a message-port bridge, cert handling → native |
+| **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c` (+ Web Audio in the UI), the WASM transport → a message-port bridge, cert handling → native |
 | **New** | `esplusplayer_tv50.h` (the TV's ES-player C API), the message-port bridge + JS shim, `esplus_player.c`, `input_evdev.c`, `gs_client.c` (+ own `xml_search`), and the build/packaging |
 
 ## Architecture
@@ -177,15 +177,16 @@ menu/launcher.
 player minus `esplusplayer_get_playing_time`: how far ahead of the screen the
 player queue is. A sampler thread reads it every `MLENGINE_DEPTH_POLL_MS` (the
 counters and the sampler also run in release builds). `audio_depth_ms` is always 0: the
-player has no audio stream. The sampler logs the A/V drift instead (audio written to
-PulseAudio minus video playing time, relative to the first sample; over 250 ms it is traced,
-the maximum is in the `aout` section of the `ML-ERROR` line).
+player has no audio stream.
+
 **Audio.** The esplusplayer carries video only. Platform limitation: the TV player rejects engine-fed
-audio streams (both Opus and raw PCM). The host sends Opus; the engine decodes it with libopus (fixed
-point, from the submodule; `build-deps-lib.sh` makes `libopus_tv.a`) and writes the PCM S16LE to
-PulseAudio with `libpulse-simple`, loaded at run time with `dlopen` (`audio_pulse.c`; no link-time
-dependency). If PulseAudio is not available, the stream goes on without sound. The PulseAudio buffer
-is set with `MLENGINE_AUDIO_LATENCY_MS` (default 40).
+audio streams. The host sends Opus; the engine decodes it with libopus (fixed point, from the submodule;
+`build-deps-lib.sh` makes `libopus_tv.a`) and hands the PCM S16LE (one Opus frame, 5 ms, per call) to the host
+through `ml_engine_set_audio_cb` (`mlengine.h`; set it before the stream starts). The host sends it to the UI as
+`mlaudio` events and the UI plays it with Web Audio (`pkg/ui/mlaudio.js`, jitter buffer default 100 ms). The host
+reports its dropped frames with `ml_engine_set_audio_drops`; the `ML-ERROR` line shows
+`aout webaudio frames=<n> bytes=<n> drops=<n>`, or `aout none reason=no-callback` (the stream then has no sound).
+Audio does not share the player clock, so there is no engine-side A/V sync.
 
 **Start retry.** If no video packet has reached the player 300 ms after prepare, the engine asks for an IDR frame again
 (every 500 ms, at most 10 times): the first request can be lost before the host pipeline is up.
@@ -249,7 +250,6 @@ is created (for example on the CLI harness command line; the .NET host sets none
 | `MLENGINE_RECOVER_MAX` | `0` (off) | recoveries per session (3 recommended once validated on a TV) |
 | `MLENGINE_RECOVER_BACK_MS` | `250` | seek target behind the last video PTS |
 | `MLENGINE_START_TIMEOUT_MS` | `5000` (0 = off) | fatal `-110`: no successful `start()` this long after the first video submit |
-| `MLENGINE_AUDIO_LATENCY_MS` | `40` | PulseAudio buffer (target length) in ms; `0` = server default |
 | `MLENGINE_PLAYER_REBUILD_MAX` | `1` (0 = off) | player rebuilds per session after a failed `start()` or an unreadable playing time |
 | `MLENGINE_FATAL_STALL_MS` | `10000` (0 = off) | fatal `-111`: playing time frozen this long while submitting |
 
