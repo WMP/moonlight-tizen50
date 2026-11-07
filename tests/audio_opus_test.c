@@ -1,31 +1,26 @@
 /*
- * Host self-test for mlclient/audio_opus.c (Opus -> PCM S16LE), driven through
- * AudEsplus_FillCallbacks. The player is stubbed; libopus encodes the test frames.
+ * Host self-test for mlclient/audio_opus.c (Opus -> PCM S16LE -> the host audio callback), driven through
+ * AudEsplus_FillCallbacks. The callback is a stub; libopus encodes the test frames.
  * Run: sh tests/build-esplus-ecore-test.sh
  */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <opus_multistream.h>
 #include "Limelight.h"
-#include "esplusplayer_tv50.h"
+#include "mlengine.h"
 #include "mldiag.h"
 
 void LiInitializeAudioCallbacks(PAUDIO_RENDERER_CALLBACKS c) { memset(c, 0, sizeof *c); }
 void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb);
 
-static int h, n_open, n_prepare, n_submit, submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS;
-static esplusplayer_audio_stream_info info;
-static esplusplayer_es_packet last_pkt, pkts[16];
-esplusplayer_handle esplus_create_open(void) { n_open++; return (esplusplayer_handle)&h; }
-esplusplayer_handle esplus_handle(void) { return (esplusplayer_handle)&h; }
-void esplus_prepare(void) { n_prepare++; }
-int esplusplayer_add_audio_stream_info(esplusplayer_handle p, const esplusplayer_audio_stream_info *i) { (void)p; info = *i; return 1; }
-int esplus_submit(const esplusplayer_es_packet *p) {
-  last_pkt = *p;
-  if (n_submit < 16) pkts[n_submit] = *p;
-  n_submit++;
-  return submit_rc;
+/* the host callback stub: records what audio_opus.c hands over */
+static int n_cb, last_samples, last_ch, last_rate; static long long sum_abs;
+static void audio_cb(const short *pcm, int samples, int channels, int rate) {
+  assert(pcm);
+  for (int i = 0; i < samples * channels; i++) sum_abs += pcm[i] < 0 ? -pcm[i] : pcm[i];   /* the buffer is readable */
+  n_cb++; last_samples = samples; last_ch = channels; last_rate = rate;
 }
 
 #define MS 1000000ull
@@ -55,53 +50,51 @@ int main(void) {
 
   for (int round = 0; round < 2; round++) {   /* round 1: cleanup, then a second init */
     mldiag_reset(NULL);
-    n_submit = 0; submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS;
+    n_cb = 0; ml_engine_set_audio_cb(audio_cb);
     assert(cb.init(0, &cfg, NULL, 0) == 0);
-    assert(info.mime_type == ESPLUSPLAYER_AUDIO_MIME_TYPE_PCM_S16LE && info.mime_type == 9);
-    assert(info.codec_data == NULL && info.codec_data_length == 0 && info.bitrate == 0);
-    assert(info.channels == 2 && info.sample_rate == 48000);
-    cb.start(); assert(n_prepare == round + 1);
-
-    /* before the first accepted packet (NOT_PREPARED) a decode error must not move the PTS: the first packet gets 0 */
-    submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED;
-    char junk0[3] = { (char)0xff, (char)0xff, (char)0xff };
-    cb.decodeAndPlaySample(junk0, (int)sizeof junk0);
-    cb.decodeAndPlaySample(junk0, (int)sizeof junk0);
-    n_submit = 0; submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS;
+    cb.start();
 
     for (int k = 0; k < 3; k++) cb.decodeAndPlaySample((char *)fr[k], fl[k]);
-    assert(n_submit == 3);
-    for (int k = 0; k < 3; k++) {
-      assert(pkts[k].type == ESPLUSPLAYER_STREAM_TYPE_AUDIO && pkts[k].buffer_size == SPF * 2 * 2);
-      assert(pkts[k].duration == 5 * MS && pkts[k].pts == (unsigned long long)k * 5 * MS);
-    }
+    assert(n_cb == 3 && last_samples == SPF && last_ch == 2 && last_rate == 48000);   /* 960 B per 5 ms frame */
+    assert(sum_abs > 0);
 
     cb.decodeAndPlaySample(NULL, 0);   /* loss: concealed frame */
-    assert(n_submit == 4 && last_pkt.buffer_size == SPF * 2 * 2 && last_pkt.pts == 15 * MS && last_pkt.duration == 5 * MS);
+    assert(n_cb == 4 && last_samples == SPF);
+    cb.decodeAndPlaySample((char *)fr[0], 0);   /* len 0 with data: also a loss */
+    assert(n_cb == 5 && last_samples == SPF);
 
-    char junk[3] = { (char)0xff, (char)0xff, (char)0xff };   /* undecodable: counted, no submit, PTS advances */
-    cb.decodeAndPlaySample(junk, 0 + (int)sizeof junk);
-    assert(n_submit == 4);
+    char junk[3] = { (char)0xff, (char)0xff, (char)0xff };   /* undecodable: counted, no callback */
+    cb.decodeAndPlaySample(junk, (int)sizeof junk);
+    assert(n_cb == 5);
     cb.decodeAndPlaySample((char *)fr[3], fl[3]);
-    assert(n_submit == 5 && last_pkt.pts == 25 * MS);   /* 20 ms after the concealed one + 5 ms lost slot */
+    assert(n_cb == 6);
 
     char line[4096];
+    ml_engine_set_audio_drops(7);
     mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, " amime=9 ainfo=1 adec=5 adec_fail=3/-4 err="));   /* -4 = OPUS_INVALID_PACKET */
+    assert(strstr(line, " adec=6 adec_fail=1/-4 err="));   /* -4 = OPUS_INVALID_PACKET */
+    assert(strstr(line, " | aout webaudio frames=6 bytes=5760 sent=0 drops=7 sendfail=0 | "));
+    ml_engine_set_audio_host_stats(5, 2, 1); mldiag_last(line, sizeof line);   /* read time: the new counters */
+    assert(strstr(line, " | aout webaudio frames=6 bytes=5760 sent=5 drops=2 sendfail=1 | "));
 
-    submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED;   /* refused: PTS must not advance */
-    cb.decodeAndPlaySample((char *)fr[0], fl[0]);
-    cb.decodeAndPlaySample((char *)fr[1], fl[1]);
-    assert(n_submit == 7 && pkts[5].pts == 30 * MS && pkts[6].pts == 30 * MS);
-    submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_FULL;           /* lost slot: advances */
-    cb.decodeAndPlaySample((char *)fr[2], fl[2]);
-    cb.decodeAndPlaySample((char *)fr[3], fl[3]);
-    assert(n_submit == 9 && last_pkt.pts == 35 * MS);
-
-    cb.cleanup();
+    cb.stop(); cb.cleanup();
     cb.decodeAndPlaySample((char *)fr[0], fl[0]);   /* no decoder: ignored */
-    assert(n_submit == 9);
+    assert(n_cb == 6);
   }
+
+  /* no callback: init still succeeds, decode returns early (no call, no crash) */
+  mldiag_reset(NULL);
+  ml_engine_set_audio_cb(NULL); n_cb = 0;
+  assert(cb.init(0, &cfg, NULL, 0) == 0);
+  cb.start(); cb.decodeAndPlaySample((char *)fr[0], fl[0]); cb.decodeAndPlaySample(NULL, 0); cb.stop();
+  assert(n_cb == 0);
+  { char line[4096]; mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+    assert(strstr(line, " | aout none reason=no-callback | ") && strstr(line, " adec=0 ")); }
+  cb.cleanup();
+  /* the callback is read at init: one set later does not apply to a running session */
+  assert(cb.init(0, &cfg, NULL, 0) == 0);
+  ml_engine_set_audio_cb(audio_cb); cb.decodeAndPlaySample((char *)fr[0], fl[0]); assert(n_cb == 0);
+  cb.cleanup();
 
   cfg.channelCount = 0;
   assert(cb.init(0, &cfg, NULL, 0) == -1);

@@ -99,6 +99,16 @@ int ml_engine_gamepad_arrival(int index, int active_mask, int type, unsigned int
 int ml_engine_gamepad_state(int index, int active_mask, int buttons, int left_trigger,
                             int right_trigger, int ls_x, int ls_y, int rs_x, int rs_y);
 
+/* Decoded audio (S16LE interleaved, `samples` per channel; one Opus frame, e.g. 240 = 5 ms at 48 kHz).
+ * Called on the engine's audio thread for every decoded frame while a stream runs; pcm is valid only during
+ * the call: copy it and return at once (never block). NULL = no audio output. Set it before starting a stream. */
+typedef void (*ml_engine_audio_cb)(const short *pcm, int samples, int channels, int rate);
+void ml_engine_set_audio_cb(ml_engine_audio_cb cb);
+/* The host reports its dropped audio frames of the current session (queue overflow), for the ML-ERROR line. */
+void ml_engine_set_audio_drops(int dropped);
+/* The host's audio counters of the current session (frames sent to the UI, frames dropped by its queue, failed sends), for the ML-ERROR line. */
+void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,14 +1,13 @@
 /*
- * esplus_player.c - one shared esplusplayer instance for both the video and audio
- * sinks (the TV allows only one player per process; a second create() deletes the
- * first). moonlight-common-c calls the sinks in this order (connection stages in
- * Connection.c): video setup and video start (stage 9), then audio init and audio
- * start (stage 10). So: the first caller creates+opens the player; audio and video
- * each add their stream info; the window is attached in video setup (it has the
- * dimensions); prepare runs on the second esplus_prepare() call (video start and
- * audio start each make one), by which point both streams are added; start runs
- * from the first submit after prepare_async_done.
- * This gives audio and video one clock (tight A/V sync), like the fork's EMSS path.
+ * esplus_player.c - one shared esplusplayer instance for the VIDEO sink (the TV allows
+ * only one player per process; a second create() deletes the first). The player has
+ * only a video stream: platform limitation: the TV player rejects engine-fed audio
+ * streams (both Opus and raw PCM), so audio is decoded by the engine (audio_opus.c) and handed to the host, which plays it with Web Audio in the UI.
+ * moonlight-common-c calls the sinks in this order (connection stages in Connection.c):
+ * video setup and video start (stage 9), then audio init and audio start (stage 10).
+ * So: video setup creates+opens the player, attaches the window (it has the dimensions)
+ * and adds the video stream info; prepare runs on the first esplus_prepare() call (video
+ * start); start runs from the first submit after prepare_async_done.
  */
 #include <pthread.h>
 #include <stdint.h>
@@ -34,10 +33,14 @@ void ecore_wl2_window_show(void *w);
 void ecore_wl2_window_alpha_set(void *w, unsigned char alpha);
 void ecore_wl2_window_free(void *w);
 void ecore_wl2_display_flush(void *d);
+/* never the _sync variant from the sampler (it holds s_lock; esplus_close may run on the main loop and join the sampler) */
+void ecore_main_loop_thread_safe_call_async(void (*cb)(void *data), void *data);
 /* weak: NULL if the TV's libecore_wl2 does not export them */
 void ecore_wl2_display_screen_size_get(void *d, int *w, int *h) __attribute__((weak));
 void ecore_wl2_display_sync(void *d) __attribute__((weak));   /* roundtrip: the outputs are known after it */
 void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *data), void *data);
+
+extern void LiRequestIdrFrame(void);   /* moonlight-common-c: only sets an event, thread-safe */
 
 #define PLOG(...) fprintf(stderr, "[esplus] " __VA_ARGS__)
 
@@ -45,7 +48,7 @@ static esplusplayer_handle s_pl;
 static void *s_disp, *s_win;
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile int s_prepared, s_prepare_ok, s_started;   /* s_started: start() succeeded */
-static int s_prepare_calls;   /* esplus_prepare() calls this session, under s_lock */
+static int s_prepare_called;   /* prepare_async was started this session, under s_lock */
 static int s_start_tried;   /* start() is tried once per session, under s_lock */
 
 esplus_stats_t esplus_stats;
@@ -74,13 +77,14 @@ static void load_cfg(void) {
   esplus_cfg.recover_back_ms = mlc_env_int("MLENGINE_RECOVER_BACK_MS", 250);
   esplus_cfg.start_timeout_ms = mlc_env_int("MLENGINE_START_TIMEOUT_MS", 5000);   /* 0 = off */
   esplus_cfg.fatal_stall_ms = mlc_env_int("MLENGINE_FATAL_STALL_MS", 10000);   /* 0 = off */
-  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d",
+  esplus_cfg.rebuild_max = mlc_env_int("MLENGINE_PLAYER_REBUILD_MAX", 1);   /* 0 = off */
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
-      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms);
+      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max);
 }
 
-static uint64_t s_last_video_pts_ms, s_last_audio_pts_ms;   /* under s_lock */
+static uint64_t s_last_video_pts_ms;   /* under s_lock */
 static uint64_t s_fps_t0;     /* start of the current fps second; 0 = not started */
 static uint32_t s_fps_sub0;
 
@@ -88,6 +92,17 @@ static uint32_t s_fps_sub0;
    moonlight-common-c drops the frames that reference the flushed ones and asks for an IDR */
 static volatile int s_need_idr;
 int esplus_take_need_idr(void) { return __atomic_exchange_n(&s_need_idr, 0, __ATOMIC_RELAXED); }
+/* set after a player rebuild: the video sink restarts its PTS at 0 for the fresh player */
+static volatile int s_rebase;
+int esplus_take_rebase(void) { return __atomic_exchange_n(&s_rebase, 0, __ATOMIC_RELAXED); }
+
+/* Epoch: bumped under s_lock when a rebuild arms the fresh player (flags above). The video sink reads it BEFORE it takes
+   the flags and submits with it (esplus_submit_ep), so a frame that was cut for the old player is refused. */
+static unsigned s_epoch;
+unsigned esplus_epoch(void) { return __atomic_load_n(&s_epoch, __ATOMIC_ACQUIRE); }
+/* 1 while the callbacks belong to the current player. The callbacks have no handle: a late one of a closed player must not
+   change the state of the new one. 0 from the start of a rebuild until its prepare_async, and after esplus_close. */
+static volatile int s_cb_live;
 
 static int64_t s_corr_us;            /* nudge correction, microseconds, under s_lock */
 static volatile int32_t s_corr_ms;   /* rounded, read lock-free by the video sink */
@@ -127,11 +142,26 @@ static unsigned s_vtries, s_stall_vtries;   /* video packets passed to submit_pa
 static uint64_t s_start_t0;  /* tick time of the first tick after a video submit while not started; 0 = none */
 static int s_fatal_set;
 
+/* IDR request retry at start: the first request can be lost before the host's pipeline is up. */
+static uint64_t s_idr_t0, s_idr_last;
+static int s_idr_n;
+#define IDR_FIRST_MS 300
+#define IDR_EVERY_MS 500
+#define IDR_MAX 10
+
+/* Player rebuild state, under s_lock. s_gen counts rebuilds and closes: a queued display step of an older one is stale. */
+static unsigned s_gen;
+static int s_rebuilds;
+static esplusplayer_video_stream_info s_vinfo;
+static int s_have_vinfo;
+static int s_scr_w = 1920, s_scr_h = 1080;   /* the screen size win_create_main used */
+static void set_callbacks(esplusplayer_handle h);
+
 /* The session cannot play: engine_api.c ends it with this code (once). */
 static void set_fatal(int code, const char *why) {
   if (s_fatal_set) return;
   s_fatal_set = 1;
-  int st = esplusplayer_get_state(s_pl);
+  int st = s_pl ? esplusplayer_get_state(s_pl) : -99;   /* -99 = no player (a failed rebuild) */
   mldiag_player("state", st);
   PLOG("fatal %d (%s) state=%d\n", code, why, st); MLT("fatal %d (%s) state=%d", code, why, st);
   __atomic_store_n(&esplus_stats.fatal, code, __ATOMIC_RELAXED);
@@ -167,8 +197,102 @@ static int recover(const char *why, uint64_t now_ms) {
   return 0;
 }
 
+/* Rebuild the player in two steps plus the display part. The slow player calls must not run under s_lock (the video
+   thread waits on it in esplus_submit):
+   1. rebuild_begin, under s_lock: counters, s_cb_live = 0, take the old player (s_pl = NULL: esplus_submit then answers
+      NOT_PREPARED), reset the per-player state.
+   2. rebuild_slow, no lock: stop/close the old player, create/open the new one, add the video stream.
+      Then under s_lock: publish it if no close happened meanwhile (s_gen), and queue part 3.
+   3. rebuild_display_main, on the ecore main loop: display, prepare_async, flags.
+   esplus_close cannot run in the middle of step 2 on the sampler thread: it joins the sampler first. */
+/* a short get_playing_time failure on a healthy player must not rebuild it */
+#define REBUILD_NOTIME_MS 2000
+
+struct rb_job { esplusplayer_handle old; unsigned gen; esplusplayer_video_stream_info vinfo; };
+
+static int rebuild_allowed(void) {
+  return s_rebuilds < esplus_cfg.rebuild_max && s_win && s_pl && s_have_vinfo && !s_conflicted && !s_fatal_set;
+}
+
+static void rebuild_display_main(void *data);
+
+/* The "no playing time" rebuild needs more than max(stall_ms, 2 s), but never more than fatal_stall_ms (0 = off): the
+   rebuild then runs at fatal_stall_ms, before the fatal check of the same tick. */
+static uint64_t rebuild_notime_ms(void) {
+  uint64_t t = esplus_cfg.stall_ms > REBUILD_NOTIME_MS ? (uint64_t)esplus_cfg.stall_ms : REBUILD_NOTIME_MS;
+  if (esplus_cfg.fatal_stall_ms && t > (uint64_t)esplus_cfg.fatal_stall_ms) t = (uint64_t)esplus_cfg.fatal_stall_ms;
+  return t;
+}
+
+/* under s_lock */
+static void rebuild_begin(struct rb_job *j, const char *why) {
+  s_rebuilds++; s_gen++;
+  mldiag_rebuild();
+  PLOG("player rebuild #%d (%s)\n", s_rebuilds, why); MLT("player rebuild #%d (%s)", s_rebuilds, why);
+  __atomic_store_n(&s_cb_live, 0, __ATOMIC_RELEASE);   /* before the old player is stopped */
+  j->old = s_pl; s_pl = NULL; j->gen = s_gen; j->vinfo = s_vinfo;
+  s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_error_pending = 0;
+  s_stall_play = s_stall_t = 0; s_stall_sub = 0; s_stall_armed = 0; s_stall_vtries = s_vtries; s_start_t0 = 0;
+  s_fps_t0 = 0; s_tick_prev_ms = 0; s_corr_us = 0; s_corr_ms = 0;
+}
+
+/* no lock held on entry */
+static void rebuild_slow(struct rb_job *j) {
+  int st = esplusplayer_stop(j->old), cl = esplusplayer_close(j->old);
+  MLT("rebuild: stop -> %d, close -> %d", st, cl); (void)st; (void)cl;
+  esplusplayer_handle np = esplusplayer_create();
+  MLT("rebuild: esplusplayer_create -> %p", (void *)np);
+  if (np) {
+    set_callbacks(np);
+    int ok = esplusplayer_open(np);
+    MLT("rebuild: esplusplayer_open -> %d", ok);
+    mldiag_player("rb_open", ok);
+    ok = esplusplayer_add_video_stream_info(np, &j->vinfo);
+    MLT("rebuild: esplusplayer_add_video_stream_info -> %d", ok);
+    mldiag_player("rb_addv", ok);
+  }
+  pthread_mutex_lock(&s_lock);
+  if (j->gen != s_gen) {   /* closed meanwhile */
+    pthread_mutex_unlock(&s_lock);
+    if (np) { esplusplayer_stop(np); esplusplayer_close(np); }
+    return;
+  }
+  if (!np) { set_fatal(ML_ERR_PLAYER_NOT_STARTED, "rebuild: no player"); pthread_mutex_unlock(&s_lock); return; }   /* no tick branch runs without a player */
+  s_pl = np;
+  ecore_main_loop_thread_safe_call_async(rebuild_display_main, (void *)(uintptr_t)s_gen);
+  pthread_mutex_unlock(&s_lock);
+}
+
+/* part 3, on the ecore main loop */
+static void rebuild_display_main(void *data) {
+  pthread_mutex_lock(&s_lock);
+  if ((unsigned)(uintptr_t)data != s_gen || !s_pl || !s_win) {
+    MLT("rebuild display: stale, skipped");
+    pthread_mutex_unlock(&s_lock);
+    return;
+  }
+  int ok = esplusplayer_set_ecore_display(s_pl, ESPLUSPLAYER_DISPLAY_TYPE_OVERLAY, s_win, 0, 0, s_scr_w, s_scr_h);
+  MLT("rebuild: esplusplayer_set_ecore_display -> %d", ok);
+  mldiag_player("rb_disp", ok);
+  int dm = esplusplayer_set_display_mode(s_pl, ESPLUSPLAYER_DISPLAY_MODE_LETTER_BOX);
+  MLT("rebuild: esplusplayer_set_display_mode -> %d", dm); (void)dm;
+  __atomic_store_n(&s_cb_live, 1, __ATOMIC_RELEASE);   /* the callbacks belong to this player now */
+  ok = esplusplayer_prepare_async(s_pl);
+  mldiag_player("prep", ok);
+  mldiag_player("rb_prep", ok);
+  MLT("rebuild: prepare_async -> %d", ok);
+  /* after prepare_async: an IDR submitted before it would be refused (NOT_PREPARED). The epoch makes the sink drop a
+     frame that was cut before these flags. */
+  s_need_idr = 1;
+  s_rebase = 1;
+  __atomic_fetch_add(&s_epoch, 1, __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&s_lock);
+}
+
 /* One sampler step; the thread calls it with the monotonic clock, the host test with a fake one. */
 void esplus_sample_tick(uint64_t now_ms) {
+  int want_idr = 0, do_rb = 0;
+  struct rb_job job;
   pthread_mutex_lock(&s_lock);
   if (s_pl && s_started) {
     const char *why = NULL;
@@ -176,7 +300,6 @@ void esplus_sample_tick(uint64_t now_ms) {
     if (esplusplayer_get_playing_time(s_pl, &play)) {
       esplus_stats.playing_ms = (uint32_t)play;
       esplus_stats.depth_ms = (int32_t)(s_last_video_pts_ms - play);
-      esplus_stats.audio_depth_ms = (int32_t)(s_last_audio_pts_ms - play);
       if (!s_fps_t0) { s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted; }
       else if (now_ms - s_fps_t0 >= 1000) {
         esplus_stats.fps_submitted = esplus_stats.submitted - s_fps_sub0;
@@ -184,8 +307,7 @@ void esplus_sample_tick(uint64_t now_ms) {
       }
       if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
       s_tick_prev_ms = now_ms;
-      MLT("stats depth=%dms audio=%dms fps=%u submitted=%u", esplus_stats.depth_ms,
-          esplus_stats.audio_depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
+      MLT("stats depth=%dms fps=%u submitted=%u", esplus_stats.depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
       /* stall: playing time stopped while we keep submitting. Armed after the first non-zero time. */
       if (!s_stall_t || play != s_stall_play) {
         s_stall_play = play; s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted; s_stall_vtries = s_vtries;
@@ -201,6 +323,9 @@ void esplus_sample_tick(uint64_t now_ms) {
       }
     } else {   /* the time cannot be read: count it as frozen (#22) */
       if (!s_stall_t) { s_stall_t = now_ms; s_stall_vtries = s_vtries; }
+      else if (rebuild_allowed() && s_vtries != s_stall_vtries && now_ms - s_stall_t > rebuild_notime_ms()) {
+        rebuild_begin(&job, "no playing time"); do_rb = 1;   /* the fatal check waits: the rebuild resets its timer */
+      }
       else if (esplus_cfg.fatal_stall_ms && s_vtries != s_stall_vtries
                && now_ms - s_stall_t > (uint64_t)esplus_cfg.fatal_stall_ms)
         set_fatal(ML_ERR_PLAYER_STALLED, "no playing time");
@@ -208,13 +333,25 @@ void esplus_sample_tick(uint64_t now_ms) {
     int err = __atomic_exchange_n(&s_error_pending, 0, __ATOMIC_RELAXED);
     if (err) why = "error";
     if (why && !s_conflicted && recover(why, now_ms) < 0 && err) s_error_pending = 1;   /* retry after the cooldown */
+  } else if (s_pl && s_start_tried && !s_started && rebuild_allowed()) {
+    rebuild_begin(&job, "start failed"); do_rb = 1;
   } else if (s_pl && esplus_cfg.start_timeout_ms && s_vtries) {
     /* never started although video was submitted: the first frame stays on screen (#22) */
     if (!s_start_t0) s_start_t0 = now_ms;
     else if (now_ms - s_start_t0 > (uint64_t)esplus_cfg.start_timeout_ms) set_fatal(ML_ERR_PLAYER_NOT_STARTED, "not started");
   }
+  /* no video packet reached the player yet: ask for an IDR again (after the lock is released) */
+  if (s_pl && s_prepare_called && s_vtries == 0 && s_idr_n < IDR_MAX) {
+    if (!s_idr_t0) s_idr_t0 = now_ms;
+    else if (now_ms - s_idr_t0 > IDR_FIRST_MS && (!s_idr_last || now_ms - s_idr_last >= IDR_EVERY_MS)) {
+      s_idr_last = now_ms; s_idr_n++; want_idr = 1;
+      mldiag_idr_retry(); MLT("no video yet: IDR request retry #%d", s_idr_n);
+    }
+  }
   s_tick_seq++;
   pthread_mutex_unlock(&s_lock);
+  if (want_idr) LiRequestIdrFrame();
+  if (do_rb) rebuild_slow(&job);   /* the slow player calls, without s_lock */
 }
 
 uint64_t esplus_mono_ms(void) {
@@ -259,25 +396,36 @@ static void sampler_stop(void) {   /* never call with s_lock held: the tick take
 
 static int s_ecore;   /* 1 while we hold an ecore_init()/ecore_wl2_init() reference */
 
-static void on_prepared(int ok) { s_prepare_ok = ok; s_prepared = 1; mldiag_player("pdone", ok); PLOG("prepare_async_done=%d\n", ok); MLT("cb prepare_async_done ok=%d", ok); }
+static void on_prepared(int ok) { if (!__atomic_load_n(&s_cb_live, __ATOMIC_ACQUIRE)) return; s_prepare_ok = ok; s_prepared = 1; mldiag_player("pdone", ok); PLOG("prepare_async_done=%d\n", ok); MLT("cb prepare_async_done ok=%d", ok); }
 static void on_ready(uint32_t st) { (void)st; MLT("cb ready_to_prepare stream=%u", st); }
 /* Player callbacks may run on player threads while we hold s_lock inside a player call:
  * they must never take s_lock or call the player; atomics and flags only. */
 static void on_error(uint32_t e) {
+  if (!__atomic_load_n(&s_cb_live, __ATOMIC_ACQUIRE)) return;   /* a closed player */
   s_error_pending = 1; mldiag_player("err", 0);   /* own mutex, not s_lock: allowed here */
   __atomic_fetch_add(&esplus_stats.errors, 1, __ATOMIC_RELAXED);
   __atomic_store_n(&esplus_stats.last_error, e, __ATOMIC_RELAXED);
   PLOG("player error 0x%x\n", e); MLT("cb player error 0x%x", e);
 }
-static void on_buffer(uint32_t st, uint32_t s) {
+static void on_buffer(uint32_t st, uint32_t s) {   /* counts only (no player state): not gated by s_cb_live */
   if (s == 0) __atomic_fetch_add(&esplus_stats.underruns, 1, __ATOMIC_RELAXED);
   else if (s == 1) __atomic_fetch_add(&esplus_stats.overruns, 1, __ATOMIC_RELAXED);
   if (s) PLOG("OVERRUN stream=%u\n", st);
 }
 static void on_seek_done(void) { MLT("cb seek_done"); }
 static void on_conflict(void) {
+  if (!__atomic_load_n(&s_cb_live, __ATOMIC_ACQUIRE)) return;
   s_conflicted = 1; esplus_stats.recovery_state = 2;
   PLOG("resource conflict\n"); MLT("cb resource_conflicted");
+}
+
+static void set_callbacks(esplusplayer_handle h) {
+  esplusplayer_set_error_cb(h, on_error);
+  esplusplayer_set_buffer_status_cb(h, on_buffer);
+  esplusplayer_set_resource_conflicted_cb(h, on_conflict);
+  esplusplayer_set_seek_done_cb(h, on_seek_done);
+  esplusplayer_set_ready_to_prepare_cb(h, on_ready);
+  esplusplayer_set_prepare_async_done_cb(h, on_prepared);
 }
 
 /* idempotent: create + open the player once. */
@@ -286,19 +434,15 @@ esplusplayer_handle esplus_create_open(void) {
   if (!s_pl) {
     load_cfg();
     memset((void *)&esplus_stats, 0, sizeof esplus_stats);   /* new session */
-    s_conflicted = 0; s_error_pending = 0; s_need_idr = 0;
+    s_conflicted = 0; s_error_pending = 0; s_need_idr = 0; s_rebase = 0;
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
-    s_prepare_calls = 0; s_start_tried = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
+    s_prepare_called = 0; s_start_tried = 0; s_rebuilds = 0; s_have_vinfo = 0; s_idr_t0 = s_idr_last = 0; s_idr_n = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
     s_pl = esplusplayer_create();
     MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {
-      esplusplayer_set_error_cb(s_pl, on_error);
-      esplusplayer_set_buffer_status_cb(s_pl, on_buffer);
-      esplusplayer_set_resource_conflicted_cb(s_pl, on_conflict);
-      esplusplayer_set_seek_done_cb(s_pl, on_seek_done);
-      esplusplayer_set_ready_to_prepare_cb(s_pl, on_ready);
-      esplusplayer_set_prepare_async_done_cb(s_pl, on_prepared);
+      set_callbacks(s_pl);
+      __atomic_store_n(&s_cb_live, 1, __ATOMIC_RELEASE);
       int ok = esplusplayer_open(s_pl);
       MLT("esplusplayer_open -> %d", ok);
       mldiag_player("open", ok);
@@ -312,6 +456,18 @@ esplusplayer_handle esplus_create_open(void) {
 }
 
 esplusplayer_handle esplus_handle(void) { return s_pl; }
+
+/* Adds the video stream and keeps a copy for a player rebuild. A codec_data pointer is not kept (it may not outlive
+   the call): the copy has NULL/0. Our H.264/HEVC path passes none. */
+int esplus_add_video_info(const esplusplayer_video_stream_info *vi) {
+  pthread_mutex_lock(&s_lock);
+  s_vinfo = *vi;
+  if (vi->codec_data) { MLT("esplus_add_video_info: codec_data is not cached"); s_vinfo.codec_data = NULL; s_vinfo.codec_data_length = 0; }
+  s_have_vinfo = 1;
+  int ok = s_pl ? esplusplayer_add_video_stream_info(s_pl, vi) : 0;
+  pthread_mutex_unlock(&s_lock);
+  return ok;
+}
 
 /* EFL is not thread-safe, and LiStartConnection runs video setup on the caller's
  * thread (a worker thread in the .NET host). So the Wayland display/window work runs
@@ -341,6 +497,7 @@ static void *win_create_main(void *arg) {
   /* shortcut: 1920x1080 when the screen size is unknown (no symbol, or no output);
      upgrade if a TV with another UI plane size shows a small or cut picture. */
   if (sw <= 0 || sh <= 0) { sw = 1920; sh = 1080; }
+  s_scr_w = sw; s_scr_h = sh;   /* a player rebuild uses the same area */
   MLT("win: screen %dx%d (%s; stream %dx%d)", sw, sh, src, r->w, r->h); (void)src;
   s_win = ecore_wl2_window_new(s_disp, NULL, 0, 0, sw, sh);
   MLT("ecore_wl2_window_new -> %p", s_win);
@@ -391,14 +548,12 @@ int esplus_set_window(int w, int h) {
   return 0;
 }
 
-/* called from video start and from audio start; prepares on the second call (both streams added). */
+/* called from video start; prepares on the first call, later calls do nothing. */
 void esplus_prepare(void) {
-  /* a stream info added after prepare_async started gives prepare_async_done ok=0 + error 0xfe6c1008
-     and a frozen picture (#22): prepare on the second call, when both sinks have started */
   pthread_mutex_lock(&s_lock);
-  int n = ++s_prepare_calls;
+  int done = s_prepare_called; s_prepare_called = 1;
   pthread_mutex_unlock(&s_lock);
-  if (n != 2) { MLT("esplus_prepare: %s", n < 2 ? "waiting for the other sink" : "already done"); return; }
+  if (done) { MLT("esplus_prepare: already done"); return; }
   int ok = esplusplayer_prepare_async(s_pl);
   MLT("esplus_prepare prepare_async -> %d", ok);
   mldiag_player("prep", ok);
@@ -406,26 +561,32 @@ void esplus_prepare(void) {
   sampler_start();
 }
 
-/* submit + start-once-prepared; safe to call from the video and audio threads. */
-int esplus_submit(const esplusplayer_es_packet *pkt) {
+/* submit + start-once-prepared. */
+int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch) {
   pthread_mutex_lock(&s_lock);
+  if (epoch != s_epoch) {   /* cut before a rebuild armed the new player: old timeline, maybe no IDR */
+    pthread_mutex_unlock(&s_lock);
+    return ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED;
+  }
+  if (!s_pl) {   /* a rebuild in progress, or a failed one */
+    mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, 0, ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED, pkt->pts / 1000000);
+    pthread_mutex_unlock(&s_lock);
+    return ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED;
+  }
   /* a prepare that reports ok=0 has already shown the first frame (#22): try start() anyway, once */
   if (s_prepared && !s_start_tried) {
     s_start_tried = 1; s_error_pending = 0;   /* an error before start is not a playback failure */
     int ok = esplusplayer_start(s_pl); s_started = ok ? 1 : 0;
     PLOG("start -> %d (prepare ok=%d)\n", ok, s_prepare_ok); MLT("esplus_start -> %d", ok); mldiag_player("start", ok);
   }
-  /* audio waits for the first video packet so both timelines start at PTS 0 together
-     (#22: apts1=1175 vs vpts1=0, then prepare failed) */
-  int r = pkt->type == ESPLUSPLAYER_STREAM_TYPE_AUDIO && esplus_stats.submitted == 0
-        ? ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED : esplusplayer_submit_packet(s_pl, pkt);
+  int r = esplusplayer_submit_packet(s_pl, pkt);
   if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) s_vtries++;
   mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r, pkt->pts / 1000000);
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
     if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {
       s_last_video_pts_ms = ms; __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
-    } else s_last_audio_pts_ms = ms;
+    }
   }
   /* shortcut: sample per-frame trace (first 30, then every 300th, plus each change of the
      result); raise the rate here if a hang needs every frame. Logging every failure filled
@@ -438,17 +599,21 @@ int esplus_submit(const esplusplayer_es_packet *pkt) {
   return r;
 }
 
+int esplus_submit(const esplusplayer_es_packet *pkt) { return esplus_submit_ep(pkt, esplus_epoch()); }
+
 void esplus_close(void) {
   MLT("esplus_close");
-  sampler_stop();
+  sampler_stop();   /* joins the sampler: a rebuild on the sampler thread (rebuild_slow) cannot run in the middle of the close */
   pthread_mutex_lock(&s_lock);
+  __atomic_store_n(&s_cb_live, 0, __ATOMIC_RELEASE);
   if (s_pl) {
     int st = esplusplayer_stop(s_pl), cl = esplusplayer_close(s_pl); (void)st; (void)cl;
     MLT("esplusplayer_stop -> %d, close -> %d", st, cl);
     s_pl = NULL;
   }
-  s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_calls = 0;
-  s_last_video_pts_ms = s_last_audio_pts_ms = 0; s_fps_t0 = 0;
+  s_gen++; s_rebuilds = 0; s_have_vinfo = 0;   /* a queued rebuild display step is now stale */
+  s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_called = 0;
+  s_last_video_pts_ms = 0; s_fps_t0 = 0;
   s_corr_us = 0; s_corr_ms = 0; s_tick_prev_ms = 0;
   pthread_mutex_unlock(&s_lock);
   /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would

@@ -13,8 +13,8 @@ C=$MLT/moonlight-common-c; TVL=$DEPS/tv-libs/usr/lib
 # BUILD_VARIANT: release (default, -O2) or debug (-O0 -g, MLT_TRACE trace on).
 BUILD_VARIANT=${BUILD_VARIANT:-release}
 case "$BUILD_VARIANT" in
-  release) OPT="-O2"; LOPT="-O2"; DBGLIB="" ;;
-  debug)   OPT="-O0 -g -DMLT_TRACE"; LOPT="-O0 -g"; DBGLIB="-ldl" ;;
+  release) OPT="-O2"; LOPT="-O2" ;;
+  debug)   OPT="-O0 -g -DMLT_TRACE"; LOPT="-O0 -g" ;;
   *) echo "BUILD_VARIANT must be debug or release, got: $BUILD_VARIANT" >&2; exit 1 ;;
 esac
 echo "engine variant: $BUILD_VARIANT"
@@ -44,7 +44,7 @@ done
   "$DEPSBUILD"/obj/*.o "$DEPSBUILD"/gs/*.o "$DEPSBUILD/libmbedcrypto_tv.a" "$DEPSBUILD/libopus_tv.a" -Wl,--exclude-libs,libopus_tv.a \
   -L"$TVL" -Wl,-rpath-link,"$TVL" -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs \
   -l:libesplusplayer.so -l:libecore_wl2.so.1 -l:libecore.so.1 \
-  -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libcurl.so.4 -lpthread $DBGLIB
+  -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libcurl.so.4 -lpthread -ldl
 
 # thin exe: main.o + the .so
 "$GCC" $FLAGS $INC -c "$HERE/main.c" -o "$OUT/main.o"
@@ -60,7 +60,8 @@ for s in ml_engine_start ml_engine_running ml_engine_wait ml_engine_stop \
          ml_engine_make_cert ml_engine_http_init ml_engine_open_url ml_engine_pair \
          ml_engine_cancel_request ml_engine_start_session ml_engine_send_key ml_engine_free \
          ml_engine_set_log_cb ml_engine_get_stats ml_engine_start_session_v2 ml_engine_last_error \
-         ml_engine_gamepad_arrival ml_engine_gamepad_state; do
+         ml_engine_gamepad_arrival ml_engine_gamepad_state \
+         ml_engine_set_audio_cb ml_engine_set_audio_drops ml_engine_set_audio_host_stats; do
   "$OBJD" -T "$OUT/libmlengine.so" | grep -q " $s\$" || miss="$miss $s"
 done
 [ -z "$miss" ] && echo "ABI exported: ml_engine_* OK" || { echo "MISSING ABI:$miss"; exit 1; }

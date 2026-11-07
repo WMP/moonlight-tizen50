@@ -21,7 +21,7 @@ void mldiag_cc_line(const char *line);                    /* one moonlight-commo
 void mldiag_video_setup(int fmt, int w, int h, int fps, int rc);
 void mldiag_video_du(int is_idr);                         /* every decode unit */
 void mldiag_submit(int is_video, int ok, int status, unsigned long long pts_ms);   /* esplus_submit result: ok != 0 = success, else the player status (0 = NOT_PREPARED); pts_ms of the packet */
-void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done), "start", "state" (raw esplusplayer_get_state at a fatal stop) or "err" (a player error: only its first time is kept) */
+void mldiag_player(const char *what, int rc);             /* "open", "win", "prep", "pdone" (prepare_async_done), "start", "rb_open"/"rb_addv"/"rb_disp"/"rb_prep" (the player rebuild steps; -99 = not reached), "state" (raw esplusplayer_get_state at a fatal stop) or "err" (a player error: only its first time is kept) */
 /* /launch or /resume URL about to be sent: remembers the mode, rikey and rikeyid (not printed). The next
    mldiag_reset(cfg) compares them with the session's key and forgets them. Survives mldiag_reset. */
 void mldiag_note_launch(const char *url);
@@ -29,10 +29,17 @@ void mldiag_note_launch(const char *url);
 unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify);   /* returns this session's message number (1, 2, ...) */
 /* One pad call (UI gamepad input): arrival != 0 = arrival else state; rc != 0 = failure (counted, last rc kept). */
 void mldiag_pad(int arrival, int rc);
-/* Audio: the mime of the stream info (-99 until set); one libopus decode: ok != 0 = decoded packet, else a failure (err = opus code, last kept). */
-void mldiag_audio_mime(int mime);
-void mldiag_audio_info(int rc);   /* result of add_audio_stream_info (-99 until called) */
+/* Audio: one libopus decode: ok != 0 = decoded packet, else a failure (err = opus code, last kept). */
 void mldiag_adec(int ok, int err);
+/* Audio output (audio_opus.c): the host audio callback is present or not (at audio init). One frame handed to it (bytes of PCM).
+   The host's dropped audio frames of this session (ml_engine_set_audio_drops; last report kept). */
+void mldiag_aout(int has_cb);
+void mldiag_aframe(int bytes);
+void mldiag_adrops(int dropped);
+/* The host's audio counters (ml_engine_set_audio_host_stats): sent to the UI, dropped by its queue, failed sends. mldiag_last shows the values at read time. */
+void mldiag_ahost(int sent, int dropped, int send_failures);
+void mldiag_rebuild(void);            /* one player rebuild (esplus_player.c) */
+void mldiag_idr_retry(void);          /* one IDR request retry at the start (no video packet yet) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,

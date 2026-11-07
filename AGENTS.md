@@ -44,7 +44,7 @@ The point of this repo is to improve the client itself:
   Run it after touching `mlclient/esplus_player.c`, `mlclient/esplus_stats.h` or `mlclient/video_esplus.c`.
   The same script also runs `tests/mldiag_test.c` (the `ML-ERROR` line); run it after touching `mlclient/mldiag.c`.
   It also runs `tests/engine_pad_test.c` (gamepad calls, clamps, `pad` counters); run it after touching `mlclient/engine_pad.c`.
-  It also runs `tests/audio_opus_test.c` (Opus decode to PCM); run it after touching `mlclient/audio_opus.c`.
+  It also runs `tests/audio_opus_test.c` (Opus decode to PCM, the host audio callback); run it after touching `mlclient/audio_opus.c`.
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching
   `pkg/ui/mlbridge.js`.
 - `BUILD_VARIANT=debug|release` (default `release`) is honoured by
@@ -66,6 +66,10 @@ The point of this repo is to improve the client itself:
     and range, audio config, server codec mode, encryption flags, server versions;
   - counters of each step: packets, frames, IDR frames, player open/window/prepare/prepare-done/start,
     submits per stream type and their failures;
+  - the player rebuild: the count and the result of each step (open, add video stream info, display, prepare_async;
+    `rb=` in the line);
+  - the host's audio counters (sent, dropped, failed sends): the line is rendered again at read time, because the host
+    reports them after the failure;
   - control-stream encryption check (messages, failures, IV length, self-decrypt result) and whether the
     session key and key id match the `/launch` or `/resume` request;
   - the RTSP transport scheme (`rtsp` vs `rtspenc`) the host returned, since the encryption features
