@@ -233,8 +233,11 @@ crypto/http deps (`/opt/backport-deps`). A build downloads nothing; CI runs it w
 
 ```
 ghcr.io/<owner>/moonlight-tizen-build:deps-<hash>   # hash of the inputs: pkg/image-tag.sh
-ghcr.io/<owner>/moonlight-tizen-build:latest
+ghcr.io/<owner>/moonlight-tizen-build:latest        # default branch only
 ```
+
+`sh pkg/image-ref.sh <owner>` prints the full `deps-<hash>` reference for your checkout
+(both workflows use it).
 
 The one thing **not** in the image: `tv-libs/` — the `.so` libraries copied from
 **your** TV (Samsung's, never redistribute them). Mount them at
@@ -253,12 +256,14 @@ docker pull ghcr.io/<owner>/moonlight-tizen-build:latest
 docker run --rm --network none -v "$PWD":/work/repo \
   -v /path/to/tv-libs:/opt/tizen-deps/tv-libs:ro \
   ghcr.io/<owner>/moonlight-tizen-build:latest bash -lc '
+    set -euo pipefail
     export BUILD_VARIANT=debug                   # omit for a normal release build
     cd /work/repo; REPO=$PWD MLT=$PWD/third_party/moonlight-tizen
     DEPS=/opt/tizen-deps BPD=/opt/backport-deps DEPSBUILD=/work/depsbuild
     MLT=$MLT DEPS=$DEPS BPD=$BPD OUT=$DEPSBUILD ./build-deps-lib.sh
     MLT=$MLT DEPS=$DEPS BPD=$BPD DEPSBUILD=$DEPSBUILD OUT=/work/engine mlclient/build-engine-so.sh
     pkg/build-tpk.sh /work/engine/libmlengine.so | tee /tmp/tpk.log   # -> the .NET host .tpk
+    TPK=$(sed -n "s/^built: //p" /tmp/tpk.log | tail -1); [ -f "$TPK" ]   # as build-packages does
     REPO=$REPO MLT=$MLT SIGN_PROFILE=dev pkg/build-package.sh || true  # -> the web .wgt'
 ```
 
