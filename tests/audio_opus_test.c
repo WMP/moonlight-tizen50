@@ -46,7 +46,7 @@ int main(void) {
 
   AUDIO_RENDERER_CALLBACKS cb;
   AudEsplus_FillCallbacks(&cb);
-  assert(!(cb.capabilities & CAPABILITY_DIRECT_SUBMIT));
+  assert(cb.capabilities & CAPABILITY_DIRECT_SUBMIT);
 
   for (int round = 0; round < 2; round++) {   /* round 1: cleanup, then a second init */
     mldiag_reset(NULL);

@@ -96,6 +96,7 @@ void mldiag_ahost(int sent, int dropped, int send_failures) {
 void mldiag_idr_retry(void) { INC(C_IDRRETRY); }
 void mldiag_rebuild(void) { INC(C_REBUILD); }
 
+
 void mldiag_adec(int ok, int err) {
   if (ok) { INC(C_ADEC); return; }
   INC(C_ADECFAIL); __atomic_store_n(&s_adec_err, err, __ATOMIC_RELAXED);

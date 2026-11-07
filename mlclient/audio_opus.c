@@ -59,7 +59,7 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
     return -1;
   }
   s_pcm = malloc((size_t)s_samples_per_frame * (size_t)s_channels * sizeof *s_pcm);
-  if (!s_pcm) { ar_cleanup(); ALOG("out of memory\n"); return -1; }
+  if (!s_pcm) { ar_cleanup(); ALOG("out of memory\n"); mldiag_adec(0, OPUS_ALLOC_FAIL); return -1; }
 
   s_cb = __atomic_load_n(&s_cb_set, __ATOMIC_ACQUIRE);
   mldiag_aout(s_cb != NULL);
@@ -94,7 +94,8 @@ void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) {
   cb->stop = ar_stop;
   cb->cleanup = ar_cleanup;
   cb->decodeAndPlaySample = ar_decodePlay;
-  /* no CAPABILITY_DIRECT_SUBMIT: moonlight-common-c queues the packets and calls decodeAndPlaySample from its
-     own audio decoder thread, so libopus never runs on the receive thread */
-  cb->capabilities = 0;
+  /* DIRECT_SUBMIT: decodeAndPlaySample runs on the receive thread. Without it common-c's 30-packet audio queue
+     drops ALL queued packets on overflow (a 150 ms gap). A fixed-point decode of a 5 ms frame is cheap enough for
+     that thread, and the host callback only copies the frame and returns. */
+  cb->capabilities = CAPABILITY_DIRECT_SUBMIT;
 }
