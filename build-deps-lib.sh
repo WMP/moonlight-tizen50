@@ -49,6 +49,19 @@ for f in "$BPD"/mbedtls/library/*.c; do
 done
 "$AR" rcs "$OUT/libmbedcrypto_tv.a" "$OUT"/mbedtls/*.o
 
+echo "== libopus (decoder, fixed point, NEON intrinsics) =="
+# Decoder files only (opus_sources dec); the static archive lets the linker pull in only what is used.
+# NEON: intrinsics with no run-time CPU detection (the TV always has NEON), so no *_map.c / armcpu.c.
+# Checked off-TV with arm-linux-gnueabi-gcc 13 + qemu-arm: same PCM as the plain C build. Not run with the TV's gcc 6.2 here.
+mkdir -p "$OUT/opus"; rm -f "$OUT"/opus/*.o   # no stale objects in the archive
+O=$MLT/opus
+. "$HERE/mlclient/opus-sources.sh"
+OPUS_NEON="-DOPUS_ARM_MAY_HAVE_NEON_INTR -DOPUS_ARM_PRESUME_NEON_INTR"
+for f in $(opus_sources "$O" dec) $(opus_neon_sources "$O"); do
+  "$GCC" $BASE $(opus_cflags "$O") $OPUS_NEON -c "$O/$f" -o "$OUT/opus/$(echo "$f" | tr / _ | sed 's/\.c$//').o"
+done
+rm -f "$OUT/libopus_tv.a"; "$AR" rcs "$OUT/libopus_tv.a" "$OUT"/opus/*.o
+
 echo "== moonlight-common-c (core + PlatformCrypto) =="
 # LC_LOG: Limelog goes to the logMessage callback (the engine counts it in the ML-ERROR line),
 # not only to the host's stderr
