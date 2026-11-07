@@ -32,6 +32,7 @@ static uint64_t s_pts_ns;
 static OpusMSDecoder *s_dec;
 static opus_int16 *s_pcm;   /* one frame; esplusplayer copies the packet buffer, so one buffer is reused */
 static unsigned s_nerr;
+static int s_started;   /* a submit was not refused as NOT_PREPARED: the audio PTS runs */
 
 static void ar_cleanup(void) {
   if (s_dec) opus_multistream_decoder_destroy(s_dec);
@@ -48,7 +49,7 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
   s_sample_rate = cfg->sampleRate;
   s_samples_per_frame = cfg->samplesPerFrame;
   s_channels = cfg->channelCount;
-  s_pts_ns = 0; s_nerr = 0;
+  s_pts_ns = 0; s_nerr = 0; s_started = 0;
 
   int err = 0;
   s_dec = opus_multistream_decoder_create(cfg->sampleRate, cfg->channelCount, cfg->streams, cfg->coupledStreams, cfg->mapping, &err);
@@ -58,16 +59,17 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
     return -1;
   }
   s_pcm = malloc((size_t)s_samples_per_frame * (size_t)s_channels * sizeof *s_pcm);
-  if (!s_pcm) { ar_cleanup(); ALOG("out of memory\n"); return -1; }
+  if (!s_pcm) { ar_cleanup(); ALOG("out of memory\n"); mldiag_adec(0, OPUS_ALLOC_FAIL); return -1; }
 
-  if (!esplus_create_open()) { ALOG("player create failed\n"); MLT("audio init -> -1 (player)"); return -1; }
+  if (!esplus_create_open()) { ar_cleanup(); ALOG("player create failed\n"); MLT("audio init -> -1 (player)"); return -1; }
   esplusplayer_audio_stream_info ai = {
     NULL, 0, ESPLUSPLAYER_AUDIO_MIME_TYPE_PCM_S16LE,
     0, (uint32_t)cfg->channelCount, (uint32_t)cfg->sampleRate};
   mldiag_audio_mime((int)ai.mime_type);
   int ok = esplusplayer_add_audio_stream_info(esplus_handle(), &ai);
+  mldiag_audio_info(ok);
   MLT("esplusplayer_add_audio_stream_info pcm -> %d", ok);
-  if (!ok) { ALOG("add_audio_stream_info failed\n"); return -1; }
+  if (!ok) { ar_cleanup(); ALOG("add_audio_stream_info failed\n"); return -1; }
   ALOG("init %d Hz, %d ch, %d samples/frame, PCM S16LE\n", cfg->sampleRate, cfg->channelCount, cfg->samplesPerFrame);
   return 0;
 }
@@ -84,8 +86,8 @@ static void ar_decodePlay(char *data, int len) {
   if (n <= 0) {
     mldiag_adec(0, n);
     if (s_nerr++ < 4 || s_nerr % 256 == 0) MLT("opus decode error %d (#%u)", n, s_nerr);
-    /* that time slot is lost: the PTS still advances */
-    s_pts_ns += (uint64_t)s_samples_per_frame * 1000000000ull / (uint64_t)s_sample_rate;
+    /* that time slot is lost: the PTS advances once the audio PTS runs (after the first accepted packet) */
+    if (s_started) s_pts_ns += (uint64_t)s_samples_per_frame * 1000000000ull / (uint64_t)s_sample_rate;
     return;
   }
   mldiag_adec(1, 0);
@@ -97,7 +99,7 @@ static void ar_decodePlay(char *data, int len) {
     ALOG("submit audio failed %d\n", r);
   /* NOT_PREPARED = the packet was not queued (audio waits for the first video packet): the audio PTS starts at 0 with it;
      FULL and other failures lose their time slot, so they still advance */
-  if (r != ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED) s_pts_ns += dur_ns;
+  if (r != ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED) { s_started = 1; s_pts_ns += dur_ns; }
 }
 
 void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) {
@@ -107,7 +109,8 @@ void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) {
   cb->stop = ar_stop;
   cb->cleanup = ar_cleanup;
   cb->decodeAndPlaySample = ar_decodePlay;
-  /* no CAPABILITY_DIRECT_SUBMIT: moonlight-common-c queues the packets and calls decodeAndPlaySample from its
-     own audio decoder thread, so libopus never runs on the receive thread */
-  cb->capabilities = 0;
+  /* DIRECT_SUBMIT: decodeAndPlaySample runs on the receive thread. Without it common-c's 30-packet audio queue
+     drops ALL queued packets on overflow, so the sample-counter PTS would fall behind the video for good.
+     A fixed-point decode of a 5 ms frame is cheap enough for that thread. */
+  cb->capabilities = CAPABILITY_DIRECT_SUBMIT;
 }

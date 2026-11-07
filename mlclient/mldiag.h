@@ -31,6 +31,7 @@ unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify);   /* returns this se
 void mldiag_pad(int arrival, int rc);
 /* Audio: the mime of the stream info (-99 until set); one libopus decode: ok != 0 = decoded packet, else a failure (err = opus code, last kept). */
 void mldiag_audio_mime(int mime);
+void mldiag_audio_info(int rc);   /* result of add_audio_stream_info (-99 until called) */
 void mldiag_adec(int ok, int err);
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */

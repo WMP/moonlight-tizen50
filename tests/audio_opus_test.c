@@ -51,7 +51,7 @@ int main(void) {
 
   AUDIO_RENDERER_CALLBACKS cb;
   AudEsplus_FillCallbacks(&cb);
-  assert(!(cb.capabilities & CAPABILITY_DIRECT_SUBMIT));
+  assert(cb.capabilities & CAPABILITY_DIRECT_SUBMIT);
 
   for (int round = 0; round < 2; round++) {   /* round 1: cleanup, then a second init */
     mldiag_reset(NULL);
@@ -61,6 +61,13 @@ int main(void) {
     assert(info.codec_data == NULL && info.codec_data_length == 0 && info.bitrate == 0);
     assert(info.channels == 2 && info.sample_rate == 48000);
     cb.start(); assert(n_prepare == round + 1);
+
+    /* before the first accepted packet (NOT_PREPARED) a decode error must not move the PTS: the first packet gets 0 */
+    submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED;
+    char junk0[3] = { (char)0xff, (char)0xff, (char)0xff };
+    cb.decodeAndPlaySample(junk0, (int)sizeof junk0);
+    cb.decodeAndPlaySample(junk0, (int)sizeof junk0);
+    n_submit = 0; submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS;
 
     for (int k = 0; k < 3; k++) cb.decodeAndPlaySample((char *)fr[k], fl[k]);
     assert(n_submit == 3);
@@ -80,7 +87,7 @@ int main(void) {
 
     char line[4096];
     mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, " amime=9 adec=5 adec_fail=1/-4 err="));   /* -4 = OPUS_INVALID_PACKET */
+    assert(strstr(line, " amime=9 ainfo=1 adec=5 adec_fail=3/-4 err="));   /* -4 = OPUS_INVALID_PACKET */
 
     submit_rc = ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED;   /* refused: PTS must not advance */
     cb.decodeAndPlaySample((char *)fr[0], fl[0]);

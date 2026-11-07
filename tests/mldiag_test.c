@@ -38,7 +38,7 @@ int main(void) {
   assert(strstr(buf, "cfg 1920x1080@60 br=20000 pkt=1392 fmts=0x1 cs=1 cr=0 audio=0x30002 scm=0x1 enc=0x0 encf=0x7/0x0/0x1 rtsp=- launch=- rikey=- rikeyid=- app=7.1.431.-1 gfe=3.23.0.74 hostflags=0x0 rtt=2/1"));
   assert(strstr(buf, "first_pkt_ms=12"));
   assert(strstr(buf, "du=2 idr=1"));
-  assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 state=2 vsub=1 asub=3 subfail=2/0 vfail=0/0 afail=2/0 amime=-99 adec=0 adec_fail=0/0 err=7/9"));
+  assert(strstr(buf, "open=1 win=0 prep=1 pdone=1 start=1 state=2 vsub=1 asub=3 subfail=2/0 vfail=0/0 afail=2/0 amime=-99 ainfo=-99 adec=0 adec_fail=0/0 err=7/9"));
   { int a, b, c, d; assert(sscanf(strstr(buf, "prep-t pdone="), "prep-t pdone=%d err=%d v1=%d a1=%d vpts1=100 apts1=50 |", &a, &b, &c, &d) == 4);
     assert(a >= 0 && b >= 0 && c >= 0 && d >= 0 && a < 1000); }
   assert(strstr(buf, "cc unrec=1 drop=1 waitidr=1 badlen=0 decrypt=0 corrupt=2 unkft=0 idrreq=2 fec=1 qovf=1 droplim=0"));
@@ -137,12 +137,12 @@ int main(void) {
 
   /* audio decode counters */
   mldiag_reset(&CFG);
-  mldiag_audio_mime(9); mldiag_adec(1, 0); mldiag_adec(1, 0); mldiag_adec(0, -4); mldiag_adec(0, -2);
+  mldiag_audio_mime(9); mldiag_audio_info(1); mldiag_adec(1, 0); mldiag_adec(1, 0); mldiag_adec(0, -4); mldiag_adec(0, -2);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " amime=9 adec=2 adec_fail=2/-2 err="));
+  assert(strstr(buf, " amime=9 ainfo=1 adec=2 adec_fail=2/-2 err="));
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " amime=-99 adec=0 adec_fail=0/0 err="));
+  assert(strstr(buf, " amime=-99 ainfo=-99 adec=0 adec_fail=0/0 err="));
 
   /* reset clears */
   mldiag_reset(&CFG);
