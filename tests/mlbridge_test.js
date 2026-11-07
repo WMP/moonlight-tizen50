@@ -755,6 +755,130 @@ test('trace hides secrets', async function () {
   ['CERTPEM', 'KEYPEM', 'PPKPEM', '1234'].forEach(function (s) { assert.strictEqual(all.indexOf(s), -1, s); });
 });
 
+// Persistent store (issue #21): a second context with an in-memory wgt-private and IndexedDB.
+function mkStore(o) {
+  o = o || {};
+  var e = { idb: o.idb || {}, files: {}, ls: {}, logs: [], warns: [], timers: [], now: 0, started: 0, held: [], opens: 0, maxOpen: 0, open: 0, moves: [], origGet: null, origStore: null };
+  if (o.file !== undefined) e.files['mlstore.json'] = o.file;
+  function mkfile(n) { return { fullPath: 'wgt-private/' + n, readAsText: function (ok) { if (!o.hang) ok(e.files[n]); }, name: n }; }
+  var dir = {
+    fullPath: 'wgt-private',
+    resolve: function (n) { if (e.files[n] === undefined) throw new Error('NotFound'); var f = mkfile(n);
+      f.openStream = function (m, ok) { assert.strictEqual(m, 'w'); e.files[n] = ''; e.open++; e.maxOpen = Math.max(e.maxOpen, e.open);
+        ok({ write: function (x) { e.files[n] += x; }, close: function () {} }); };
+      return f; },
+    createFile: function (n) { e.files[n] = ''; },
+    moveTo: function (a, b, ow, ok) { assert.strictEqual(ow, true); e.moves.push([a, b]);
+      e.held.push(function () { e.files[b.split('/')[1]] = e.files[a.split('/')[1]]; delete e.files[a.split('/')[1]]; e.open--; ok(); }); }
+  };
+  e.flush = function () { while (e.held.length) e.held.shift()(); };
+  var g = e.origGet = function (k, cb) { var r = {}; r[k] = e.idb[k] === undefined ? null : JSON.parse(e.idb[k]); cb(r); };
+  var st = e.origStore = function (k, d, cb) { e.idb[k] = JSON.stringify(d); if (cb) cb(); };
+  var w = { ML_TRACE: false, common: { domContentLoaded: function () {} }, moduleDidLoad: function () { e.started++; } };
+  if (!o.nogd) { w.getData = g; w.storeData = st; }
+  var sb = {
+    window: w, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
+    tizen: { application: { getCurrentApplication: function () { return { appInfo: { id: 'Moonlight5.ui', packageId: 'Moonlight5' } }; },
+      getAppInfo: function () { return { id: 'x', version: '1', packageId: 'p' }; }, getAppsContext: function (ok) { ok([]); },
+      launch: function (i, ok) { ok(); } },
+      messageport: { requestLocalMessagePort: function () { return { addMessagePortListener: function () {} }; }, requestRemoteMessagePort: function () { throw new Error('x'); } } },
+    localStorage: { getItem: function (k) { return e.ls[k] === undefined ? null : e.ls[k]; }, setItem: function (k, v) { e.ls[k] = String(v); } },
+    document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') e.dom = f; }, body: { appendChild: function () {} },
+      createElement: function () { return { style: {} }; }, getElementById: function () { return null; } },
+    console: { log: function () { e.logs.push([].join.call(arguments, ' ')); }, warn: function () { e.warns.push([].join.call(arguments, ' ')); }, error: function () {} },
+    setTimeout: function (f, ms) { e.timers.push({ at: e.now + ms, f: f }); return e.timers.length; },
+    clearTimeout: function () {}, setInterval: function () { return 0; }, clearInterval: function () {},
+    navigator: { getGamepads: function () { return []; } }
+  };
+  if (!o.nofs) sb.tizen.filesystem = { resolve: function (loc, ok, err, mode) { assert.strictEqual(loc, 'wgt-private'); assert.strictEqual(mode, 'rw'); ok(dir); } };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlbridge.js', 'utf8'), sb);
+  e.w = w;
+  e.boot = function () { e.dom(); w.common.domContentLoaded(); };
+  e.advance = function (ms) { e.now += ms; e.timers.filter(function (t) { return t.at <= e.now; }).forEach(function (t) { t.at = Infinity; t.f(); }); };
+  e.get = function (k) { var r; w.getData(k, function (o) { r = o[k]; }); return r; };
+  e.file = function () { return JSON.parse(e.files['mlstore.json']); };
+  e.diag = function () { return e.logs.filter(function (l) { return l.indexOf('[mlbridge] storage:') === 0; }); };
+  return e;
+}
+var H1 = { u1: { serverUid: 'u1', hostname: 'SECRETNAME1', address: '10.9.9.1' } };
+var H2 = { u2: { serverUid: 'u2', hostname: 'SECRETNAME2', address: '10.9.9.2' } };
+function js(x) { return JSON.stringify(x); }
+
+test('store: no file, IndexedDB hosts are used and written to the file', function () {
+  var e = mkStore({ idb: { hosts: js(H1) } }); e.boot();
+  assert.strictEqual(e.started, 1);
+  assert.strictEqual(js(e.get('hosts')), js(H1));
+  assert.deepStrictEqual(e.moves, [['wgt-private/mlstore.json.tmp', 'wgt-private/mlstore.json']]);
+  e.flush(); assert.deepStrictEqual(e.file(), { hosts: H1 });
+  assert.deepStrictEqual(e.diag(), ['[mlbridge] storage: app Moonlight5.ui package Moonlight5, hosts in IndexedDB 1, in file 0, used indexeddb, file missing, merged 0']);
+});
+
+test('store: file hosts and empty IndexedDB (issue #21)', function () {
+  var e = mkStore({ file: js({ hosts: H1 }) }); e.boot();
+  assert.strictEqual(js(e.get('hosts')), js(H1));
+  assert.deepStrictEqual(JSON.parse(e.idb.hosts), H1);
+  assert.ok(/hosts in IndexedDB 0, in file 1, used file, file ok, merged 0/.test(e.diag()[0]));
+  assert.strictEqual(e.diag().length, 1);
+  e.get('hosts'); assert.strictEqual(e.diag().length, 1, 'one line only');
+});
+
+test('store: merge once by serverUid, file entries win', function () {
+  var fileH = { u1: { serverUid: 'u1', hostname: 'FILE' } };
+  var idbH = { u1: { serverUid: 'u1', hostname: 'IDB' }, u2: H2.u2 };
+  var e = mkStore({ file: js({ hosts: fileH }), idb: { hosts: js(idbH) } }); e.boot();
+  var h = e.get('hosts');
+  assert.strictEqual(Object.keys(h).sort().join(), 'u1,u2'); assert.strictEqual(h.u1.hostname, 'FILE');
+  assert.deepStrictEqual(Object.keys(JSON.parse(e.idb.hosts)).sort(), ['u1', 'u2']);
+  e.flush(); assert.deepStrictEqual(Object.keys(e.file().hosts).sort(), ['u1', 'u2']);
+  assert.strictEqual(e.ls.mlstoreHostsMerged, '1');
+  assert.ok(/merged 1/.test(e.diag()[0]));
+  // second launch: flag set, a host deleted in the file stays deleted
+  var e2 = mkStore({ file: js({ hosts: fileH }), idb: { hosts: js(idbH) } }); e2.ls.mlstoreHostsMerged = '1'; e2.boot();
+  assert.strictEqual(Object.keys(e2.get('hosts')).join(), 'u1');
+  assert.ok(/merged 0/.test(e2.diag()[0]));
+});
+
+test('store: storeData updates IndexedDB and file, one write in flight', function () {
+  var e = mkStore({ file: js({ resolution: 1 }) }); e.boot();
+  e.w.storeData('resolution', 2); e.w.storeData('resolution', 3); e.w.storeData('resolution', 4);
+  assert.strictEqual(e.idb.resolution, '4');
+  assert.strictEqual(e.maxOpen, 1);
+  e.flush(); e.flush();
+  assert.strictEqual(e.maxOpen, 1);
+  assert.strictEqual(e.file().resolution, 4);
+  assert.strictEqual(e.held.length, 0);
+});
+
+test('store: bad JSON file is ignored and overwritten', function () {
+  var e = mkStore({ file: '{oops', idb: { hosts: js(H1) } }); e.boot();
+  assert.strictEqual(js(e.get('hosts')), js(H1));
+  assert.ok(/file bad json/.test(e.diag()[0]));
+  e.flush(); assert.deepStrictEqual(e.file(), { hosts: H1 });
+});
+
+test('store: a read that never answers does not block the UI', function () {
+  var e = mkStore({ file: '{}', hang: true }); e.boot();
+  assert.strictEqual(e.started, 0);
+  e.advance(1999); assert.strictEqual(e.started, 0);
+  e.advance(1); assert.strictEqual(e.started, 1);
+  assert.ok(e.warns.some(function (w) { return w.indexOf('[mlbridge] storage:') === 0; }));
+});
+
+test('store: no tizen.filesystem keeps the plain behaviour', function () {
+  var e = mkStore({ nofs: true });
+  var g = e.w.getData, s = e.w.storeData; e.boot();
+  assert.strictEqual(e.started, 1); assert.strictEqual(e.w.getData, g); assert.strictEqual(e.w.storeData, s);
+  e = mkStore({ nogd: true }); e.boot(); assert.strictEqual(e.started, 1);
+});
+
+test('store: the diagnostic line holds no stored values', function () {
+  var e = mkStore({ file: js({ hosts: H1, cert: 'CERTVALUE' }), idb: { hosts: js(H2) } }); e.boot();
+  e.get('hosts'); e.get('cert');
+  var all = e.logs.concat(e.warns).join('\n');
+  ['SECRETNAME', '10.9.9', 'CERTVALUE', 'u1', 'u2'].forEach(function (x) { assert.strictEqual(all.indexOf(x), -1, x); });
+  assert.ok(e.diag().length === 1);
+});
+
 (async function () {
   var fail = 0;
   for (var i = 0; i < tests.length; i++) {
