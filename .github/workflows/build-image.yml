@@ -9,6 +9,7 @@ name: Build image (self-contained build environment)
 on:
   workflow_dispatch:
   push:
+    tags-ignore: ['**']   # release tag pushes (v*) must not rebuild/re-push the image
     paths:
       - pkg/Dockerfile
       - .dockerignore
@@ -22,6 +23,11 @@ permissions:
   contents: read
   packages: write
 
+# one run per ref at a time: two runs must not race on the same tag
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   image:
     runs-on: ubuntu-latest
@@ -31,8 +37,7 @@ jobs:
       - name: Image name and tag
         id: img
         run: |
-          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/moonlight-tizen-build" >> "$GITHUB_OUTPUT"
-          echo "tag=$(sh pkg/image-tag.sh)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(sh pkg/image-ref.sh "$GITHUB_REPOSITORY_OWNER")" >> "$GITHUB_OUTPUT"
 
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
@@ -43,18 +48,17 @@ jobs:
 
       - name: Build
         env:
-          NAME: ${{ steps.img.outputs.name }}
-          TAG: ${{ steps.img.outputs.tag }}
+          REF: ${{ steps.img.outputs.ref }}
         run: |
           docker build -f pkg/Dockerfile \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            -t "$NAME:$TAG" -t "$NAME:latest" .
-          docker image ls "$NAME"
+            -t "$REF" .
+          docker image ls "${REF%:*}"
 
-      - name: Self-check (offline restore of the host's NuGet packages)
+      - name: Self-check (offline restore of the host's NuGet packages, toolchain files)
         env:
-          IMAGE: ${{ steps.img.outputs.name }}:${{ steps.img.outputs.tag }}
+          IMAGE: ${{ steps.img.outputs.ref }}
         run: |
           docker run --rm --network none -v "$PWD:/work/repo" "$IMAGE" bash -euc '
             cp -r /work/repo/pkg/dotnet-host /tmp/h && cd /tmp/h && mkdir -p lib && touch lib/libmlengine.so
@@ -65,11 +69,25 @@ jobs:
             command -v tizen zip unzip
             echo "image self-check OK"'
 
+      # Informational until it has passed once in CI: an offline managed build of the host
+      # (the release job runs the full build). A failure here shows as a warning, not a blocked image.
+      - name: Self-check (offline managed build of the host)
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.img.outputs.ref }}
+        run: |
+          docker run --rm --network none -v "$PWD:/work/repo" "$IMAGE" bash -euc '
+            cp -r /work/repo/pkg/dotnet-host /tmp/h && cd /tmp/h && mkdir -p lib && touch lib/libmlengine.so
+            dotnet restore MoonlightHost.csproj && dotnet build MoonlightHost.csproj -c Release -nologo --no-restore'
+
       - name: Push
         env:
-          NAME: ${{ steps.img.outputs.name }}
-          TAG: ${{ steps.img.outputs.tag }}
+          REF: ${{ steps.img.outputs.ref }}
         run: |
-          docker push "$NAME:$TAG"
-          docker push "$NAME:latest"
-          echo "::notice::published $NAME:$TAG"
+          docker push "$REF"
+          # :latest only from the default branch; other branches publish just deps-<hash>
+          if [ "$GITHUB_REF" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+            docker tag "$REF" "${REF%:*}:latest"
+            docker push "${REF%:*}:latest"
+          fi
+          echo "::notice::published $REF"

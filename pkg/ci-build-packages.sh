@@ -12,8 +12,8 @@ case "${VER:-}" in
 esac
 
 # 1. Build image (self-contained; from ghcr.io, see build-image.yml)
-IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/moonlight-tizen-build:$(sh pkg/image-tag.sh)"
-echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+IMAGE=$(sh pkg/image-ref.sh "$GITHUB_REPOSITORY_OWNER")
+echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || echo "login failed, will build locally"
 # the tag is the hash of this checkout's Dockerfile/fetch scripts/NuGet pins;
 # not published yet (build-image.yml still running) -> build it here
 if ! docker pull "$IMAGE"; then

@@ -13,7 +13,13 @@
 # Build (context = repo root):  docker build -f pkg/Dockerfile -t moonlight-tizen-build .
 # Published by .github/workflows/build-image.yml as
 #   ghcr.io/<owner>/moonlight-tizen-build:deps-<hash>   (hash: pkg/image-tag.sh)
-FROM docker.io/vitalets/tizen-webos-sdk
+# Base pinned by digest (the registry's digest of :latest on 2026-11-07). The digest is in
+# this file, so pkg/image-tag.sh (which hashes the Dockerfile) changes the tag with it.
+# Still floating, on purpose: apt packages (Debian mirrors keep no old versions), the .NET
+# 8.0 channel (latest 8.0.x patch) and the Tizen "latest" snapshots that fetch-tizen-sources.sh
+# downloads (the Tizen servers publish no stable URLs). A rebuild at a later date can differ;
+# the published deps-<hash> tag is the reproducible artifact.
+FROM docker.io/vitalets/tizen-webos-sdk:latest@sha256:5107c8a83fae3128d3b9aa2b499a221f1e0188ebb0fa3ad5be01e9ba2eaf33dc
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       make cmake pkg-config file xz-utils rsync curl ca-certificates \
@@ -29,8 +35,8 @@ ENV DOTNET_ROOT=/opt/dotnet \
     DOTNET_NOLOGO=1 \
     DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
     NUGET_PACKAGES=/opt/nuget/packages \
-    TIZEN_DEPS=/opt/tizen-deps \
-    BACKPORT_DEPS=/opt/backport-deps
+    DEPS=/opt/tizen-deps \
+    BPD=/opt/backport-deps
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
     && bash /tmp/dotnet-install.sh --channel 8.0 --install-dir /opt/dotnet \
     && rm /tmp/dotnet-install.sh \
@@ -39,11 +45,17 @@ RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
 # Tizen 5.0 cross toolchain + sysroot + reference sources (the downloaded rpms are
 # dropped once extracted).
 COPY fetch-tizen-sources.sh fetch-backport-deps.sh /opt/build-scripts/
-RUN /opt/build-scripts/fetch-tizen-sources.sh /opt/tizen-deps && rm -rf /opt/tizen-deps/rpm
+# The reference sources (src/) are not read by any build script: dropped too.
+RUN /opt/build-scripts/fetch-tizen-sources.sh /opt/tizen-deps \
+    && rm -rf /opt/tizen-deps/rpm /opt/tizen-deps/src \
+    && chmod -R a+rwX /opt/tizen-deps
 
 # Crypto/http deps (mbedTLS source, OpenSSL 1.0.2 + curl 7.59 headers).
+# (curl: only include/ is kept; OpenSSL stays whole, ossl-inc symlinks point into it.)
 RUN OUT=/opt/backport-deps /opt/build-scripts/fetch-backport-deps.sh \
-    && rm -rf /opt/backport-deps/*/.git
+    && rm -rf /opt/backport-deps/*/.git \
+    && cd /opt/backport-deps/curl759 && find . -mindepth 1 -maxdepth 1 ! -name include -exec rm -rf {} + \
+    && chmod -R a+rwX /opt/backport-deps
 
 # The host's NuGet packages (exact versions in the .csproj, so a later restore finds
 # them here and does not go to the network).
@@ -51,7 +63,7 @@ COPY pkg/dotnet-host/MoonlightHost.csproj /tmp/nuget-warm/
 RUN cd /tmp/nuget-warm && mkdir -p lib && touch lib/libmlengine.so \
     && dotnet restore MoonlightHost.csproj \
     && rm -rf /tmp/nuget-warm \
-    && chmod -R a+rwX /opt/nuget /opt/tizen-deps /opt/backport-deps
+    && chmod -R a+rwX /opt/nuget
 
 WORKDIR /work
 CMD ["/bin/bash"]

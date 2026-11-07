@@ -665,6 +665,91 @@
     }
   }
 
+  // Issue #21: the UI keeps its hosts in IndexedDB, and a start from Apps2Samsung (debug)
+  // and a start from the remote can use separate WebView storage. wgt-private is per
+  // package, not per WebView profile, so the key/value store is mirrored in a file there.
+  // Any failure logs one line and the UI goes on with IndexedDB only.
+  var STORE_FILE = 'mlstore.json', mirror = {}, storeDir = null, fileState = 'unavailable';
+  var writing = false, dirty = false, diagDone = false;
+  function storeWarn(what, e) { console.warn('[mlbridge] storage: ' + what + (e ? ': ' + errText(e) : '')); }
+  function isObj(v) { return !!v && typeof v === 'object'; }
+  function flushStore() {
+    if (writing) { dirty = true; return; }
+    writing = true; dirty = false;
+    function end(what, e) { if (what) storeWarn(what, e); writing = false; if (dirty && !what) flushStore(); }
+    try {
+      var tmp = STORE_FILE + '.tmp', str = JSON.stringify(mirror);
+      try { storeDir.resolve(tmp); } catch (e) { storeDir.createFile(tmp); }
+      storeDir.resolve(tmp).openStream('w', function (st) {
+        try {
+          st.write(str); st.close();
+          storeDir.moveTo(storeDir.fullPath + '/' + tmp, storeDir.fullPath + '/' + STORE_FILE, true,
+                          function () { end(); }, function (e) { end('rename failed', e); });
+        } catch (e) { end('write failed', e); }
+      }, function (e) { end('open failed', e); }, 'UTF-8');
+    } catch (e) { end('write failed', e); }
+  }
+  function loadStore(done) {
+    var over = false;
+    function finish(wrap) { if (over) return; over = true; if (wrap) installStore(); done(); }
+    setTimeout(function () { if (!over) storeWarn('read timeout'); finish(false); }, 2000);
+    try {
+      tizen.filesystem.resolve('wgt-private', function (dir) {
+        storeDir = dir;
+        try {
+          var f; try { f = dir.resolve(STORE_FILE); } catch (e) { fileState = 'missing'; finish(true); return; }
+          f.readAsText(function (txt) {
+            try { var o = JSON.parse(txt); if (!isObj(o)) throw 0; mirror = o; fileState = 'ok'; }
+            catch (e) { fileState = 'bad json'; storeWarn('bad json in file'); }
+            finish(true);
+          }, function (e) { storeWarn('read failed', e); finish(false); }, 'UTF-8');
+        } catch (e) { storeWarn('read failed', e); finish(false); }
+      }, function (e) { storeWarn('no private dir', e); finish(false); }, 'rw');
+    } catch (e) { storeWarn('no private dir', e); finish(false); }
+  }
+  function installStore() {
+    var origGet = window.getData, origStore = window.storeData;
+    function clone(v) { var j = JSON.stringify(v); return j === undefined ? null : JSON.parse(j); }
+    window.storeData = function (key, data, cb) {
+      origStore.call(window, key, data, cb);
+      mirror[key] = clone(data); flushStore();
+    };
+    window.getData = function (key, cb) {
+      origGet.call(window, key, function (obj) {
+        try {
+          var idb = obj[key], idbJson = JSON.stringify(idb), used = 'none', merged = 0, inFile = 0, inIdb = 0;
+          if (key === 'hosts') {
+            inFile = isObj(mirror.hosts) ? Object.keys(mirror.hosts).length : 0;
+            inIdb = isObj(idb) ? Object.keys(idb).length : 0;
+            var done = false;
+            try { done = localStorage.getItem('mlstoreHostsMerged') === '1'; } catch (e) {}
+            if (!done) {
+              if (isObj(mirror.hosts) && isObj(idb)) {
+                for (var uid in idb) if (!(uid in mirror.hosts)) { mirror.hosts[uid] = idb[uid]; merged++; }
+                if (merged) flushStore();
+              }
+              try { localStorage.setItem('mlstoreHostsMerged', '1'); } catch (e) {}
+            }
+          }
+          if (mirror[key] != null) {
+            obj[key] = clone(mirror[key]); used = 'file';
+            if (JSON.stringify(mirror[key]) !== idbJson) origStore.call(window, key, mirror[key], function () {});
+          } else if (idb != null) {
+            mirror[key] = clone(idb); used = 'indexeddb'; flushStore();
+          }
+          if (key === 'hosts' && !diagDone) {
+            diagDone = true;
+            var me = {}; try { me = tizen.application.getCurrentApplication().appInfo; } catch (e) {}
+            console.log('[mlbridge] storage: app ' + (me.id || '?') + ' package ' + (me.packageId || '?') +
+                        ', hosts in IndexedDB ' + inIdb + ', in file ' + inFile + ', used ' + used +
+                        ', file ' + fileState + ', merged ' + merged);
+          }
+        } catch (e) { storeWarn('getData failed', e); }
+        cb(obj);
+      });
+    };
+  }
+
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -689,7 +774,9 @@
         connect();   // start/connect the host (commands queue until connected)
         if (debugStored()) window.mlDebug(true);
         trace('boot: moduleDidLoad found =', typeof window.moduleDidLoad === 'function');
-        if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad();
+        function start() { if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad(); }
+        if (typeof tizen !== 'undefined' && tizen.filesystem && typeof window.getData === 'function' && typeof window.storeData === 'function') loadStore(start);
+        else start();
       };
     }
   }, false);
