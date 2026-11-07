@@ -17,13 +17,13 @@
 (function () {
   var STATS_MS = 5000, DEFAULT_TARGET_MS = 100;
   var ctx = null, nextTime = 0, running = false, streamRate = 0, ratio = 1, phase = 0, tail = null;
-  var st = null, tot = null, warned = false;
+  var st = null, tot = null, warned = false, lastResume = -Infinity, resumeWarned = false;
 
   function resetStats() {
-    st = { since: Date.now(), received: 0, scheduled: 0, droppedFull: 0, droppedEmpty: 0, notRunning: 0, resyncs: 0, underruns: 0,
+    st = { since: Date.now(), received: 0, scheduled: 0, droppedFull: 0, droppedEmpty: 0, notRunning: 0, resyncs: 0, underruns: 0, resumes: 0,
            hMin: Infinity, hMax: -Infinity, hSum: 0, hist: [0, 0, 0, 0, 0, 0] };
   }
-  function resetTotals() { tot = { received: 0, scheduled: 0, dropped: 0, empty: 0, idle: 0, resyncs: 0, underruns: 0, headroomMs: 0 }; }
+  function resetTotals() { tot = { received: 0, scheduled: 0, dropped: 0, empty: 0, idle: 0, resyncs: 0, underruns: 0, resumes: 0, headroomMs: 0 }; }
   resetStats(); resetTotals();
 
   function fmt(v) { return isFinite(v) ? v.toFixed(1) : 'n/a'; }
@@ -35,7 +35,7 @@
     console.log('[mlaudio, statistics] rate=' + streamRate + '/' + (ctx ? ctx.sampleRate : 0) + ' Hz ratio=' + ratio.toFixed(4) +
       ' | latency base=' + fmt(ctx ? ctx.baseLatency * 1000 : NaN) + ' ms output=' + fmt(ctx && ctx.outputLatency ? ctx.outputLatency * 1000 : NaN) + ' ms' +
       ' | frames received=' + st.received + ' scheduled=' + st.scheduled + ' dropped=' + st.droppedFull + ' empty=' + st.droppedEmpty + ' idle=' + st.notRunning +
-      ' | resync=' + st.resyncs + ' underrun=' + st.underruns +
+      ' | resync=' + st.resyncs + ' underrun=' + st.underruns + ' resume=' + st.resumes +
       ' | headroom min=' + fmt(st.hMin) + ' avg=' + fmt(avg) + ' max=' + fmt(st.hMax) + ' ms' +
       ' | histogram <0=' + h[0] + ' 0-10=' + h[1] + ' 10-25=' + h[2] + ' 25-50=' + h[3] + ' 50-100=' + h[4] + ' 100+=' + h[5]);
     resetStats();
@@ -49,8 +49,18 @@
     st.hist[ms < 0 ? 0 : ms < 10 ? 1 : ms < 25 ? 2 : ms < 50 ? 3 : ms < 100 ? 4 : 5]++;
   }
 
+  // At most one resume() per second; a rejected promise is caught (warned once).
+  function tryResume() {
+    var now = Date.now();
+    if (now - lastResume < 1000) return;
+    lastResume = now; st.resumes++; tot.resumes++;
+    function warn(e) { if (!resumeWarned) { resumeWarned = true; console.warn('[mlaudio] resume failed: ' + e); } }
+    try { var p = ctx.resume(); if (p && typeof p.catch === 'function') p.catch(warn); } catch (e) { warn(e); }
+  }
+
   // Must run from the startStream path (user gesture): the autoplay policy blocks other contexts.
   window.startAudioScheduler = function () {
+    if (running) return;   // a second startStream: keep the context
     window.stopAudioScheduler();
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) {
@@ -66,7 +76,8 @@
     resetStats(); resetTotals();
     // The TV may suspend or reopen the output (e.g. Game Mode): prime again when it comes back.
     ctx.onstatechange = function () { console.log('[mlaudio] audio context state: ' + (ctx && ctx.state)); nextTime = 0; };
-    if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+    lastResume = -Infinity;
+    if (ctx.state === 'suspended') tryResume();
     console.log('[mlaudio] started: ' + ctx.sampleRate + ' Hz, base latency ' + fmt((ctx.baseLatency || 0) * 1000) + ' ms, jitter buffer ' + targetSeconds() * 1000 + ' ms');
   };
 
@@ -82,7 +93,7 @@
   };
 
   window.mlAudioStats = function () {
-    return { received: tot.received, scheduled: tot.scheduled, dropped: tot.dropped, empty: tot.empty, idle: tot.idle,
+    return { received: tot.received, scheduled: tot.scheduled, dropped: tot.dropped, empty: tot.empty, idle: tot.idle, resumes: tot.resumes,
              resyncs: tot.resyncs, underruns: tot.underruns, headroomMs: tot.headroomMs, running: running };
   };
 
@@ -119,7 +130,7 @@
     if (!(rate > 0 && ch > 0 && samples > 0) || !data || data.byteLength < samples * ch * 2) return;
     st.received++; tot.received++;
     if (ctx.state !== 'running') {
-      if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) { console.warn('[mlaudio] resume failed: ' + e); } }
+      if (ctx.state === 'suspended') tryResume();
       st.notRunning++; tot.idle++; nextTime = 0;
       return;
     }

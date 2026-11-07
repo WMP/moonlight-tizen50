@@ -651,12 +651,12 @@ test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no Audi
   assert.strictEqual(w.mlAudioStats().underruns, 1);
   // a suspended context is resumed, the frame is not played
   var n = made.length; state = 'suspended';
-  w.startAudioScheduler();
+  w.stopAudioScheduler(); w.startAudioScheduler();
   w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
   assert.strictEqual(made.length, n); assert.ok(resumed >= 1); assert.strictEqual(closed, 1);
   // a context at 44100 Hz: resampled, total duration stays close
   state = 'running'; rate = 44100; made.length = 0;
-  w.startAudioScheduler();
+  w.stopAudioScheduler(); w.startAudioScheduler();
   var dur = 0;
   for (i = 0; i < 20; i++) { w.mlAudioFeed(48000, 2, 240, frame(240, 2, function (k) { return k; })); }
   made.forEach(function (s) { dur += s.buffer.duration; });
@@ -672,6 +672,57 @@ test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no Audi
   w2.startAudioScheduler(); w2.startAudioScheduler();
   w2.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
   assert.deepStrictEqual(warns2, ['audio output unavailable (Web Audio)']);
+});
+
+test('mlaudio: partial au frames expire (max 8) and clear on stop; other ids and traces unaffected', async function () {
+  var calls = [], l = logs.length;
+  win.mlAudioFeed = function (r, c, n, b) { calls.push(b); };
+  function part(id, seq, total, field, chunk) { listener([{ key: 'id', value: id }, { key: 'seq', value: String(seq) }, { key: 'total', value: String(total) }, { key: 'field', value: field }, { key: 'chunk', value: chunk }]); }
+  function first(id) { part(id, 0, 5, 'event', 'mlaudio'); }   // the rest never arrives
+  function full(id) { [['event', 'mlaudio'], ['rate', '48000'], ['ch', '6'], ['samples', '240'], ['data', bytes(1536)]].forEach(function (p, i) { part(id, i, 6, p[0], p[1]); }); part(id, 5, 6, 'data', bytes(1344)); }
+  first('xx1');   // other id: stays pending
+  for (var i = 1; i <= 9; i++) first('au' + i);   // au1 is expired by au9
+  full('au100');
+  assert.strictEqual(calls.length, 1); assert.strictEqual(calls[0].byteLength, 2880);
+  assert.strictEqual(new Uint8Array(calls[0])[1536], 0); assert.strictEqual(new Uint8Array(calls[0])[1535], 255);
+  assert.ok(!logs.slice(l).join('\n').match(/joined id=au/), 'no join trace for au');
+  // au9 is still pending: completing it works; after a stop it does not
+  [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('au9', i + 1, 5, p[0], p[1]); });
+  part('au9', 4, 5, 'data', bytes(960));
+  assert.strictEqual(calls.length, 2);
+  first('au20'); win.stopAudioScheduler = function () {};
+  win.mlAudioFeed = function () { calls.push('x'); };
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('au20', i + 1, 5, p[0], p[1]); });
+  part('au20', 4, 5, 'data', bytes(960));
+  assert.strictEqual(calls.length, 2, 'au20 was cleared at streamTerminated');
+  // the other id survived the stream end and the au expiry
+  [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('xx1', i + 1, 5, p[0], p[1]); });
+  part('xx1', 4, 5, 'data', bytes(960));
+  assert.strictEqual(calls.length, 3);
+  assert.ok(logs.slice(l).join('\n').indexOf('joined id=xx1') >= 0, 'other ids keep the trace');
+  delete win.mlAudioFeed; delete win.stopAudioScheduler;
+});
+
+test('mlaudio.js: resume at most once per second, rejection handled, second start keeps the context', async function () {
+  var T = 0, made = 0, resumed = 0, warns = [], handledRej = 0;
+  function FakeCtx() {
+    made++; this.sampleRate = 48000; this.state = 'suspended'; this.destination = {}; this.currentTime = 0;
+    this.close = function () {};
+    this.resume = function () { resumed++; return { catch: function (f) { handledRej++; f('denied'); } }; };
+  }
+  var w = { AudioContext: FakeCtx };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
+    { window: w, console: { log: function () {}, warn: function (m) { warns.push(m); } }, Date: { now: function () { return T; } }, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math });
+  w.startAudioScheduler(); w.startAudioScheduler();
+  assert.strictEqual(made, 1, 'second start is a no-op');
+  assert.strictEqual(resumed, 1);
+  for (var i = 0; i < 50; i++) { T += 5; w.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960)); }
+  assert.strictEqual(resumed, 1, 'throttled');
+  T += 1000; w.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
+  assert.strictEqual(resumed, 2);
+  assert.strictEqual(handledRej, 2); assert.strictEqual(warns.length, 1, 'warned once');
+  assert.strictEqual(w.mlAudioStats().resumes, 2);
 });
 
 test('trace hides secrets', async function () {

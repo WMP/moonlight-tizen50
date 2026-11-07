@@ -262,8 +262,10 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void AudioCbDelegate(IntPtr pcm, int samples, int channels, int rate);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioCbDelegate(AudioCbDelegate cb);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioDropsDelegate(int dropped);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioHostStatsDelegate(int sent, int dropped, int sendFailures);
         public static SetAudioCbDelegate    SetAudioCb;      // null with an engine that lacks it
         public static SetAudioDropsDelegate SetAudioDrops;   // null with an engine that lacks it
+        public static SetAudioHostStatsDelegate SetAudioHostStats;   // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -309,6 +311,8 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { SetAudioCb = null; }
             try { SetAudioDrops = MemLoader.GetDelegate<SetAudioDropsDelegate>(h, "ml_engine_set_audio_drops"); }
             catch (EntryPointNotFoundException) { SetAudioDrops = null; }
+            try { SetAudioHostStats = MemLoader.GetDelegate<SetAudioHostStatsDelegate>(h, "ml_engine_set_audio_host_stats"); }
+            catch (EntryPointNotFoundException) { SetAudioHostStats = null; }
             try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
             catch (EntryPointNotFoundException) { GamepadArrival = null; }
             try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
@@ -626,7 +630,10 @@ namespace MoonlightHost
         private static readonly Queue<AFrame> s_aQueue = new Queue<AFrame>();
         private static double s_aQueuedMs;
         private static int s_aGen;                       // session generation; a sender of an older one exits
-        private static bool s_aOn;
+        private static volatile bool s_aOn;
+        private static bool s_aSkipLogged;
+        private static readonly Stack<byte[]> s_aFree = new Stack<byte[]>();   // under s_aLock; exact-size frame buffers
+        private const int AudioFreeMax = 16;
         private static long s_aSent, s_aDropped, s_aFailed;   // drops/sent under s_aLock, failed on the sender thread
         private static System.Threading.Timer s_aTimer;   // under s_aLock
         private static bool s_aWarned;
@@ -637,11 +644,16 @@ namespace MoonlightHost
             try   // never throw or block in native code
             {
                 if (pcm == IntPtr.Zero || samples <= 0 || channels <= 0 || rate <= 0 || samples * channels > 48000) return;
-                var f = new AFrame { Rate = rate, Ch = channels, Samples = samples, Data = new byte[samples * channels * 2] };
-                Marshal.Copy(pcm, f.Data, 0, f.Data.Length);   // S16LE on the little-endian TV
+                if (!s_aOn) return;   // no copy when audio is off
+                int len = samples * channels * 2;
                 lock (s_aLock)
                 {
                     if (!s_aOn) return;
+                    byte[] buf = null;
+                    while (s_aFree.Count > 0 && buf == null) { var t = s_aFree.Pop(); if (t.Length == len) buf = t; }   // other size: drop
+                    if (buf == null) buf = new byte[len];
+                    Marshal.Copy(pcm, buf, 0, len);   // S16LE on the little-endian TV
+                    var f = new AFrame { Rate = rate, Ch = channels, Samples = samples, Data = buf };
                     s_aQueue.Enqueue(f);
                     s_aQueuedMs += 1000.0 * samples / rate;
                     while (s_aQueuedMs > AudioMaxMs && s_aQueue.Count > 1)
@@ -649,6 +661,7 @@ namespace MoonlightHost
                         var o = s_aQueue.Dequeue();
                         s_aQueuedMs -= 1000.0 * o.Samples / o.Rate;
                         s_aDropped++;
+                        if (s_aFree.Count < AudioFreeMax) s_aFree.Push(o.Data);
                     }
                     Monitor.Pulse(s_aLock);
                 }
@@ -668,10 +681,11 @@ namespace MoonlightHost
             {
                 s_aQueue.Clear(); s_aQueuedMs = 0;
                 s_aSent = s_aDropped = s_aFailed = 0;
+                s_aFree.Clear();
                 s_aOn = true;
                 gen = ++s_aGen;
             }
-            try { Engine.SetAudioDrops?.Invoke(0); Engine.SetAudioCb(s_audioCb); }
+            try { PushAudioStats(0, 0, 0); Engine.SetAudioCb(s_audioCb); }
             catch (Exception ex) { Log.Error("audio callback set failed: " + ex.Message); }
             new Thread(() => AudioSender(gen)) { IsBackground = true, Name = "mlaudio" }.Start();
             lock (s_aLock)   // AudioStop may run on another thread (Poll) at the same time
@@ -682,12 +696,20 @@ namespace MoonlightHost
             Log.Info("audio output start");
         }
 
+        // New engines take sent/dropped/failed; an older one only the drop count.
+        private static void PushAudioStats(long sent, long dropped, long failed)
+        {
+            int i(long v) { return (int)Math.Min(v, int.MaxValue); }
+            if (Engine.SetAudioHostStats != null) Engine.SetAudioHostStats(i(sent), i(dropped), i(failed));
+            else Engine.SetAudioDrops?.Invoke(i(dropped));
+        }
+
         private static void ReportDrops()
         {
             try
             {
-                long d; lock (s_aLock) d = s_aDropped;
-                Engine.SetAudioDrops?.Invoke((int)Math.Min(d, int.MaxValue));
+                long s, d; lock (s_aLock) { s = s_aSent; d = s_aDropped; }
+                PushAudioStats(s, d, Interlocked.Read(ref s_aFailed));
             }
             catch (Exception ex) { Log.Error("audio drops report failed: " + ex.Message); }
         }
@@ -700,12 +722,12 @@ namespace MoonlightHost
                 if (!s_aOn) return;   // not running (also: a second stop path)
                 s_aOn = false;
                 s_aGen++;
-                s_aQueue.Clear(); s_aQueuedMs = 0;
+                s_aQueue.Clear(); s_aQueuedMs = 0; s_aFree.Clear();
                 sent = s_aSent; dropped = s_aDropped; failed = Interlocked.Read(ref s_aFailed);
                 Monitor.PulseAll(s_aLock);
                 s_aTimer?.Dispose(); s_aTimer = null;   // Dispose does not wait for a running ReportDrops
             }
-            try { Engine.SetAudioDrops?.Invoke((int)Math.Min(dropped, int.MaxValue)); }
+            try { PushAudioStats(sent, dropped, failed); }
             catch (Exception ex) { Log.Error("audio drops report failed: " + ex.Message); }
             Log.Info("audio output stop: sent=" + sent + " dropped=" + dropped + " sendFailures=" + failed);
         }
@@ -735,8 +757,12 @@ namespace MoonlightHost
                     ok = SendReply("au" + Interlocked.Increment(ref s_eventSeq), r, s_uiApp, s_uiPort, true);
                 }
                 catch { }
-                if (ok) lock (s_aLock) { if (gen == s_aGen) s_aSent++; }
-                else { Interlocked.Increment(ref s_aFailed); if (++failedSeq == 1) Log.Error("audio send failed (further failures only counted)"); }
+                lock (s_aLock)
+                {
+                    if (ok && gen == s_aGen) s_aSent++;
+                    if (gen == s_aGen && s_aFree.Count < AudioFreeMax) s_aFree.Push(f.Data);   // the send is done with the array
+                }
+                if (!ok) { Interlocked.Increment(ref s_aFailed); if (++failedSeq == 1) Log.Error("audio send failed (further failures only counted)"); }
             }
         }
 
@@ -832,7 +858,11 @@ namespace MoonlightHost
                         int fullRange = Item(b, "fullRange") == "true" ? 1 : 0;   // optional: absent = limited
                         lock (s_engineLock)
                         {
-                            AudioStart();
+                            if (s_active && Engine.Running() != 0)   // already streaming: keep the audio path as it is
+                            {
+                                if (!s_aSkipLogged) { s_aSkipLogged = true; Log.Info("audio output start skipped: a stream is running"); }
+                            }
+                            else AudioStart();
                             if (Engine.StartSessionV2 != null)
                                 return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
                                                                 Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),

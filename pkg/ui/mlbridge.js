@@ -174,19 +174,41 @@
 
   // Collects the parts of a chunked reply; returns the joined map once all arrived.
   var partial = {};   // id -> {total, n, seqs: {seq: {field, chunk}}}
+  var AU_PARTIAL_MAX = 8, auOrder = [];   // pending "au" ids, oldest first: a frame that lost a part must not stay
+  function isAu(id) { return String(id).indexOf('au') === 0; }
+  function clearAuPartials() { auOrder.forEach(function (id) { delete partial[id]; }); auOrder = []; }
   function join(m) {
+    var au = isAu(m.id);
+    if (au && !partial[m.id]) {
+      auOrder.push(m.id);
+      while (auOrder.length > AU_PARTIAL_MAX) delete partial[auOrder.shift()];
+    }
     var a = partial[m.id] || (partial[m.id] = { total: +m.total, n: 0, seqs: {} });
     if (!a.seqs[m.seq]) { a.seqs[m.seq] = { field: m.field, chunk: m.chunk }; a.n++; }
     if (a.n < a.total) return null;
     delete partial[m.id];
+    if (au) { var k = auOrder.indexOf(m.id); if (k >= 0) auOrder.splice(k, 1); }
     var out = { id: m.id };
+    if (au) {   // binary chunks: one Uint8Array, no concat per frame
+      var tl = 0, i0, c0;
+      for (i0 = 0; i0 < a.total; i0++) { c0 = a.seqs[i0]; if (c0 && c0.field === 'data' && typeof c0.chunk !== 'string') tl += c0.chunk.length; }
+      var bin = new Uint8Array(tl), off = 0;
+      for (i0 = 0; i0 < a.total; i0++) {
+        c0 = a.seqs[i0];
+        if (!c0) continue;
+        if (c0.field === 'data' && typeof c0.chunk !== 'string') { bin.set(c0.chunk, off); off += c0.chunk.length; }
+        else out[c0.field] = (out[c0.field] || '') + c0.chunk;
+      }
+      out.data = bin;
+      return out;
+    }
     for (var i = 0; i < a.total; i++) {
       var pt = a.seqs[i], prev = out[pt.field];
       if (prev === undefined) out[pt.field] = pt.chunk;
       else if (typeof prev === 'string') out[pt.field] = prev + pt.chunk;
       else out[pt.field] = prev.concat(Array.prototype.slice.call(pt.chunk));   // byte chunks
     }
-    trace('joined id=' + m.id, 'parts=' + a.total);
+    if (!au) trace('joined id=' + m.id, 'parts=' + a.total);
     return out;
   }
 
@@ -267,7 +289,7 @@
     }
   }
   // Audio scheduler (mlaudio.js); absent = no audio, never an error.
-  function audioCall(fn) { if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
+  function audioCall(fn) { if (fn === 'stopAudioScheduler') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
   function resetStats() {
     statsOn = false; statsGen++;
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
@@ -428,7 +450,7 @@
     if (m.total !== undefined) { m = join(m); if (!m) return; }
     if (m.event === 'mlaudio') {   // PCM for Web Audio (~200/s: not traced, not for handleMessage)
       if (typeof window.mlAudioFeed === 'function' && m.data !== undefined && typeof m.data !== 'string') {
-        try { window.mlAudioFeed(m.rate, m.ch, m.samples, new Uint8Array(m.data).buffer); }
+        try { window.mlAudioFeed(m.rate, m.ch, m.samples, (m.data instanceof Uint8Array ? m.data : new Uint8Array(m.data)).buffer); }
         catch (e) { if (!audioFailed) { audioFailed = true; console.warn('[mlbridge] mlAudioFeed failed:', e); } }
       }
       return;
