@@ -258,6 +258,12 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GamepadStateDelegate(int index, int mask, int buttons, int lt, int rt, int lsx, int lsy, int rsx, int rsy);
         public static GamepadArrivalDelegate GamepadArrival;   // null with an engine that lacks it
         public static GamepadStateDelegate   GamepadState;     // null with an engine that lacks it
+        // Decoded PCM goes to the host (the TV player cannot play engine-fed audio); see AudioOut.
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void AudioCbDelegate(IntPtr pcm, int samples, int channels, int rate);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioCbDelegate(AudioCbDelegate cb);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioDropsDelegate(int dropped);
+        public static SetAudioCbDelegate    SetAudioCb;      // null with an engine that lacks it
+        public static SetAudioDropsDelegate SetAudioDrops;   // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -299,6 +305,10 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { StartSessionV2 = null; }
             try { LastError = MemLoader.GetDelegate<LastErrorDelegate>(h, "ml_engine_last_error"); }
             catch (EntryPointNotFoundException) { LastError = null; }
+            try { SetAudioCb = MemLoader.GetDelegate<SetAudioCbDelegate>(h, "ml_engine_set_audio_cb"); }
+            catch (EntryPointNotFoundException) { SetAudioCb = null; }
+            try { SetAudioDrops = MemLoader.GetDelegate<SetAudioDropsDelegate>(h, "ml_engine_set_audio_drops"); }
+            catch (EntryPointNotFoundException) { SetAudioDrops = null; }
             try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
             catch (EntryPointNotFoundException) { GamepadArrival = null; }
             try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
@@ -340,6 +350,7 @@ namespace MoonlightHost
                 if (s_active && Engine.Loaded && Engine.Running() == 0)
                 {
                     s_active = false;
+                    AudioStop();   // reports the final drop count before the ML-ERROR line is read
                     int code = ReadLastError(out string diag);
                     if (diag != null) Log.Error(diag);
                     SendTerminated("streamTerminated: " + code, diag);
@@ -430,14 +441,14 @@ namespace MoonlightHost
             if (cmd == "startStream")
             {
                 if (err == null) { s_active = true; SendEvent("Connection Established"); }
-                else { ReadLastError(out string diag); if (diag != null) Log.Error(diag); SendTerminated("streamTerminated: -1", diag); }
+                else { AudioStop(); ReadLastError(out string diag); if (diag != null) Log.Error(diag); SendTerminated("streamTerminated: -1", diag); }
             }
         }
 
-        private static bool Send(Tizen.Applications.Bundle msg, string app, string port)
+        private static bool Send(Tizen.Applications.Bundle msg, string app, string port, bool quiet = false)
         {
             try { s_port.Send(msg, app, port); return true; }
-            catch (Exception ex) { Log.Error("send failed: " + ex.Message); return false; }
+            catch (Exception ex) { if (!quiet) Log.Error("send failed: " + ex.Message); return false; }
         }
 
         // A message port message is limited to ~4 KB, so a large message travels as
@@ -445,7 +456,7 @@ namespace MoonlightHost
         // leave room for the Bundle encoding overhead.
         private const int MaxSingle = 1536, ChunkBytes = 1536, ChunkChars = 512;   // 512 chars <= 1536 UTF-8 bytes
 
-        private static void SendReply(string id, Dictionary<string, object> r, string app, string port)
+        private static bool SendReply(string id, Dictionary<string, object> r, string app, string port, bool quiet = false)
         {
             int size = 0;
             foreach (var kv in r)
@@ -456,8 +467,7 @@ namespace MoonlightHost
                 m.AddItem("id", id);
                 foreach (var kv in r)
                     if (kv.Value is byte[]) m.AddItem(kv.Key, (byte[])kv.Value); else m.AddItem(kv.Key, (string)kv.Value);
-                Send(m, app, port);
-                return;
+                return Send(m, app, port, quiet);
             }
             var parts = new List<KeyValuePair<string, object>>();
             foreach (var kv in r)
@@ -494,9 +504,10 @@ namespace MoonlightHost
                 m.AddItem("field", parts[seq].Key);
                 if (parts[seq].Value is byte[]) m.AddItem("chunk", (byte[])parts[seq].Value);
                 else m.AddItem("chunk", (string)parts[seq].Value);
-                if (!Send(m, app, port)) return;   // the UI times out the command
+                if (!Send(m, app, port, quiet)) return false;   // the UI times out the command
             }
-            Log.Trace("reply " + id + " sent in " + parts.Count + " parts");
+            if (!quiet) Log.Trace("reply " + id + " sent in " + parts.Count + " parts");
+            return true;
         }
 
         private sealed class Partial
@@ -606,6 +617,129 @@ namespace MoonlightHost
 
         private static int s_eventSeq;
 
+        // ---- Audio: engine callback -> bounded queue -> sender thread -> "mlaudio" events ----
+        // The callback (engine audio thread) only copies and enqueues under a short lock.
+        // Queue holds at most 500 ms; on overflow the oldest frame goes (live audio).
+        private sealed class AFrame { public int Rate, Ch, Samples; public byte[] Data; }
+        private static readonly Engine.AudioCbDelegate s_audioCb = OnAudio;   // kept alive for native code
+        private static readonly object s_aLock = new object();
+        private static readonly Queue<AFrame> s_aQueue = new Queue<AFrame>();
+        private static double s_aQueuedMs;
+        private static int s_aGen;                       // session generation; a sender of an older one exits
+        private static bool s_aOn;
+        private static long s_aSent, s_aDropped, s_aFailed;   // drops/sent under s_aLock, failed on the sender thread
+        private static System.Threading.Timer s_aTimer;   // under s_aLock
+        private static bool s_aWarned;
+        private const double AudioMaxMs = 500;
+
+        private static void OnAudio(IntPtr pcm, int samples, int channels, int rate)
+        {
+            try   // never throw or block in native code
+            {
+                if (pcm == IntPtr.Zero || samples <= 0 || channels <= 0 || rate <= 0 || samples * channels > 48000) return;
+                var f = new AFrame { Rate = rate, Ch = channels, Samples = samples, Data = new byte[samples * channels * 2] };
+                Marshal.Copy(pcm, f.Data, 0, f.Data.Length);   // S16LE on the little-endian TV
+                lock (s_aLock)
+                {
+                    if (!s_aOn) return;
+                    s_aQueue.Enqueue(f);
+                    s_aQueuedMs += 1000.0 * samples / rate;
+                    while (s_aQueuedMs > AudioMaxMs && s_aQueue.Count > 1)
+                    {
+                        var o = s_aQueue.Dequeue();
+                        s_aQueuedMs -= 1000.0 * o.Samples / o.Rate;
+                        s_aDropped++;
+                    }
+                    Monitor.Pulse(s_aLock);
+                }
+            }
+            catch { }
+        }
+
+        private static void AudioStart()
+        {
+            if (Engine.SetAudioCb == null)
+            {
+                if (!s_aWarned) { s_aWarned = true; Log.Info("audio output unavailable (old engine)"); }
+                return;
+            }
+            int gen;
+            lock (s_aLock)
+            {
+                s_aQueue.Clear(); s_aQueuedMs = 0;
+                s_aSent = s_aDropped = s_aFailed = 0;
+                s_aOn = true;
+                gen = ++s_aGen;
+            }
+            try { Engine.SetAudioDrops?.Invoke(0); Engine.SetAudioCb(s_audioCb); }
+            catch (Exception ex) { Log.Error("audio callback set failed: " + ex.Message); }
+            new Thread(() => AudioSender(gen)) { IsBackground = true, Name = "mlaudio" }.Start();
+            lock (s_aLock)   // AudioStop may run on another thread (Poll) at the same time
+            {
+                s_aTimer?.Dispose();
+                s_aTimer = new System.Threading.Timer(_ => ReportDrops(), null, 1000, 1000);
+            }
+            Log.Info("audio output start");
+        }
+
+        private static void ReportDrops()
+        {
+            try
+            {
+                long d; lock (s_aLock) d = s_aDropped;
+                Engine.SetAudioDrops?.Invoke((int)Math.Min(d, int.MaxValue));
+            }
+            catch (Exception ex) { Log.Error("audio drops report failed: " + ex.Message); }
+        }
+
+        private static void AudioStop()
+        {
+            long sent, dropped, failed;
+            lock (s_aLock)
+            {
+                if (!s_aOn) return;   // not running (also: a second stop path)
+                s_aOn = false;
+                s_aGen++;
+                s_aQueue.Clear(); s_aQueuedMs = 0;
+                sent = s_aSent; dropped = s_aDropped; failed = Interlocked.Read(ref s_aFailed);
+                Monitor.PulseAll(s_aLock);
+                s_aTimer?.Dispose(); s_aTimer = null;   // Dispose does not wait for a running ReportDrops
+            }
+            try { Engine.SetAudioDrops?.Invoke((int)Math.Min(dropped, int.MaxValue)); }
+            catch (Exception ex) { Log.Error("audio drops report failed: " + ex.Message); }
+            Log.Info("audio output stop: sent=" + sent + " dropped=" + dropped + " sendFailures=" + failed);
+        }
+
+        private static void AudioSender(int gen)
+        {
+            var c = System.Globalization.CultureInfo.InvariantCulture;
+            long failedSeq = 0;
+            while (true)
+            {
+                AFrame f;
+                lock (s_aLock)
+                {
+                    while (gen == s_aGen && s_aQueue.Count == 0) Monitor.Wait(s_aLock);
+                    if (gen != s_aGen) return;
+                    f = s_aQueue.Dequeue();
+                    s_aQueuedMs -= 1000.0 * f.Samples / f.Rate;
+                }
+                bool ok = false;
+                try
+                {
+                    var r = new Dictionary<string, object>
+                    {
+                        { "event", "mlaudio" }, { "rate", f.Rate.ToString(c) }, { "ch", f.Ch.ToString(c) },
+                        { "samples", f.Samples.ToString(c) }, { "data", f.Data }
+                    };
+                    ok = SendReply("au" + Interlocked.Increment(ref s_eventSeq), r, s_uiApp, s_uiPort, true);
+                }
+                catch { }
+                if (ok) lock (s_aLock) { if (gen == s_aGen) s_aSent++; }
+                else { Interlocked.Increment(ref s_aFailed); if (++failedSeq == 1) Log.Error("audio send failed (further failures only counted)"); }
+            }
+        }
+
         private static void SendEvent(string ev, string diag = null)
         {
             if (!string.IsNullOrEmpty(diag))
@@ -698,6 +832,7 @@ namespace MoonlightHost
                         int fullRange = Item(b, "fullRange") == "true" ? 1 : 0;   // optional: absent = limited
                         lock (s_engineLock)
                         {
+                            AudioStart();
                             if (Engine.StartSessionV2 != null)
                                 return Rc(Engine.StartSessionV2(Item(b, "host"), w, h, fps, br, Item(b, "rikey"), rikeyid,
                                                                 Item(b, "appVer"), Item(b, "gfeVer"), Item(b, "rtspUrl"),
@@ -709,7 +844,7 @@ namespace MoonlightHost
                                                           Item(b, "audioConfig")));
                         }
                     }
-                case "stopStream": lock (s_engineLock) Engine.Stop(); return null;
+                case "stopStream": lock (s_engineLock) Engine.Stop(); AudioStop(); return null;
                 case "sendKeyboardEvent":
                     {
                         int key, action, mods;
