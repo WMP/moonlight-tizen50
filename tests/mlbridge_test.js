@@ -567,6 +567,113 @@ test('gamepad: a failing pad send does not drop the port', async function () {
   reply(fields(sent[sent.length - 1]).id, {}); await p;
 });
 
+// --- mlaudio: events to the Web Audio feed, and the scheduler itself ---
+function bytes(n) { var a = []; for (var i = 0; i < n; i++) a.push(i & 255); return a; }
+test('mlaudio: small event reaches mlAudioFeed as an ArrayBuffer, not handleMessage', async function () {
+  var calls = [], h = handled.length, l = logs.length;
+  win.mlAudioFeed = function (r, c, n, b) { calls.push([r, c, n, b]); };
+  listener([{ key: 'event', value: 'mlaudio' }, { key: 'rate', value: '48000' }, { key: 'ch', value: '2' }, { key: 'samples', value: '240' }, { key: 'data', value: bytes(960) }]);
+  assert.strictEqual(calls.length, 1);
+  assert.deepStrictEqual(calls[0].slice(0, 3), ['48000', '2', '240']);
+  assert.ok(calls[0][3] instanceof ArrayBuffer); assert.strictEqual(calls[0][3].byteLength, 960);
+  assert.strictEqual(new Uint8Array(calls[0][3])[300], 300 & 255);
+  assert.strictEqual(handled.length, h); assert.strictEqual(logs.length, l, 'no per-event log');
+});
+
+test('mlaudio: a big event sent as parts is fed once, joined', async function () {
+  var calls = [], h = handled.length, all = bytes(2880);
+  win.mlAudioFeed = function (r, c, n, b) { calls.push([r, c, n, b]); };
+  var parts = [['event', 'mlaudio'], ['rate', '48000'], ['ch', '6'], ['samples', '240']].map(function (kv) { return [kv[0], kv[1]]; });
+  var chunks = [all.slice(0, 1536), all.slice(1536)];
+  var list = parts.map(function (p) { return { field: p[0], chunk: p[1] }; }).concat(chunks.map(function (c) { return { field: 'data', chunk: c }; }));
+  list.forEach(function (p, i) {
+    listener([{ key: 'id', value: 'ev9' }, { key: 'seq', value: String(i) }, { key: 'total', value: String(list.length) }, { key: 'field', value: p.field }, { key: 'chunk', value: p.chunk }]);
+    assert.strictEqual(calls.length, i === list.length - 1 ? 1 : 0);
+  });
+  assert.deepStrictEqual(calls[0].slice(0, 3), ['48000', '6', '240']);
+  assert.strictEqual(calls[0][3].byteLength, 2880);
+  assert.strictEqual(handled.length, h);
+});
+
+test('mlaudio: startStream starts and streamTerminated / stopStream stop the scheduler; overlay shows counters', async function () {
+  var ev = [];
+  win.startAudioScheduler = function () { ev.push('start'); };
+  win.stopAudioScheduler = function () { ev.push('stop'); };
+  win.mlAudioStats = function () { return { received: 7, scheduled: 6, dropped: 1, empty: 0, resyncs: 2, underruns: 1, headroomMs: 99.6 }; };
+  sent.length = 0;
+  var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
+  assert.deepStrictEqual(ev, ['start']);
+  reply(fields(sent[0]).id, {}); await p;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  assert.deepStrictEqual(ev, ['start', 'stop']);
+  var q = win.sendMessage('stopRequest', []);
+  assert.deepStrictEqual(ev, ['start', 'stop', 'stop']);
+  reply(fields(sent[sent.length - 1]).id, {}); await q;
+  await toggleStats(undefined, 'true');
+  listener(STATS);
+  assert.ok(/web audio rx 7 sched 6 drop 1/.test(byId.mlstats.textContent) && /headroom 100 ms/.test(byId.mlstats.textContent));
+  await toggleStats(undefined, 'false');
+  delete win.mlAudioFeed; delete win.startAudioScheduler; delete win.stopAudioScheduler; delete win.mlAudioStats;
+});
+
+test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no AudioContext', async function () {
+  var wlogs = [], wwarns = [], T = 1, state = 'running', made = [], closed = 0, resumed = 0, rate = 48000;
+  function FakeCtx() {
+    this.sampleRate = rate; this.state = state; this.destination = {};
+    this.__defineGetter__('currentTime', function () { return T; });
+    this.createBuffer = function (ch, n, r) { var d = []; for (var c = 0; c < ch; c++) d.push(new Float32Array(n)); return { duration: n / r, getChannelData: function (c) { return d[c]; } }; };
+    this.createBufferSource = function () { var s = { connect: function () {}, start: function (t) { s.at = t; made.push(s); } }; return s; };
+    this.close = function () { closed++; };
+    this.resume = function () { resumed++; };
+  }
+  var w = { AudioContext: FakeCtx };
+  var sb = { window: w, console: { log: function () { wlogs.push([].join.call(arguments, ' ')); }, warn: function () { wwarns.push([].join.call(arguments, ' ')); } }, Date: Date, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'), sb);
+  function frame(n, ch, fn) { var a = new Int16Array(n * ch); for (var i = 0; i < a.length; i++) a[i] = fn(i); return a.buffer; }
+  w.startAudioScheduler();
+  // S16 -> float, de-interleave: L = 16384, R = -32768
+  w.mlAudioFeed('48000', '2', '240', frame(240, 2, function (i) { return i % 2 ? -32768 : 16384; }));
+  assert.strictEqual(made.length, 1);
+  assert.strictEqual(made[0].buffer.getChannelData(0)[5], 0.5); assert.strictEqual(made[0].buffer.getChannelData(1)[5], -1);
+  assert.ok(Math.abs(made[0].at - 1.1) < 1e-9, 'primed to the 100 ms jitter buffer');
+  // the next frame follows the first one
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  assert.ok(Math.abs(made[1].at - (1.1 + 0.005)) < 1e-9);
+  // feed until the schedule is over 2x target ahead: dropped, not scheduled
+  for (var i = 0; i < 100; i++) w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  var st = w.mlAudioStats();
+  assert.ok(st.dropped > 0 && st.scheduled < 102 && st.scheduled + st.dropped === st.received);
+  assert.ok(made[made.length - 1].at <= 1.2 + 0.005 + 1e-9);
+  // an underrun primes to the whole buffer again
+  T = 5;
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  assert.ok(Math.abs(made[made.length - 1].at - 5.1) < 1e-9);
+  assert.strictEqual(w.mlAudioStats().underruns, 1);
+  // a suspended context is resumed, the frame is not played
+  var n = made.length; state = 'suspended';
+  w.startAudioScheduler();
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  assert.strictEqual(made.length, n); assert.ok(resumed >= 1); assert.strictEqual(closed, 1);
+  // a context at 44100 Hz: resampled, total duration stays close
+  state = 'running'; rate = 44100; made.length = 0;
+  w.startAudioScheduler();
+  var dur = 0;
+  for (i = 0; i < 20; i++) { w.mlAudioFeed(48000, 2, 240, frame(240, 2, function (k) { return k; })); }
+  made.forEach(function (s) { dur += s.buffer.duration; });
+  assert.ok(Math.abs(dur - 20 * 0.005) < 0.001, 'resampled duration ' + dur);
+  assert.ok(wwarns.some(function (m) { return /resampling/.test(m); }));
+  w.stopAudioScheduler();
+  assert.strictEqual(closed, 3);
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));   // stopped: no-op
+  // no AudioContext: warn once, feed is a no-op
+  var w2 = {}, warns2 = [];
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
+    { window: w2, console: { log: function () {}, warn: function (m) { warns2.push(m); } }, Date: Date });
+  w2.startAudioScheduler(); w2.startAudioScheduler();
+  w2.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
+  assert.deepStrictEqual(warns2, ['audio output unavailable (Web Audio)']);
+});
+
 test('trace hides secrets', async function () {
   var all = logs.join('\n');
   assert.ok(logs.length > 0);

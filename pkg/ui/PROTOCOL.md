@@ -83,6 +83,7 @@ on, or not set and this is a debug package (`ML_TRACE`). The dlog output (`MLHOS
 | `Connection Established` | `startStream` succeeded (`LiStartConnection` returned 0) |
 | `streamTerminated: <code>` | a started session ended (`ml_engine_running()` went 1 → 0). `<code>` is the engine's termination code from `ml_engine_last_error()`: `0` after `stopStream` or a graceful end, for example `-101` (no video frame) when the engine failed; `-1` when `startStream` failed. Optional field `diag`: the `ML-ERROR` line (see below). The UI writes it to the console with `console.error('[ML-ERROR] ...')`; the host writes it to dlog. |
 | `mlstats` | live statistics, every 500 ms while `toggleStats` is on (see below) |
+| `mlaudio` | one decoded audio frame for the UI to play (see below); about 200 per second while a stream runs |
 
 ### `ML-ERROR` line (`diag`)
 
@@ -97,11 +98,32 @@ as ordered parts with its own id (`ev<n>`, never a command id); the UI joins the
 - `video`: sink setup result, decode units (`du`), IDR frames (`idr`), ms to the first decode unit, ms to the first video packet, `idr_retry` = IDR requests repeated at the start because no video packet had reached the player yet (the first request can be lost before the host pipeline is up; at most 10).
 - `player`: results of `open`, window (`win`), `prepare_async` (`prep`), the prepare-done callback (`pdone`) and `start` (`-99` = not reached), `state` (raw player state at a `-110`/`-111` stop, else `-99`), `rebuilds` (player rebuilds this session, see `MLENGINE_PLAYER_REBUILD_MAX`; a rebuild is also visible as a second `open` and `prep`), packets submitted (`vsub`; `asub` stays 0, audio does not go through the player), failed submits (`subfail=<count>/<last status>`, status `0` = NOT_PREPARED; `vfail`, `afail` = the same for video and audio alone, last status `0` when none failed), decoded audio packets (`adec`), libopus failures (`adec_fail=<count>/<last opus error>`), player errors (`err=<count>/<last>`).
 - `prep-t`: times in ms after the `prepare_async` call (`-` = not reached): `pdone` = prepare-done callback, `err` = first player error, `v1`/`a1` = first accepted video/audio packet, `vpts1`/`apts1` = their PTS in ms. How to read it: `adec_fail` > 0 = corrupt audio packets (or a decoder that could not be created); `afail` high and `a1` after `v1` = the player refused audio until the first video packet; `err` right at `pdone` = the prepare failed.
-- `aout`: the audio output. The player has only a video stream (platform limitation: the TV player rejects engine-fed audio streams, both Opus and raw PCM); audio is decoded with libopus and written to PulseAudio. `aout pulse server=<default|native> lat=<usec> err=<n> written_ms=<n> drift_max_ms=<n>`: `server` = which PulseAudio server answered (`native` = the `unix:/run/pulse/native` retry), `lat` = the last PulseAudio stream latency in microseconds, `err` = the last PulseAudio error code, `written_ms` = audio written so far, `drift_max_ms` = the largest A/V drift seen (audio written minus video playing time, relative to the first sample; log only). `aout none reason=<dlopen|dlsym|new|-> err=<n>`: no audio output (`dlopen`/`dlsym` = libpulse-simple missing or incomplete, `new` = `pa_simple_new` failed with PulseAudio error `err`, `-` = audio never started); the stream goes on without sound. How to read it: `lat` far above `MLENGINE_AUDIO_LATENCY_MS` = a large PulseAudio buffer; `drift_max_ms` > 250 = audio and video drift apart.
+- `aout`: the audio output. The player has only a video stream (platform limitation: the TV player rejects engine-fed audio streams); audio is decoded with libopus and sent to the UI as `mlaudio` events, which the UI plays with Web Audio. ` | aout webaudio frames=<n> bytes=<n> drops=<n>`: `frames`, `bytes` = PCM handed to the host, `drops` = frames the host's queue dropped (not sent). ` | aout none reason=<...>`: no audio output; the stream goes on without sound. How to read it: `frames` far below the stream time x 200/s = audio decode problem (see `adec`, `adec_fail`); `drops` > 0 = the host could not send fast enough; all counters fine but no sound = check the UI console (`[mlaudio, statistics]`).
 - `ctl`: control-stream encryption: `enc` = AES-GCM messages encrypted, `fail` = encrypt calls that failed, `iv` = IV length of the last one (12 = V2, 16 = V1), `verify=<ok>/<fail>/<not verified>`: each message is decrypted again with OpenSSL and compared with the plaintext. How to read it: `verify=N/0/0` while the server logs decrypt errors means the key or the IV convention differs (check `rikey`, `rikeyid`, `iv`); `verify` with fails means the client crypto is wrong on this device.
 - `pad`: gamepad calls of this session: `arr` = arrival calls, `st` = state calls, `fail=<count>/<last rc>` = calls that returned non-zero (`-1` = bad index or no running stream). `arr=0 st=0` with a pad connected: the UI sent no pad data (check the port).
 - `cc`: counters of moonlight-common-c log messages (lost frames, IDR requests, FEC recoveries, and so on).
 - `cc-first`, `cc-last`: the first 4 and the last 8 moonlight-common-c log lines.
+
+### `mlaudio`
+
+One decoded audio frame. Fields: `rate` (Hz), `ch` (channels), `samples` (per channel); all
+decimal strings. `data` = binary PCM, signed 16-bit little endian, interleaved
+(`samples * ch * 2` bytes). A frame is usually 240 samples (5 ms at 48 kHz stereo, 960 bytes),
+so about 200 events per second. A frame over 1536 bytes (for example 5.1: 2880 bytes) is sent
+as parts with an `ev<n>` id, like a large reply (see "Large messages"); the UI joins them first.
+`mlbridge.js` never passes `mlaudio` to `window.handleMessage` and writes no console line per event.
+
+UI audio scheduler (`mlaudio.js`, a port of the audio scheduler of moonlight-tizen): a Web Audio
+context (48 kHz, `interactive`) is created by `startAudioScheduler()` in the `startStream` path
+(a user gesture, for the autoplay policy) and closed by `stopAudioScheduler()` on `stopStream` and
+`streamTerminated`. Frames are scheduled against `currentTime` with a jitter buffer of 100 ms
+(`window._mlAudioTargetMs` changes it); after an underrun the schedule is primed to the full
+buffer again, and a frame is dropped when the schedule is over twice the buffer ahead. The
+stream is resampled when the context does not run at the stream rate. Statistics go to the console
+every 5 s (`[mlaudio, statistics]`: received, scheduled, dropped, resync, underrun, headroom).
+With the stats overlay on, the overlay also shows the counters of the scheduler (`mlAudioStats()`);
+the host does not know them. Without Web Audio the UI logs `audio output unavailable (Web Audio)`
+once and drops the frames.
 
 ### `mlstats`
 

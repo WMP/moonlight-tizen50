@@ -260,7 +260,14 @@
       'under/over ' + m.uo + '\n' +
       'errors ' + m.err + '  recoveries ' + m.rec + '\n' +
       'play ' + (Number(m.play) / 1000).toFixed(1) + ' s';
+    if (typeof window.mlAudioStats === 'function') {   // the host does not know the UI audio scheduler
+      var a = window.mlAudioStats();
+      el.textContent += '\nweb audio rx ' + a.received + ' sched ' + a.scheduled + ' drop ' + a.dropped + ' empty ' + a.empty +
+        '\nresync ' + a.resyncs + ' underrun ' + a.underruns + ' headroom ' + Number(a.headroomMs).toFixed(0) + ' ms';
+    }
   }
+  // Audio scheduler (mlaudio.js); absent = no audio, never an error.
+  function audioCall(fn) { if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
   function resetStats() {
     statsOn = false; statsGen++;
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
@@ -414,10 +421,18 @@
   }
 
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
+  var audioFailed = false;
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
     if (m.total !== undefined) { m = join(m); if (!m) return; }
+    if (m.event === 'mlaudio') {   // PCM for Web Audio (~200/s: not traced, not for handleMessage)
+      if (typeof window.mlAudioFeed === 'function' && m.data !== undefined && typeof m.data !== 'string') {
+        try { window.mlAudioFeed(m.rate, m.ch, m.samples, new Uint8Array(m.data).buffer); }
+        catch (e) { if (!audioFailed) { audioFailed = true; console.warn('[mlbridge] mlAudioFeed failed:', e); } }
+      }
+      return;
+    }
     if (m.event === 'mlstats') { showStats(m); return; }   // overlay only (2/s: not traced), not for handleMessage
     if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug); no reply trace: it doubled every line
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
@@ -427,7 +442,7 @@
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
-      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); }
+      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('stopAudioScheduler'); }
       else if (m.event === 'Connection Established') startPads();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
@@ -469,6 +484,7 @@
     httpInit: function (cert, key, uniqueId) { return call('httpInit', { cert: cert, key: key, uniqueId: uniqueId }); },
     startRequest: function () {
       var a = arguments;
+      audioCall('startAudioScheduler');   // user-gesture flow: the autoplay policy needs it here
       padFlipAB = !!a[16]; padFlipXY = !!a[17];   // a[14] rumble and a[15] mouse emulation: not ported
       // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange
@@ -478,7 +494,7 @@
         audioConfig: a[19], videoCodec: a[24], hdr: String(!!a[25]), fullRange: String(!!a[26])
       });
     },
-    stopRequest: function () { stopPads(); return call('stopStream', {}); },
+    stopRequest: function () { stopPads(); audioCall('stopAudioScheduler'); return call('stopStream', {}); },
     cancelRequest: function () { return call('cancelRequest', {}); },
     toggleStats: toggleStats,
   };
@@ -524,7 +540,7 @@
     sendKeyboardEvent: function (keyCode, keyAction, modifiers) {
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
-    stopStream: function () { stopPads(); return bridgeCall('stopStream', {}); },
+    stopStream: function () { stopPads(); audioCall('stopAudioScheduler'); return bridgeCall('stopStream', {}); },
     // the yellow-key caller ignores the promise: log a failure instead of an unhandled rejection
     toggleStats: function () { return toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); }); },
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled
