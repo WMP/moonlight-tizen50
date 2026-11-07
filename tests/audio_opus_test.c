@@ -73,7 +73,9 @@ int main(void) {
     ml_engine_set_audio_drops(7);
     mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
     assert(strstr(line, " adec=6 adec_fail=1/-4 err="));   /* -4 = OPUS_INVALID_PACKET */
-    assert(strstr(line, " | aout webaudio frames=6 bytes=5760 drops=7 | "));
+    assert(strstr(line, " | aout webaudio frames=6 bytes=5760 sent=0 drops=7 sendfail=0 | "));
+    ml_engine_set_audio_host_stats(5, 2, 1); mldiag_last(line, sizeof line);   /* read time: the new counters */
+    assert(strstr(line, " | aout webaudio frames=6 bytes=5760 sent=5 drops=2 sendfail=1 | "));
 
     cb.stop(); cb.cleanup();
     cb.decodeAndPlaySample((char *)fr[0], fl[0]);   /* no decoder: ignored */

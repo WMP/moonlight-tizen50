@@ -66,6 +66,10 @@ The point of this repo is to improve the client itself:
     and range, audio config, server codec mode, encryption flags, server versions;
   - counters of each step: packets, frames, IDR frames, player open/window/prepare/prepare-done/start,
     submits per stream type and their failures;
+  - the player rebuild: the count and the result of each step (open, add video stream info, display, prepare_async;
+    `rb=` in the line);
+  - the host's audio counters (sent, dropped, failed sends): the line is rendered again at read time, because the host
+    reports them after the failure;
   - control-stream encryption check (messages, failures, IV length, self-decrypt result) and whether the
     session key and key id match the `/launch` or `/resume` request;
   - the RTSP transport scheme (`rtsp` vs `rtspenc`) the host returned, since the encryption features

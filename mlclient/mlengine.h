@@ -106,6 +106,8 @@ typedef void (*ml_engine_audio_cb)(const short *pcm, int samples, int channels, 
 void ml_engine_set_audio_cb(ml_engine_audio_cb cb);
 /* The host reports its dropped audio frames of the current session (queue overflow), for the ML-ERROR line. */
 void ml_engine_set_audio_drops(int dropped);
+/* The host's audio counters of the current session (frames sent to the UI, frames dropped by its queue, failed sends), for the ML-ERROR line. */
+void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures);
 
 #ifdef __cplusplus
 }

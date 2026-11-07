@@ -185,7 +185,7 @@ audio streams. The host sends Opus; the engine decodes it with libopus (fixed po
 through `ml_engine_set_audio_cb` (`mlengine.h`; set it before the stream starts). The host sends it to the UI as
 `mlaudio` events and the UI plays it with Web Audio (`pkg/ui/mlaudio.js`, jitter buffer default 100 ms). The host
 reports its dropped frames with `ml_engine_set_audio_drops`; the `ML-ERROR` line shows
-`aout webaudio frames=<n> bytes=<n> drops=<n>`, or `aout none reason=no-callback` (the stream then has no sound).
+`aout webaudio frames=<n> bytes=<n> sent=<n> drops=<n> sendfail=<n>` (the last three are the host's counters, read at the time of `ml_engine_last_error()`), or `aout none reason=no-callback` (the stream then has no sound).
 Audio does not share the player clock, so there is no engine-side A/V sync.
 
 **Start retry.** If no video packet has reached the player 300 ms after prepare, the engine asks for an IDR frame again
@@ -223,9 +223,10 @@ the cached video stream info, then (on the ecore main loop, without waiting) dis
 sink drops frames until an IDR and restarts its PTS at 0. At most `MLENGINE_PLAYER_REBUILD_MAX` rebuilds per session (default 1, 0 = off). The
 watchdog timers restart with the rebuild, so a second failure ends the session as before. It needs the window and the
 cached stream info; the count is `rebuilds=` in the `ML-ERROR` line. The display step runs on the ecore main loop, so
-the rebuild completes only in the .NET host (which runs that loop). In the CLI harness the queued step never runs and
-the start watchdog then ends the session (`-110` with `rebuilds=1`); set `MLENGINE_PLAYER_REBUILD_MAX=0` there to keep
-the old behaviour.
+the rebuild completes only in the .NET host (which runs that loop). The CLI harness (`mlclient/main.c`) runs no such loop,
+so it sets `MLENGINE_PLAYER_REBUILD_MAX=0` unless you set a value. The slow player calls of a rebuild run on the sampler thread
+without the player lock; the video thread gets NOT_PREPARED meanwhile. The result of each step is `rb=open/addv/disp/prep`
+in the `ML-ERROR` line (-99 = not reached). The "no playing time" rebuild never waits longer than `MLENGINE_FATAL_STALL_MS`.
 
 **Fatal watchdogs.** These end the session with an `ML-ERROR` line (the host reads
 it from `ml_engine_running()`) and record the raw player state (`state=`). The player

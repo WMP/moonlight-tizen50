@@ -26,6 +26,7 @@
 static ml_engine_audio_cb s_cb_set;   /* set by the host, read once per session at init (atomic) */
 void ml_engine_set_audio_cb(ml_engine_audio_cb cb) { __atomic_store_n(&s_cb_set, cb, __ATOMIC_RELEASE); }
 void ml_engine_set_audio_drops(int dropped) { mldiag_adrops(dropped); }
+void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures) { mldiag_ahost(sent, dropped, send_failures); }
 
 static int s_samples_per_frame = 240, s_channels = 2, s_rate = 48000;
 static OpusMSDecoder *s_dec;

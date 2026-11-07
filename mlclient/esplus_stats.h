@@ -48,6 +48,9 @@ uint32_t esplus_sample_seq(void);
 int esplus_take_need_idr(void);
 /* 1 once after a player rebuild (then 0): the video sink restarts its PTS at 0. */
 int esplus_take_rebase(void);
+/* Rebuild epoch (atomic read). The video sink reads it before esplus_take_*() and submits with esplus_submit_ep: a submit
+ * with an older epoch is refused (NOT_PREPARED) so a frame cut for the old player never reaches the new one. */
+unsigned esplus_epoch(void);
 /* CLOCK_MONOTONIC in ms (sampler, arrival-mode PTS). */
 uint64_t esplus_mono_ms(void);
 
