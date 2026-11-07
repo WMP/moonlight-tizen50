@@ -26,6 +26,9 @@ permissions:
   contents: write
   pull-requests: write
   packages: read
+  # The synced tree can change workflow files (e.g. upstream ci-image-fixes
+  # rewrites build-image.yml); pushing that needs workflows permission.
+  workflows: write
 
 env:
   SOURCE_REPO: WMP/moonlight-tizen50-core
