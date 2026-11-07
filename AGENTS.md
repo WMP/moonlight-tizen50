@@ -14,16 +14,18 @@ syncs into the same-named branch here (core `main` → `sync/main`).
   **core** repo. They arrive here through the sync PR; editing them here will be
   **overwritten on the next sync**.
 - **Maintained directly here only:** `patches/` (the device-integration overlay),
-  the device-only files (`pkg/service/`, `pkg/roottest/`), `docs/`, and the infra
-  (`.github/`, this file). This includes the manual engine loader
+  the device-only files (`pkg/service/`, `pkg/roottest/`), `docs/`, `README.md`
+  (this repo's README is its own; core's README is excluded from the sync), and
+  the infra (`.github/`, this file). This includes the manual engine loader
   (`pkg/dotnet-host/ManualLoader.cs`, with `docs/ENGINE-LOAD*.md` and the
   `Program.cs`/`Diag.cs` hook-up in `patches/0002-manual-engine-loader.patch`):
   it works around the TV's exec-mmap policy and stays out of the clean upstream
   on purpose.
 - If a change in core also needs the overlay adjusted, regenerate
   `patches/0001-*.patch` (see `patches/README.md`) and keep the round-trip valid:
-  `clean (minus AGENTS.md, .gitmodules, third_party/) + patch == this tree
-  (minus patches/, sync-from-clean.yml, FUNDING.yml, .gitmodules, third_party/)`.
+  `clean (minus AGENTS.md, README.md, .gitmodules, third_party/) + patch == this
+  tree (minus patches/, sync-from-clean.yml, FUNDING.yml, README.md,
+  .gitmodules, third_party/)`.
 
 ## Build & release
 

@@ -1,224 +1,3 @@
-diff --git a/README.md b/README.md
-index 49ea77a..3d6d8c1 100644
---- a/README.md
-+++ b/README.md
-@@ -1,20 +1,28 @@
--# moonlight-tizen50-core
-+# moonlight-tizen5.0
- 
- A **native** [Moonlight](https://moonlight-stream.org/) GameStream client for
--**Samsung TVs running Tizen 5.0**, with low-latency hardware video.
-+**Samsung TVs running Tizen 5.0**, with low-latency hardware video — **no NaCl,
-+no WebAssembly**.
- 
- It streams games from a GameStream host (Sunshine, GeForce Experience,
- [Wolf](https://games-on-whales.github.io/wolf/)) and decodes video on the TV's
- hardware video plane through the vendor library `libesplusplayer.so`.
- 
--> Status: **experimental / work in progress.** The streaming engine runs
-+> Status: **experimental / work in progress.** The streaming engine is verified
- > end-to-end on real hardware (pairing → launch → RTSP → hardware decode, 2–3
--> frame player latency). The app package (UI + engine host) is still being
--> brought up.
-+> frame player latency). The hybrid app package (UI + service) is still being
-+> brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state.
- 
--## Install (no build needed)
-+> **Where to make changes:** the engine and UI are developed in
-+> **[moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core)**. This repo
-+> is that upstream **plus `patches/`** (the device-integration overlay), re-assembled by
-+> `.github/workflows/sync-from-clean.yml`. Edit code in core; here only the overlay
-+> (`patches/`), the device-only files (`pkg/service/`, `pkg/roottest/`) and `docs/` are
-+> maintained directly. See [`AGENTS.md`](AGENTS.md).
- 
--CI builds the packages on every release
-+## Install (no root required)
-+
-+**You do not build anything.** CI builds the packages on every release
- (`.github/workflows/build-packages.yml`); download them from the
- [Releases](../../releases) page and install with
- **[Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung)**.
-@@ -26,18 +34,24 @@ CI builds the packages on every release
-    `Moonlight-*.wgt` (the web UI). The UI starts the host by itself: no reboot and
-    no manual start.
- 3. Open **Apps2Samsung**, point it at the TV. It reads the TV's **DUID**, signs
--   each package for that DUID, and installs it. Apps2Samsung re-signs per-DUID,
--   which is what the TV accepts. No Samsung certificate to create by hand, no
--   `sdb` commands.
-+   each package for that DUID, and installs it. Packages are shipped signed only
-+   with a sample dev cert on purpose — Apps2Samsung re-signs per-DUID, which is
-+   what the TV accepts (a fixed distributor cert would lock installs to a preset
-+   list of TVs). No Samsung certificate to create by hand, no `sdb` commands.
-+
-+The hardware video path runs from this sandboxed, dev-signed app — **root is not
-+required** (the esplusplayer path runs under a `User::Pkg` SMACK label). Root is
-+only needed for the raw-binary CLI test harness (`esppplay`, `mlclient`).
- 
- > **Moving back from the hybrid package:** uninstall the hybrid Moonlight package
- > first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
- > `org.moonlight.host.app`, so the TV refuses the host `.tpk` while it is installed.
- > Then install the two packages above.
- 
--> Developer alternative: `pkg/install-on-tv.sh <TV_IP> <package> [cert_password]`
--> does `sdb connect` + `tizen install`, re-signing with a Samsung DUID-bound cert
--> you supply. Apps2Samsung is the same step, automated.
-+> Developer alternative (no Apps2Samsung): `pkg/install-on-tv.sh <TV_IP>
-+> <package> [cert_password]` does `sdb connect` + `tizen install`, re-signing with
-+> a Samsung DUID cert you supply (`author.p12`/`distributor.p12`). Apps2Samsung is
-+> the same DUID signing step, automated.
- 
- ## Debug vs release packages
- 
-@@ -138,38 +152,44 @@ them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
- 
- ## Why this exists
- 
--The WebAssembly [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen)
--app needs **Tizen 5.5+** because it uses Samsung EMSS (elementary media stream
--source) for the fast, low-latency video path. **Tizen 5.0 has no EMSS**, and the
--public 5.0 SDK offers only the buffering `capi-media-player` path (high latency).
-+[moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) is a
-+WebAssembly app that needs **Tizen 5.5+** because it uses Samsung EMSS (elementary
-+media stream source) for the fast, low-latency video path. **Tizen 5.0 has no
-+EMSS** and the public 5.0 SDK offers only the buffering `capi-media-player` path
-+(the same high-latency route the old NaCl client used).
- 
--This project brings the fast path to 5.0 by reusing moonlight-tizen's portable
--parts and replacing the EMSS video/audio path with a native engine built on
--`libesplusplayer.so`, the TV's hardware ES player.
-+This project backports the fast path to 5.0 by reusing moonlight-tizen's
-+reusable parts and replacing the EMSS video/audio path with a native engine built
-+on `libesplusplayer.so`. That library is **internal / not in the public SDK**, so
-+its ABI was reverse-engineered from the device binary — see
-+[PROVENANCE](docs/PROVENANCE.en.md).
- 
- ## What is reused vs. new
- 
- | | |
- |---|---|
- | **Reused unchanged** | `moonlight-common-c` (streaming core), `libgamestream` (pairing/HTTP), the web UI (host list, pairing, app grid, settings) |
--| **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c`, the WASM transport → a message-port bridge, cert handling → native |
--| **New** | `esplusplayer_tv50.h` (the TV's ES-player C API), the message-port bridge + JS shim, `esplus_player.c`, `input_evdev.c`, `gs_client.c` (+ own `xml_search`), and the build/packaging |
-+| **Replaced** | EMSS video → `video_esplus.c`, EMSS/WebAudio → `audio_opus.c`, WASM embind transport → a message-port bridge, cert handling → native |
-+| **New** | the reverse-engineered `esplusplayer_tv50.h`, the message-port service + JS bridge, `esplus_player.c`, `input_evdev.c`, `gs_client.c` (+ own `xml_search`), the whole build/packaging |
-+
-+Full map and attribution in [PROVENANCE](docs/PROVENANCE.en.md); design in
-+[ARCHITECTURE](docs/ARCHITECTURE.en.md).
- 
--## Architecture
-+## Architecture (hybrid package)
- 
- ```
--┌──────────────────────── Tizen app ────────────────────────┐
--│  Web UI (.wgt)  — moonlight-tizen front-end                │
--│      │  tizen.messageport  (mlbridge.js)                    │
--│      ▼                                                      │
--│  .NET host (.tpk)  — loads libmlengine.so (the engine)     │
--│      makeCert / pair / startStream / input                 │
--│      → moonlight-common-c + libgamestream + esplusplayer   │
--└────────────────────────────────────────────────────────────┘
-+┌─────────────────────────── Tizen hybrid package ───────────────────────────┐
-+│  Web UI (wgt)  — moonlight-tizen front-end, unchanged logic                 │
-+│      │  tizen.messageport  (mlbridge.js replaces the WASM embind transport)  │
-+│      ▼                                                                       │
-+│  Native service (tpk)  — mlservice.c                                         │
-+│      makeCert / httpInit / openUrl / pair / startStream / sendKeyboardEvent  │
-+│      → moonlight-common-c + libgamestream + esplusplayer video/audio + input │
-+└─────────────────────────────────────────────────────────────────────────────┘
- ```
- 
--During streaming the engine owns the hardware video overlay; the web UI is the
--menu/launcher.
-+During streaming the native service owns the hardware video overlay; the web UI
-+is the menu/launcher.
- 
- ## Latency & statistics
- 
-@@ -264,6 +284,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
- 
- `.github/workflows/build-packages.yml` is the reference for the full sequence.
- 
-+## Releasing
-+
-+CI (`.github/workflows/build-packages.yml`) builds the `.tpk` + `.wgt` and attaches
-+them to a GitHub Release.
-+
-+1. One-time: host the TV libraries **privately** (they must never be public) and give
-+   CI read-only access:
-+   - create a **private** repo, e.g. `WMP/tizen-50-tv-libs`, and upload the tarball as a release
-+     asset — `gh release create v1 tv-libs.tar -R WMP/tizen-50-tv-libs` (the tar must contain
-+     `tv-libs/usr/lib/libesplusplayer.so` and the other TV `.so` files);
-+   - get the asset's API URL:
-+     `gh api repos/WMP/tizen-50-tv-libs/releases/tags/v1 --jq '.assets[0].url'`;
-+   - create a **fine-grained PAT** scoped to *Contents: read* on `WMP/tizen-50-tv-libs` only;
-+   - add two repo secrets here (*Settings → Secrets and variables → Actions*):
-+     **`TV_LIBS_URL`** = that asset API URL, **`TV_LIBS_TOKEN`** = the PAT.
-+   CI downloads the tar with the token in an `Authorization` header, so the URL alone
-+   is useless to anyone else. Without both secrets the native build is skipped (the run
-+   stays green but produces no packages).
-+2. The `third_party/moonlight-tizen` submodule must resolve (CI checks it out with
-+   `submodules: recursive`).
-+3. Push a tag `vX.Y.Z` (or run it from *Actions → Run workflow*). CI builds in the
-+   Docker image and uploads `org.moonlight.host-*.tpk` + `Moonlight-*.wgt` to the Release.
-+4. Users install the released packages with Apps2Samsung (per-DUID signing).
-+
-+For the sync workflow to open PRs, enable *Settings → Actions → General → Allow GitHub
-+Actions to create and approve pull requests*.
-+
- ## Requirements
- 
- - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
-@@ -273,25 +320,33 @@ docker run --rm --network none -v "$PWD":/work/repo \
- ## Repository layout
- 
- ```
--esplusplayer_tv50.h   C API for the TV's libesplusplayer.so
-+esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
- mlclient/             native engine + CLI harness (video, audio, input, pairing)
--pkg/                  app package: Dockerfile, .NET host (tpk), web UI (wgt), build
-+pkg/                  hybrid package: Dockerfile, service (tpk), ui (wgt), build
- tests/                esppplay probe + host self-tests used during bring-up
-+docs/                 BACKPORT / PROVENANCE / ARCHITECTURE / DEV-CERT (EN + PL)
- third_party/          moonlight-tizen (web UI + moonlight-common-c), git submodule
- fetch-*.sh build-*.sh reproducible build scripts
- ```
- 
- ## Credits & license
- 
--This project stands on several others:
-+This project stands on several others. What came from where:
- 
--| Project | What we use |
-+| Project | What we took from it |
- |---|---|
--| [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) | The streaming core — RTSP, control stream, FEC, the decoder/audio callback ABI. Used unchanged. |
--| [moonlight-embedded](https://github.com/moonlight-embedded/moonlight-embedded) | `libgamestream` (pairing + GameStream HTTP), and its `client.c` as the reference for our native pairing/launch (`gs_client.c`). |
--| [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) | The web UI — host list, pairing, app grid, settings — reused as-is, with the WASM transport swapped for our message-port bridge. |
-+| [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) (moonlight-stream) | The streaming core — RTSP, control stream, FEC, the decoder/audio callback ABI. Used unchanged. |
-+| [moonlight-embedded](https://github.com/moonlight-embedded/moonlight-embedded) (irtimmer) | `libgamestream` (pairing + GameStream HTTP) and its `client.c` as the reference for our native pairing/launch orchestration (`gs_client.c`). |
-+| [moonlight-tizen](https://github.com/brightcraft/moonlight-tizen) (brightcraft) | The web UI — host list, pairing, app grid, settings — reused as-is, with the WASM/EMSS video transport swapped for our message-port bridge. The WASM port we backport the fast path *from*. |
-+| [moonlight-chrome](https://github.com/moonlight-stream/moonlight-chrome) → [moonlight-tizen-nacl](https://github.com/OneLiberty/moonlight-tizen-nacl) (OneLiberty) | The original NaCl Tizen lineage this repo forked; the pre-5.5 UI and gamepad fixes. |
-+| [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) (iqui27) | The **native `.tpk` design for Tizen 4/5**: loading the engine `.so` from memory via `memfd` (UEP blocks file `dlopen`), the `tizen40`/`TVGLApplication` host shape, **PUBLIC / no-`drminfo`** signing, per-DUID install, and the self-update-by-downloaded-`.so` idea. We aligned our host/engine to it; no code copied. |
- | [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) | The end-user install tool — reads the TV DUID, signs each package for it, installs. |
--| [vitalets/docker-tizen-webos-sdk](https://github.com/vitalets/docker-tizen-webos-sdk) + the [Jellyfin](https://github.com/jellyfin/jellyfin-tizen) install flow | The headless build+install toolchain our Docker image and `install-on-tv.sh` follow. |
-+| [vitalets/docker-tizen-webos-sdk](https://github.com/vitalets/docker-tizen-webos-sdk) + the [Jellyfin](https://github.com/jellyfin/jellyfin-tizen) / [georift](https://github.com/Georift/install-jellyfin-tizen) install flow | The headless build+install toolchain (Tizen CLI + `sdb`), the pattern our Docker image and `install-on-tv.sh` follow. |
-+
-+**New / our own:** the reverse-engineered `libesplusplayer.so` ABI
-+(`esplusplayer_tv50.h`), the native engine (`esplus_player.c`, `video_esplus.c`,
-+`audio_opus.c`, `input_evdev.c`), the message-port bridge, and the build/packaging.
-+Full file-level map and attribution in [PROVENANCE](docs/PROVENANCE.en.md).
- 
- **License:** `moonlight-common-c` and `libgamestream` are GPLv3, so this project is
- **GPLv3**.
-@@ -302,5 +357,6 @@ device.
- 
- ## Disclaimer
- 
--Independent, unofficial project. Not affiliated with or endorsed by Samsung,
--NVIDIA, or the Moonlight project.
-+Independent, unofficial project. Reverse-engineering notes are engineering aids;
-+items marked "assumed" need verification on the target hardware before relying on
-+them. Not affiliated with or endorsed by Samsung, NVIDIA, or the Moonlight project.
 diff --git a/docs/ARCHITECTURE.en.md b/docs/ARCHITECTURE.en.md
 new file mode 100644
 index 0000000..99b77b4
@@ -1047,6 +826,200 @@ index 0000000..9152857
 +
 +> Materiał pomocniczy inżynierski. Przed użyciem zewnętrznym części oznaczone
 +> jako założone wymagają weryfikacji na docelowym sprzęcie.
+diff --git a/docs/esplusplayer-audio-opus.md b/docs/esplusplayer-audio-opus.md
+new file mode 100644
+index 0000000..9091f18
+--- /dev/null
++++ b/docs/esplusplayer-audio-opus.md
+@@ -0,0 +1,188 @@
++# Audio path failure on Tizen 5.0 esplusplayer — `prepare_async_done ok=0`, error `0xfe6c1008`
++
++Investigation date: 2026-11-06. Symptom sessions: 21:21, 21:36, 21:47 (TV console logs
++`tv-console-Moonlight5.ui-20261106-*.txt` + Wolf logs `wolf-last-minute-*.log`).
++
++Verdict markers: **[F]** = fact, verified in decompiled TV libraries or logs;
++**[P]** = hypothesis/probable. Decompiled sources live in `tv-recon/game-mode-re/decompiled/`
++(`libesplusplayer.so.c`, `libtrackrenderer.so.c`, `libcapi-media-epplayer.so.0.4.0.c`,
++`libtrackrenderer.so.static-init.c`), taken from this exact TV (QE65Q70R, Tizen 5.0,
++model group 19_MUSEM_QTV). SHA-256 manifests in `game-mode-re/decompiled/SHA256SUMS`.
++
++---
++
++## 1. Symptom
++
++After `/launch` or `/resume` the TV shows one video frame and never updates it. Wolf keeps
++streaming and receives gamepad input. Engine log excerpt (session 21:47):
++
++```
++esplus_prepare: waiting for the other sink
++esplusplayer_add_audio_stream_info opus -> 1
++esplus_prepare prepare_async -> 1
++cb ready_to_prepare stream=1 ; cb ready_to_prepare stream=0
++esplus_submit #1..#235 -> 0 (NOT_PREPARED)   <- audio only; video waits for IDR
++esplus_submit #236 -> 4                       <- first video frame (IDR)
++cb player error 0xfe6c1008
++cb prepare_async_done ok=0
++esplus_start -> 1
++(esplusplayer_get_playing_time returns false on every poll)
++```
++
++Diagnostics line (times in ms since `prepare_async`): `err=2044` fires 1–2 ms after `a1=2043`
++(first accepted audio packet). First accepted audio PTS = 1175 ms, first video PTS = 0 ms
++(audio arrived ~2 s before the first IDR because the client's first IDR request is lost —
++Wolf starts its pipelines later; see §5).
++
++## 2. What `0xfe6c1008` is — [F]
++
++Three independent confirmations from the decompiled TV libraries:
++
++1. `libcapi-media-epplayer.so.0.4.0.c`, `__epplayer_convert_error_code` (~line 3180):
++   `0xfe6c1008` maps to the symbol **`EPPLAYER_ERROR_NOT_SUPPORTED_FORMAT`**.
++2. `libtrackrenderer.so.c`, `plusplayer::trackrenderer::internal::HandleOmxError`
++   (ELF 0x2f324): a GST error originating from an element whose name contains `omx`,
++   whose GstElement class is **"Audio"**, with GError code 1 → returns `0xfe6c1008`
++   (`0xfe6c002e` when a second flag is false).
++3. Same file, `ConvertGstStreamError` (case 1 = `GST_STREAM_ERROR_DECODE`) and
++   `ConvertGstCoreError(12)` both → `0xfe6c1008`.
++
++Error propagation path — [F]: omx audio decoder posts `GST_MESSAGE_ERROR` on the bus →
++`TrackRenderer::GstBusSyncHandlerCb_` (libtrackrenderer.so, ELF 0x324a8, `GST_MESSAGE_ERROR`
++branch) → `trackrenderer::HandleError` → error callback → `PrepareTask_` sees `Prepare_`
++fail → `OnPrepareDone(false)` → `cb prepare_async_done ok=0`. The `0xfe6c…` prefix is the
++plusplayer/epplayer error space (not the public Tizen `player_error_types` enum).
++
++**Conclusion: the audio decoder rejected the stream format. This is not a clock/PTS error.**
++
++Independent on-TV verification (no code change): run
++`dlogutil PLUSPLAYER TIZEN_N_EPPLAYER` during a session — `HandleError` logs the element
++class, element name and GError text; `__epplayer_convert_error_code` logs the full mapping.
++
++## 3. Why: Opus has no decoder on this TV — [F], decisive
++
++- The esplusplayer C API exposes `ESPLUSPLAYER_AUDIO_MIME_TYPE_OPUS = 8` and
++  `AudioStream::SetMimeType_` (libesplusplayer.so, ELF 0x424dc, case 8) maps it to the
++  Gst caps string `audio/x-opus`. **[F]**
++- `libtrackrenderer.so` (with `libtrackrenderer.so.static-init.c`) contains the static
++  caps→decoder map used to build the audio pipeline. Entries pair mime types with the
++  `omx_audiodec` element / `OMX.SDP.AUDIO.DECODER.INST0` component (and a second
++  `OMX.SDP.AUDANY_PRIMARY.Decoder` family). Supported audio caps in the table:
++  `audio/mpeg, x-aac, x-ac3, ac3, x-eac3, x-ac4, x-adpcm, x-wma, x-vorbis,
++  x-pn-realaudio, x-true-hd, x-gst-fourcc-mha1, x-gst-fourcc-mhm1, x-alaw, x-mulaw`
++  (plus `audio/x-raw_tz` for the secure path). **The string `x-opus` does not occur
++  anywhere in libtrackrenderer.so.** **[F]**
++- Timeline match — [F]: the error fires 1–2 ms after the *first audio buffer reaches the
++  decoder*, not when audio submits start (submits began 2 s earlier and were rejected with
++  NOT_PREPARED before the pipeline was linked). Caps are only validated by the decoder when
++  the first buffer flows (during the PREROLL into PAUSED transition that prepare performs).
++
++So on this TV the OPUS enum is a dead entry: the esplusplayer API accepts the stream-info,
++but trackrenderer/OMX has no Opus decoder, the caps are rejected at preroll, and prepare
++completes with `ok=0` + `EPPLAYER_ERROR_NOT_SUPPORTED_FORMAT`.
++
++Supporting detail (moot given the above, but recorded):
++- `codec_data` is attached to caps as the `codec_data` field (a GstBuffer) by
++  `GstCapsBuilder::MakeGstBufferWithCodecData` (libtrackrenderer.so); `streamheader` is not
++  used. **[F]** The RFC 7845 OpusHead (19 B, pre-skip 3840) we build is a reasonable value
++  for that field.
++- `channels`/`sample_rate` from the stream-info struct go into caps fields
++  `channels`/`rate` (`track::audio::FillDefault`); `bitrate` is only logged. **[F]**
++- Packets: yes, raw elementary-stream payloads, no container — `esplusplayer_submit_packet`
++  wraps each buffer into a GstBuffer on the sink pad. **[F]**
++
++## 4. NOT_PREPARED for audio while video "works" — [F]
++
++This is a sampling artifact of the engine, not player asymmetry. The engine does not submit
++video before an IDR frame (`cc: Waiting for IDR frame`), so every submit in that window is
++audio. Decisive control log `tv-recon/tv-console-Moonlight5.ui-20261104-214435.txt`:
++a session where the IDR never arrived — **588 audio submits → 0 (NOT_PREPARED), prepare
++never completed, no player error**. Audio alone never unblocks submission.
++
++In session 21:47 the first video submit (#236, the IDR) returned `4` immediately and audio
++returns `4` from the next packet on (a1−v1 = 1 ms). The unlock coincides with the video
++branch being able to preroll. `SubmitPacketCommon_` (libesplusplayer.so, ELF 0x35690)
++returns status 0 when the state-machine state is below the prepared threshold.
++**[P, high confidence]** Mechanism: prepare links both branches and drives the pipeline to
++PAUSED; sinks need preroll buffers on *both* branches (including `directvideosink`), so
++until video data exists the player is not prepared and rejects everything. Not a documented
++"first packet must be video" rule.
++
++## 5. Wolf-side timeline — [F, from wolf-last-minute-214727.log]
++
++- 20:47:01.356 — client's first IDR request arrives (ENET `IDR_FRAME`), but the Wolf video
++  pipeline only started at 20:47:01.494 and the audio pipeline at 20:47:01.824 → the first
++  IDR request is lost. Second request at 20:47:03.508 ("Forcing IDR").
++- Hence `first_du_ms=2247` and the 1175 ms audio PTS offset (engine kept incrementing the
++  audio PTS counter across rejected packets).
++
++Wolf logs can confirm/refute this timing, but they **cannot** adjudicate the prepare failure
++itself: PTS values are computed client-side (video from `presentationTimeMs`, audio from a
++local counter). The prepare failure cause is the TV audio decoder (§2–3).
++
++## 6. Could PTS mismatch (audio 1175 ms vs video 0 ms) cause `ok=0`? — [P, strong no]
++
++Nothing in decompiled `libtrackrenderer.so` / `libesplusplayer.so` compares stream start PTS
++during prepare; prepare builds pipelines and sets `audio-delay-info-for-avsync` on the audio
++sink (compensating decode latency by video resolution). A 1175 ms A/V offset would wreck
++sync after start, but it does not fail prepare. This also matches the timing: the error
++arrives 1–2 ms after the first buffer reaches the decoder, not 2 s earlier when "bad PTS"
++audio first got submitted.
++
++## 7. "Why not transcode to AAC?" — rejected, with protocol facts
++
++- **[F]** GameStream/Moonlight audio is **always Opus** — there is no codec negotiation.
++  moonlight-common-c (submodule, `src/SdpGenerator.c:481-496`, `src/RtspConnection.c:754`)
++  negotiates only the channel configuration (`x-nv-audio.surround.*`,
++  `a=fmtp:97 surround-params=…`; payload 97 = Opus). `src/AudioStream.c` has exactly one
++  decode path: Opus (`opusHeaderByte`, `decodeAndPlaySample`). GFE behaved the same (hence
++  the GFE channel-mapping swap code in common-c); Sunshine/Wolf replicate it — the Wolf
++  pipeline hardcodes `opusenc … audio-type=restricted-lowdelay`.
++- **[F]** The client has no way to announce unsupported audio codecs: unlike video
++  (`supportedVideoFormats` in `/launch`), no audio-codec capability field exists.
++- **[F]** The TV's hardware decoders (trackrenderer map, §3) do include AAC — but feeding
++  them would require local Opus→AAC transcoding in the client (extra CPU + latency) to
++  achieve exactly what direct Opus→PCM decode achieves. Also, Opus `restricted-lowdelay`
++  5 ms frames are inherently lower-latency than AAC (encoder priming ~2048 samples ≈ 42 ms).
++
++Correct design consequence: the engine must treat "input stream is always Opus" and
++"this platform has no hardware Opus path" as facts, and decode Opus in software
++(vendored libopus) and submit `audio/x-raw` PCM to the same esplusplayer instance (keeps
++the shared A/V clock and the working submit path) — with PulseAudio output as the
++alternative backend. This is exactly the fallback already sketched in
++`mlclient/audio_opus.c`'s header comment. The enum values 9+ in `esplusplayer_tv50.h`
++are the PCM (`audio/x-raw`) mime variants; the x-raw caps variants in
++`AudioStream::SetMimeType_` (libesplusplayer.so ELF 0x424dc, cases 9–0xf) set internal
++format fields (endianness/width/layout) accordingly.
++
++## 8. Minimal discriminating tests (A = bad Opus/codec_data, B = PTS-axis mismatch)
++
++- **T0, no code change [F]:** `dlogutil PLUSPLAYER TIZEN_N_EPPLAYER` during a session —
++  direct proof the error comes from `omx_audiodec`.
++- **T1, decisive (one run):** extend the video-only test tool (which yields `ok=1`) with
++  the Opus audio track (same 48 kHz/2 ch/5 ms packets, OpusHead codec_data) and
++  **PTS(audio) = PTS(video), one shared axis starting at 0**. `ok=0` + `0xfe6c1008`
++  → hypothesis A (format). `ok=1` → hypothesis B (PTS).
++- **T2, control:** video + `audio/x-raw` PCM (mime 9+) with audio PTS deliberately offset
++  by ~1.2 s → `ok=1` proves a PTS offset alone does not kill prepare (completes the case
++  for A).
++
++## 9. Fix plan (see PROMPT-esplus-audio-pcm.md for the implementation prompt)
++
++1. Vendor/build libopus for ARM (Tizen 5.0 sysroot, arm-linux-gnueabi-gcc 6.2, same as the
++   rest of the engine deps). Decode in `decodeAndPlaySample` and submit PCM.
++2. `esplusplayer_audio_stream_info` with a PCM mime (9+, per `esplusplayer_tv50.h`),
++   `channels`/`sample_rate` set; no `codec_data` (codec_data_length = 0).
++3. Keep the shared-clock design: same player instance, same submit path
++   (`esplus_submit`), PTS policy unchanged (audio counter +5 ms/packet from the first
++   packet) — or align audio start to the first video PTS (see 4).
++4. Independent improvements (not required for the fix):
++   - Align the audio PTS axis to the first accepted video frame to remove the 1175 ms
++     startup skew caused by the lost first IDR request.
++   - Send a second IDR request after a short delay (or once the first video data is seen)
++     so it cannot be lost before Wolf's pipeline is up (`first_du_ms≈2.2 s` sessions).
++
++## 10. Caveat
++
++All library conclusions come from this TV's firmware libraries. Other firmware versions
++may map errors differently — hence T0/dlog as the on-device verification step.
 diff --git a/esplusplayer_tv50.h b/esplusplayer_tv50.h
 index b243b6b..a94cab9 100644
 --- a/esplusplayer_tv50.h

@@ -13,11 +13,13 @@ name: Sync from clean upstream
 #   1. merge core's branch with the `ours` strategy — adopts the commits, keeps
 #      this repo's tree;
 #   2. rebuild the tree deterministically as core's branch + patches/ overlay
-#      (same rsync + git apply as before);
+#      (same rsync + git apply as before; patches fall back to `git apply
+#      --3way` when the exact apply fails, so drifted context merges instead
+#      of breaking the run — a real conflict still fails on purpose);
 #   3. push the branch and open/update the PR.
 #
-# If a patch no longer applies, the run fails on purpose so a human refreshes
-# the overlay (that is exactly the case worth a human's eyes).
+# If a patch still fails after the 3-way retry, the run fails on purpose so a
+# human refreshes the overlay (that is exactly the case worth a human's eyes).
 
 on:
   workflow_dispatch:
@@ -100,7 +102,7 @@ jobs:
           # and device-only files survive as rsync exclusions (full list in
           # patches/README.md):
           #  patches/, this workflow, FUNDING.yml, .gitmodules, third_party/,
-          #  AGENTS.md (this repo keeps its own), ManualLoader.cs,
+          #  AGENTS.md and README.md (this repo keeps its own), ManualLoader.cs,
           #  docs/ENGINE-LOAD*.md (the TV exec-mmap workaround layer).
           rm -rf /tmp/clean
           mkdir /tmp/clean
@@ -110,6 +112,7 @@ jobs:
             --exclude='/.gitmodules' \
             --exclude='/third_party' \
             --exclude='/AGENTS.md' \
+            --exclude='/README.md' \
             --exclude='/patches' \
             --exclude='/pkg/dotnet-host/ManualLoader.cs' \
             --exclude='/docs/ENGINE-LOAD.md' \
@@ -118,10 +121,22 @@ jobs:
             --exclude='/.github/FUNDING.yml' \
             /tmp/clean/ ./
 
+          # 1st try: exact apply. On failure, retry with --3way: the merge above
+          # made core's commits (and their blob hashes) reachable from this
+          # repo, so git can merge the patch onto drifted-but-compatible
+          # upstream lines instead of failing on stale context. A real
+          # conflict still fails the run (with conflict markers left in the
+          # tree, never committed) — that stays a human's job.
+          # The git add syncs the index with the rsync'd tree; --3way refuses
+          # to touch files that do not match the index.
+          git add -A
           for p in patches/*.patch; do
             echo "applying $p"
-            git apply --whitespace=nowarn "$p" \
-              || { echo "::error::$p no longer applies — the upstream changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
+            if ! git apply --whitespace=nowarn "$p"; then
+              echo "::warning::$p needed a 3-way merge — the upstream drifted around lines this overlay touches. Refresh patches/ when convenient."
+              git apply --whitespace=nowarn --3way "$p" \
+                || { echo "::error::$p no longer applies — the upstream changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
+            fi
           done
 
           if [ -z "$(git status --porcelain)" ]; then

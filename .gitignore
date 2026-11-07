@@ -7,3 +7,4 @@ pkg/dotnet-host/obj/
 pkg/dotnet-host/lib/
 *.tpk
 *.wgt
+/.sim/

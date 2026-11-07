@@ -119,10 +119,19 @@ jobs:
           git archive "refs/remotes/core/$CORE_REF" | tar -x -C /tmp/clean
           rsync -a --delete "${EXCLUDES[@]}" /tmp/clean/ ./
 
+          # Same policy as sync-from-clean.yml: exact apply, then --3way
+          # (the merge above makes the patch's pre-image blobs reachable, so
+          # git can resolve drifted context; a real conflict still fails).
+          # The git add syncs the index with the rsync'd tree; --3way refuses
+          # to touch files that do not match the index.
+          git add -A
           for p in patches/*.patch; do
             echo "applying $p"
-            git apply --whitespace=nowarn "$p" \
-              || { echo "::error::$p no longer applies to $CORE_REF ($CORE_SHA) — the source changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
+            if ! git apply --whitespace=nowarn "$p"; then
+              echo "::warning::$p needed a 3-way merge — the upstream drifted around lines this overlay touches. Refresh patches/ when convenient."
+              git apply --whitespace=nowarn --3way "$p" \
+                || { echo "::error::$p no longer applies to $CORE_REF ($CORE_SHA) — the source changed lines this overlay touches. Refresh patches/ by hand."; exit 1; }
+            fi
           done
 
           git add -A

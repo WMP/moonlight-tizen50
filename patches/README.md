@@ -19,17 +19,22 @@ Applied automatically by `.github/workflows/sync-from-clean.yml`:
    reachable from this repo's history;
 2. the upstream's files are laid down at the repo root (upstream code only;
    this repo's own `patches/`, sync workflow, `FUNDING.yml`, `AGENTS.md`,
-   `.gitmodules`, `third_party/`, and the device-only files listed below are
-   preserved), then `git apply patches/*.patch` re-adds this layer — the result
-   is committed as one deterministic rebuild commit;
+   `README.md`, `.gitmodules`, `third_party/`, and the device-only files
+   listed below are preserved), then `git apply patches/*.patch` re-adds this
+   layer — the result is committed as one deterministic rebuild commit. Each
+   patch is first applied exactly; if that fails, it is retried with
+   `git apply --3way` (step 1 makes the pre-image blobs reachable, so git can
+   merge the patch onto drifted context). The run emits a `::warning` whenever
+   the 3-way fallback was needed — that is the signal to refresh `patches/`;
 3. the branch is pushed and a pull request opened against `main` here.
 
 Branch mapping: a core branch syncs into the **same-named branch** here
 (`core:feature/x` → `feature/x`). Core's `main` goes to `sync/main` here
 (a PR needs a different head than its base).
 
-If a patch no longer applies, the upstream changed the same lines this overlay
-touches — the sync run fails on purpose so a human can refresh the patch.
+If a patch still fails after the 3-way retry, the upstream changed the same
+lines this overlay touches — the sync run fails on purpose (conflict markers
+are left in the tree, never committed) so a human can refresh the patch.
 
 The first sync after this model was introduced was refreshed against core
 `207360c` (the 4K/HEVC + latency/statistics work): `0001` re-based onto the new
@@ -37,14 +42,23 @@ README wording (the "Latency & statistics" section moved the context lines) and
 the annotated `esplusplayer_tv50.h` (core documented `resource_conflicted`;
 both notes were merged in the overlay's copy).
 
+**`README.md` is maintained directly in this repo** (kept out of the rsync in
+sync-from-clean.yml, like `AGENTS.md`): the README diverges too much from the
+upstream one (install on a retail TV, Apps2Samsung, the overlay model itself),
+so patching it made every upstream README edit break the sync. The last patch
+hunks that touched it were removed after core's WebAudio branch edited the
+"Replaced" table row (PR #27, core `81885b4`) and broke `0001`.
+
 Patch files:
 
 - `0001-re-root-overlay.patch` — the device-integration overlay (docs, service
-  path, probes).
+  path, probes, the Opus-audio failure analysis) and the annotated
+  `esplusplayer_tv50.h`. It creates files and patches only the header, so
+  upstream README churn cannot break it.
 - `0002-manual-engine-loader.patch` — the host-side hook-up of the manual
   ELF32-ARM engine loader: the `Program.cs` fallback (memfd → manual loader →
   packaged file), the `GetDelegate` routing through the manual image's symbol
-  table, the diag `anon-exec` probe, and the README link. The loader itself
+  table, and the diag `anon-exec` probe. The loader itself
   (`pkg/dotnet-host/ManualLoader.cs`) and the docs
   (`docs/ENGINE-LOAD.md`, `docs/ENGINE-LOAD.en.md`) are maintained directly in
   this repo (kept out of the rsync in sync-from-clean.yml), because on a
@@ -55,6 +69,7 @@ Patch files:
 
 Regenerate after intentionally changing the tracked tree:
 
-    # base = clean upstream (minus AGENTS.md, .gitmodules, third_party/);
+    # base = clean upstream (minus AGENTS.md, README.md, .gitmodules,
+    #   third_party/);
     # target = this repo (minus patches/, sync-from-clean.yml, FUNDING.yml,
-    # .gitmodules, third_party/). Diff base -> target into the patch.
+    #   README.md, .gitmodules, third_party/). Diff base -> target into the patch.
