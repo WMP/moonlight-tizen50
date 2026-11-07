@@ -13,6 +13,13 @@
   <icon src="icon.png"/>
   <name>Moonlight</name>
   <tizen:profile name="tv"/>
+  <!-- Samsung Game Mode at the application level (the upstream "ForceGM" variant's
+       metadata): asks the TV to run the app in its game picture/low-latency mode.
+       Tizen 5.0 may ignore it (upstream added it for 9.0+, where the in-app Game
+       Mode switch stopped working); harmless there. The UI's gameMode setting is
+       unrelated: it only picked the WASM player's latency mode, which this engine
+       (esplusplayer) does not use. -->
+  <tizen:metadata key="http://samsung.com/tv/metadata/use.game.mode" value="true"/>
   <feature name="http://tizen.org/feature/screen.size.all"/>
   <!-- Privileges the moonlight-tizen UI uses (same set as its res/config.xml, all
        public-level). Without productinfo, index.js line 4 throws a SecurityError and
