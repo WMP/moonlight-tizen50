@@ -34,8 +34,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # The synced tree can change workflow files; pushing that needs workflows permission.
-  workflows: write
 
 env:
   CLEAN_REPO: https://github.com/WMP/moonlight-tizen50-core.git
