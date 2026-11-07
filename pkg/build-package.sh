@@ -44,6 +44,16 @@ sed -i "s/__ML_BUILD__/$ML_BUILD/" "$OUT/ui/platform/mlbridge.js"
 # index.js placeholders (moonlight-tizen's own Dockerfile does the same).
 if [ "$BUILD_VARIANT" = debug ]; then BT=development; else BT=release; fi
 sed -i -e "s/__BUILD_TYPE__/$BT/g" -e "s/__BUILD_COMMIT__/$BUILD_COMMIT/g" "$OUT/ui/platform/index.js"
+# Game Mode switch: upstream disables it on Tizen 5.5 because the WASM player's
+# latency mode is unusable there. This engine drives the TV's own game picture
+# mode instead (mlbridge.js startStream `gameMode`), so keep the switch usable.
+# Both branches: the defaults reset (switch off+disabled) and the stored-state
+# load (off+disabled); the ForceGM-variant check stays - that variant is signed
+# for a forced mode and must not double-apply.
+sed -i -e 's/} else if (checkForceGMVariant || parseFloat(platformVer) === 5.5) {/} else if (checkForceGMVariant) {/' \
+       -e 's/} else if (isForceGMVariant || parseFloat(platformVer) === 5.5) {/} else if (isForceGMVariant) {/' \
+       "$OUT/ui/platform/index.js"
+grep -q "isForceGMVariant || parseFloat" "$OUT/ui/platform/index.js" && { echo "gameMode 5.5 unlock sed failed" >&2; exit 1; }
 echo "version: $(sed -n '/<widget/,/>/ s/.* version="\([^"]*\)".*/\1/p' "$OUT/ui/config.xml" | head -1) ($ML_BUILD)"
 if [ "$BUILD_VARIANT" = debug ]; then
   # trace build: console -> host -> dlog (see ui/mltrace.js); first script in <head>

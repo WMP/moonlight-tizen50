@@ -23,6 +23,8 @@ extern void VidEsplus_FillCallbacks(PDECODER_RENDERER_CALLBACKS cb);
 extern void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb);  /* audio_opus.c */
 extern int  input_init(void);                                      /* input_evdev.c */
 extern void input_shutdown(void);
+extern int  ml_avoc_set_game_mode(int on);                         /* engine_avoc.c */
+static int  g_gamemode;   /* the UI asked for the TV game mode this session */
 extern int  gs_orchestrate(const char *host, unsigned short httpPort, unsigned short httpsPort,
                            int appId, const char *pin, STREAM_CONFIGURATION *sc,
                            SERVER_INFORMATION *si, const char *datadir);
@@ -69,6 +71,7 @@ static void cl_connTerminated(int errorCode) {
   MLT("connectionTerminated err=%d", errorCode);
   if (errorCode != 0) report_failure(errorCode, -1);   /* before g_running = 0: the host reads it after */
   g_running = 0;
+  if (g_gamemode) ml_avoc_set_game_mode(0);   /* leave the TV's picture mode as it was */
 }
 /* moonlight-common-c is built with LC_LOG (build-deps-lib.sh): Limelog formats the line
    itself and passes it as the only argument, so it is plain text here; a '%' in it must
@@ -116,6 +119,7 @@ static int start_connection(void) {
   if (err != 0) { fprintf(stderr, "[ml] LiStartConnection failed: %d\n", err); MLT("start_connection -> 1 (LiStartConnection %d)", err); return 1; }
   MLT("LiStartConnection -> 0");
   g_started = 1; g_running = 1;
+  if (g_gamemode) ml_avoc_set_game_mode(1);   /* TV low-latency picture mode for the stream */
 
   int in = input_init();
   MLT("input_init -> %d", in);
@@ -209,6 +213,7 @@ void ml_engine_wait(void) {
 void ml_engine_stop(void) {
   MLT("ml_engine_stop started=%d", g_started);
   g_running = 0;
+  if (g_gamemode) ml_avoc_set_game_mode(0);   /* also on a user stop: restore the picture mode */
   if (!g_started) { MLT("ml_engine_stop -> nothing to stop"); return; }
   g_started = 0;
   fprintf(stderr, "[ml] stopping, releasing overlay\n");
@@ -237,6 +242,7 @@ static int start_session_impl(const char *host, int width, int height, int fps, 
       rikeyid, app_version ? app_version : "(null)", gfe_version ? gfe_version : "(null)",
       rtsp_url ? "(set)" : "(null)", server_codec_mode_support, video_codec ? video_codec : "(null)",
       hdr, audio_config ? audio_config : "(null)", full_range);
+  g_gamemode = 0;   /* unless the caller opts in for this session */
   if (g_running) { MLT("ml_engine_start_session -> 0 (already streaming)"); return 0; }
   if (g_started) ml_engine_stop();
   mldiag_reset(NULL);   /* an early failure must not report the previous session */
@@ -317,4 +323,12 @@ int ml_engine_start_session_v2(const char *host, int width, int height, int fps,
   return start_session_impl(host, width, height, fps, bitrate_kbps, rikey_hex, rikeyid, app_version,
                             gfe_version, rtsp_url, server_codec_mode_support, video_codec, hdr,
                             audio_config, full_range);
+}
+
+/* The UI's "Game Mode" setting (pkg/ui/PROTOCOL.md startStream `gameMode`): 1 = ask the
+ * TV for its game picture/low-latency mode while a stream runs (restored at stop), 0 = off.
+ * Call before startStream; it applies to the next session. Returns 0. */
+void ml_engine_set_gamemode(int on) {
+  MLT("ml_engine_set_gamemode %d", on);
+  g_gamemode = on ? 1 : 0;
 }

@@ -128,6 +128,7 @@ test('startRequest fullRange defaults to false', async function () {
   var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
   var f = fields(sent[0]);
   assert.strictEqual(f.fullRange, 'false');
+  assert.strictEqual(f.gameMode, 'false');
   reply(f.id, {});
   await p;
   sent.length = 0;
@@ -135,6 +136,19 @@ test('startRequest fullRange defaults to false', async function () {
   p = win.sendMessage('startRequest', a);
   f = fields(sent[0]);
   assert.strictEqual(f.fullRange, 'false');
+  assert.strictEqual(f.gameMode, 'false');
+  reply(f.id, {});
+  await p;
+});
+
+test('startRequest gameMode a[27]', async function () {
+  sent.length = 0;
+  var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7,
+                                            'v', 'g', 'rtsp://x', 1, 0, 0, 0, 0, 0, 0,
+                                            'EMSS', 'Stereo', 1, 40, 1, 1, 'H264', 1, 1, 1]);
+  var f = fields(sent[0]);
+  assert.strictEqual(f.gameMode, 'true');
+  assert.strictEqual(f.fullRange, 'true');
   reply(f.id, {});
   await p;
 });
