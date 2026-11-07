@@ -115,8 +115,8 @@ The UI keeps at most 8 unfinished `au` frames and clears them when the stream en
 `mlbridge.js` never passes `mlaudio` to `window.handleMessage` and writes no console line per event.
 
 UI audio scheduler (`mlaudio.js`, a port of the audio scheduler of moonlight-tizen): a Web Audio
-context (48 kHz, `interactive`) is created by `startAudioScheduler()` in the `startStream` path
-(a user gesture, for the autoplay policy) and closed by `stopAudioScheduler()` on `stopStream` and
+context (48 kHz, `interactive`) is created by `mlAudioStart()` in the `startStream` path
+(a user gesture, for the autoplay policy) and closed by `mlAudioStop()` on `stopStream` and
 `streamTerminated`. Frames are scheduled against `currentTime` with a jitter buffer of 100 ms
 (`window._mlAudioTargetMs` changes it); after an underrun the schedule is primed to the full
 buffer again, and a frame is dropped when the schedule is over twice the buffer ahead. The

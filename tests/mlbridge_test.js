@@ -597,8 +597,8 @@ test('mlaudio: a big event sent as parts is fed once, joined', async function ()
 
 test('mlaudio: startStream starts and streamTerminated / stopStream stop the scheduler; overlay shows counters', async function () {
   var ev = [];
-  win.startAudioScheduler = function () { ev.push('start'); };
-  win.stopAudioScheduler = function () { ev.push('stop'); };
+  win.mlAudioStart = function () { ev.push('start'); };
+  win.mlAudioStop = function () { ev.push('stop'); };
   win.mlAudioStats = function () { return { received: 7, scheduled: 6, dropped: 1, empty: 0, resyncs: 2, underruns: 1, headroomMs: 99.6 }; };
   sent.length = 0;
   var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
@@ -613,7 +613,31 @@ test('mlaudio: startStream starts and streamTerminated / stopStream stop the sch
   listener(STATS);
   assert.ok(/web audio rx 7 sched 6 drop 1/.test(byId.mlstats.textContent) && /headroom 100 ms/.test(byId.mlstats.textContent));
   await toggleStats(undefined, 'false');
-  delete win.mlAudioFeed; delete win.startAudioScheduler; delete win.stopAudioScheduler; delete win.mlAudioStats;
+  delete win.mlAudioFeed; delete win.mlAudioStart; delete win.mlAudioStop; delete win.mlAudioStats;
+});
+
+test('mlaudio: audio.js globals defined after mlaudio.js do not replace our scheduler', async function () {
+  var ctxs = 0, fed = 0, sbw = { AudioContext: function () { ctxs++; this.sampleRate = 48000; this.state = 'running'; this.currentTime = 0; this.destination = {}; this.close = function () {};
+    this.createBuffer = function (ch, n, r) { var d = []; for (var c = 0; c < ch; c++) d.push(new Float32Array(n)); return { duration: n / r, getChannelData: function (c) { return d[c]; } }; };
+    this.createBufferSource = function () { return { connect: function () {}, start: function () { fed++; } }; }; } };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
+    { window: sbw, console: { log: function () {}, warn: function () {} }, Date: Date, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math });
+  var fork = 0;
+  sbw.startAudioScheduler = function () { fork++; }; sbw.stopAudioScheduler = function () { fork++; };   // as the original audio.js
+  assert.strictEqual(typeof sbw.mlAudioStart, 'function');
+  sbw.mlAudioStart();
+  sbw.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
+  assert.strictEqual(ctxs, 1); assert.strictEqual(fed, 1); assert.strictEqual(sbw.mlAudioStats().running, true); assert.strictEqual(fork, 0);
+  // the bridge calls our names, not the globals audio.js defines
+  var ev = [];
+  win.startAudioScheduler = function () { ev.push('fork'); }; win.stopAudioScheduler = function () { ev.push('fork'); };
+  win.mlAudioStart = function () { ev.push('start'); }; win.mlAudioStop = function () { ev.push('stop'); };
+  sent.length = 0;
+  var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
+  reply(fields(sent[0]).id, {}); await p;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  assert.deepStrictEqual(ev, ['start', 'stop']);
+  delete win.startAudioScheduler; delete win.stopAudioScheduler; delete win.mlAudioStart; delete win.mlAudioStop;
 });
 
 test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no AudioContext', async function () {
@@ -630,7 +654,7 @@ test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no Audi
   var sb = { window: w, console: { log: function () { wlogs.push([].join.call(arguments, ' ')); }, warn: function () { wwarns.push([].join.call(arguments, ' ')); } }, Date: Date, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math };
   vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'), sb);
   function frame(n, ch, fn) { var a = new Int16Array(n * ch); for (var i = 0; i < a.length; i++) a[i] = fn(i); return a.buffer; }
-  w.startAudioScheduler();
+  w.mlAudioStart();
   // S16 -> float, de-interleave: L = 16384, R = -32768
   w.mlAudioFeed('48000', '2', '240', frame(240, 2, function (i) { return i % 2 ? -32768 : 16384; }));
   assert.strictEqual(made.length, 1);
@@ -651,25 +675,25 @@ test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no Audi
   assert.strictEqual(w.mlAudioStats().underruns, 1);
   // a suspended context is resumed, the frame is not played
   var n = made.length; state = 'suspended';
-  w.stopAudioScheduler(); w.startAudioScheduler();
+  w.mlAudioStop(); w.mlAudioStart();
   w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
   assert.strictEqual(made.length, n); assert.ok(resumed >= 1); assert.strictEqual(closed, 1);
   // a context at 44100 Hz: resampled, total duration stays close
   state = 'running'; rate = 44100; made.length = 0;
-  w.stopAudioScheduler(); w.startAudioScheduler();
+  w.mlAudioStop(); w.mlAudioStart();
   var dur = 0;
   for (i = 0; i < 20; i++) { w.mlAudioFeed(48000, 2, 240, frame(240, 2, function (k) { return k; })); }
   made.forEach(function (s) { dur += s.buffer.duration; });
   assert.ok(Math.abs(dur - 20 * 0.005) < 0.001, 'resampled duration ' + dur);
   assert.ok(wwarns.some(function (m) { return /resampling/.test(m); }));
-  w.stopAudioScheduler();
+  w.mlAudioStop();
   assert.strictEqual(closed, 3);
   w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));   // stopped: no-op
   // no AudioContext: warn once, feed is a no-op
   var w2 = {}, warns2 = [];
   vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
     { window: w2, console: { log: function () {}, warn: function (m) { warns2.push(m); } }, Date: Date });
-  w2.startAudioScheduler(); w2.startAudioScheduler();
+  w2.mlAudioStart(); w2.mlAudioStart();
   w2.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
   assert.deepStrictEqual(warns2, ['audio output unavailable (Web Audio)']);
 });
@@ -690,7 +714,7 @@ test('mlaudio: partial au frames expire (max 8) and clear on stop; other ids and
   [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('au9', i + 1, 5, p[0], p[1]); });
   part('au9', 4, 5, 'data', bytes(960));
   assert.strictEqual(calls.length, 2);
-  first('au20'); win.stopAudioScheduler = function () {};
+  first('au20'); win.mlAudioStop = function () {};
   win.mlAudioFeed = function () { calls.push('x'); };
   listener([{ key: 'event', value: 'streamTerminated: 0' }]);
   [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('au20', i + 1, 5, p[0], p[1]); });
@@ -701,7 +725,7 @@ test('mlaudio: partial au frames expire (max 8) and clear on stop; other ids and
   part('xx1', 4, 5, 'data', bytes(960));
   assert.strictEqual(calls.length, 3);
   assert.ok(logs.slice(l).join('\n').indexOf('joined id=xx1') >= 0, 'other ids keep the trace');
-  delete win.mlAudioFeed; delete win.stopAudioScheduler;
+  delete win.mlAudioFeed; delete win.mlAudioStop;
 });
 
 test('mlaudio.js: resume at most once per second, rejection handled, second start keeps the context', async function () {
@@ -714,7 +738,7 @@ test('mlaudio.js: resume at most once per second, rejection handled, second star
   var w = { AudioContext: FakeCtx };
   vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
     { window: w, console: { log: function () {}, warn: function (m) { warns.push(m); } }, Date: { now: function () { return T; } }, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math });
-  w.startAudioScheduler(); w.startAudioScheduler();
+  w.mlAudioStart(); w.mlAudioStart();
   assert.strictEqual(made, 1, 'second start is a no-op');
   assert.strictEqual(resumed, 1);
   for (var i = 0; i < 50; i++) { T += 5; w.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960)); }

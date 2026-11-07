@@ -289,7 +289,7 @@
     }
   }
   // Audio scheduler (mlaudio.js); absent = no audio, never an error.
-  function audioCall(fn) { if (fn === 'stopAudioScheduler') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
+  function audioCall(fn) { if (fn === 'mlAudioStop') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
   function resetStats() {
     statsOn = false; statsGen++;
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
@@ -464,7 +464,7 @@
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
-      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('stopAudioScheduler'); }
+      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); }
       else if (m.event === 'Connection Established') startPads();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
@@ -506,7 +506,7 @@
     httpInit: function (cert, key, uniqueId) { return call('httpInit', { cert: cert, key: key, uniqueId: uniqueId }); },
     startRequest: function () {
       var a = arguments;
-      audioCall('startAudioScheduler');   // user-gesture flow: the autoplay policy needs it here
+      audioCall('mlAudioStart');   // user-gesture flow: the autoplay policy needs it here
       padFlipAB = !!a[16]; padFlipXY = !!a[17];   // a[14] rumble and a[15] mouse emulation: not ported
       // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange
@@ -516,7 +516,7 @@
         audioConfig: a[19], videoCodec: a[24], hdr: String(!!a[25]), fullRange: String(!!a[26])
       });
     },
-    stopRequest: function () { stopPads(); audioCall('stopAudioScheduler'); return call('stopStream', {}); },
+    stopRequest: function () { stopPads(); audioCall('mlAudioStop'); return call('stopStream', {}); },
     cancelRequest: function () { return call('cancelRequest', {}); },
     toggleStats: toggleStats,
   };
@@ -562,7 +562,7 @@
     sendKeyboardEvent: function (keyCode, keyAction, modifiers) {
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
-    stopStream: function () { stopPads(); audioCall('stopAudioScheduler'); return bridgeCall('stopStream', {}); },
+    stopStream: function () { stopPads(); audioCall('mlAudioStop'); return bridgeCall('stopStream', {}); },
     // the yellow-key caller ignores the promise: log a failure instead of an unhandled rejection
     toggleStats: function () { return toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); }); },
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled

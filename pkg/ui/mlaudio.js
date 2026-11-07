@@ -11,8 +11,10 @@
  * schedule ran away > 2x the target, stateful resampling when the context rate differs,
  * resume() of a suspended context, statistics every 5 s. Removed: WASM heap access, slots,
  * sequence gap detection, EMSS backend.
- * API: startAudioScheduler(), stopAudioScheduler(), mlAudioFeed(rate, ch, samples, buffer),
+ * API: mlAudioStart(), mlAudioStop(), mlAudioFeed(rate, ch, samples, buffer),
  * mlAudioStats().
+ * The names differ from audio.js on purpose: the original audio.js defines startAudioScheduler /
+ * stopAudioScheduler as globals and is loaded after this file, so it would overwrite them.
  */
 (function () {
   var STATS_MS = 5000, DEFAULT_TARGET_MS = 100;
@@ -59,9 +61,9 @@
   }
 
   // Must run from the startStream path (user gesture): the autoplay policy blocks other contexts.
-  window.startAudioScheduler = function () {
+  window.mlAudioStart = function () {
     if (running) return;   // a second startStream: keep the context
-    window.stopAudioScheduler();
+    window.mlAudioStop();
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) {
       if (!warned) { warned = true; console.warn('audio output unavailable (Web Audio)'); }
@@ -82,7 +84,7 @@
   };
 
   // Like audio.js: log the last statistics and close the context (this stops scheduled sources).
-  window.stopAudioScheduler = function () {
+  window.mlAudioStop = function () {
     if (ctx) logStats(true);
     running = false; nextTime = 0; streamRate = 0; ratio = 1; phase = 0; tail = null;
     if (ctx) {
