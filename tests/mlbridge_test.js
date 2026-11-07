@@ -567,134 +567,192 @@ test('gamepad: a failing pad send does not drop the port', async function () {
   reply(fields(sent[sent.length - 1]).id, {}); await p;
 });
 
+// --- mlaudio: events to the Web Audio feed, and the scheduler itself ---
+function bytes(n) { var a = []; for (var i = 0; i < n; i++) a.push(i & 255); return a; }
+test('mlaudio: small event reaches mlAudioFeed as an ArrayBuffer, not handleMessage', async function () {
+  var calls = [], h = handled.length, l = logs.length;
+  win.mlAudioFeed = function (r, c, n, b) { calls.push([r, c, n, b]); };
+  listener([{ key: 'event', value: 'mlaudio' }, { key: 'rate', value: '48000' }, { key: 'ch', value: '2' }, { key: 'samples', value: '240' }, { key: 'data', value: bytes(960) }]);
+  assert.strictEqual(calls.length, 1);
+  assert.deepStrictEqual(calls[0].slice(0, 3), ['48000', '2', '240']);
+  assert.ok(calls[0][3] instanceof ArrayBuffer); assert.strictEqual(calls[0][3].byteLength, 960);
+  assert.strictEqual(new Uint8Array(calls[0][3])[300], 300 & 255);
+  assert.strictEqual(handled.length, h); assert.strictEqual(logs.length, l, 'no per-event log');
+});
+
+test('mlaudio: a big event sent as parts is fed once, joined', async function () {
+  var calls = [], h = handled.length, all = bytes(2880);
+  win.mlAudioFeed = function (r, c, n, b) { calls.push([r, c, n, b]); };
+  var parts = [['event', 'mlaudio'], ['rate', '48000'], ['ch', '6'], ['samples', '240']].map(function (kv) { return [kv[0], kv[1]]; });
+  var chunks = [all.slice(0, 1536), all.slice(1536)];
+  var list = parts.map(function (p) { return { field: p[0], chunk: p[1] }; }).concat(chunks.map(function (c) { return { field: 'data', chunk: c }; }));
+  list.forEach(function (p, i) {
+    listener([{ key: 'id', value: 'ev9' }, { key: 'seq', value: String(i) }, { key: 'total', value: String(list.length) }, { key: 'field', value: p.field }, { key: 'chunk', value: p.chunk }]);
+    assert.strictEqual(calls.length, i === list.length - 1 ? 1 : 0);
+  });
+  assert.deepStrictEqual(calls[0].slice(0, 3), ['48000', '6', '240']);
+  assert.strictEqual(calls[0][3].byteLength, 2880);
+  assert.strictEqual(handled.length, h);
+});
+
+test('mlaudio: startStream starts and streamTerminated / stopStream stop the scheduler; overlay shows counters', async function () {
+  var ev = [];
+  win.mlAudioStart = function () { ev.push('start'); };
+  win.mlAudioStop = function () { ev.push('stop'); };
+  win.mlAudioStats = function () { return { received: 7, scheduled: 6, dropped: 1, empty: 0, resyncs: 2, underruns: 1, headroomMs: 99.6 }; };
+  sent.length = 0;
+  var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
+  assert.deepStrictEqual(ev, ['start']);
+  reply(fields(sent[0]).id, {}); await p;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  assert.deepStrictEqual(ev, ['start', 'stop']);
+  var q = win.sendMessage('stopRequest', []);
+  assert.deepStrictEqual(ev, ['start', 'stop', 'stop']);
+  reply(fields(sent[sent.length - 1]).id, {}); await q;
+  await toggleStats(undefined, 'true');
+  listener(STATS);
+  assert.ok(/web audio rx 7 sched 6 drop 1/.test(byId.mlstats.textContent) && /headroom 100 ms/.test(byId.mlstats.textContent));
+  await toggleStats(undefined, 'false');
+  delete win.mlAudioFeed; delete win.mlAudioStart; delete win.mlAudioStop; delete win.mlAudioStats;
+});
+
+test('mlaudio: audio.js globals defined after mlaudio.js do not replace our scheduler', async function () {
+  var ctxs = 0, fed = 0, sbw = { AudioContext: function () { ctxs++; this.sampleRate = 48000; this.state = 'running'; this.currentTime = 0; this.destination = {}; this.close = function () {};
+    this.createBuffer = function (ch, n, r) { var d = []; for (var c = 0; c < ch; c++) d.push(new Float32Array(n)); return { duration: n / r, getChannelData: function (c) { return d[c]; } }; };
+    this.createBufferSource = function () { return { connect: function () {}, start: function () { fed++; } }; }; } };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
+    { window: sbw, console: { log: function () {}, warn: function () {} }, Date: Date, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math });
+  var fork = 0;
+  sbw.startAudioScheduler = function () { fork++; }; sbw.stopAudioScheduler = function () { fork++; };   // as the original audio.js
+  assert.strictEqual(typeof sbw.mlAudioStart, 'function');
+  sbw.mlAudioStart();
+  sbw.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
+  assert.strictEqual(ctxs, 1); assert.strictEqual(fed, 1); assert.strictEqual(sbw.mlAudioStats().running, true); assert.strictEqual(fork, 0);
+  // the bridge calls our names, not the globals audio.js defines
+  var ev = [];
+  win.startAudioScheduler = function () { ev.push('fork'); }; win.stopAudioScheduler = function () { ev.push('fork'); };
+  win.mlAudioStart = function () { ev.push('start'); }; win.mlAudioStop = function () { ev.push('stop'); };
+  sent.length = 0;
+  var p = win.sendMessage('startRequest', ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]);
+  reply(fields(sent[0]).id, {}); await p;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  assert.deepStrictEqual(ev, ['start', 'stop']);
+  delete win.startAudioScheduler; delete win.stopAudioScheduler; delete win.mlAudioStart; delete win.mlAudioStop;
+});
+
+test('mlaudio.js: conversion, priming, drop above 2x target, resampling, no AudioContext', async function () {
+  var wlogs = [], wwarns = [], T = 1, state = 'running', made = [], closed = 0, resumed = 0, rate = 48000;
+  function FakeCtx() {
+    this.sampleRate = rate; this.state = state; this.destination = {};
+    this.__defineGetter__('currentTime', function () { return T; });
+    this.createBuffer = function (ch, n, r) { var d = []; for (var c = 0; c < ch; c++) d.push(new Float32Array(n)); return { duration: n / r, getChannelData: function (c) { return d[c]; } }; };
+    this.createBufferSource = function () { var s = { connect: function () {}, start: function (t) { s.at = t; made.push(s); } }; return s; };
+    this.close = function () { closed++; };
+    this.resume = function () { resumed++; };
+  }
+  var w = { AudioContext: FakeCtx };
+  var sb = { window: w, console: { log: function () { wlogs.push([].join.call(arguments, ' ')); }, warn: function () { wwarns.push([].join.call(arguments, ' ')); } }, Date: Date, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'), sb);
+  function frame(n, ch, fn) { var a = new Int16Array(n * ch); for (var i = 0; i < a.length; i++) a[i] = fn(i); return a.buffer; }
+  w.mlAudioStart();
+  // S16 -> float, de-interleave: L = 16384, R = -32768
+  w.mlAudioFeed('48000', '2', '240', frame(240, 2, function (i) { return i % 2 ? -32768 : 16384; }));
+  assert.strictEqual(made.length, 1);
+  assert.strictEqual(made[0].buffer.getChannelData(0)[5], 0.5); assert.strictEqual(made[0].buffer.getChannelData(1)[5], -1);
+  assert.ok(Math.abs(made[0].at - 1.1) < 1e-9, 'primed to the 100 ms jitter buffer');
+  // the next frame follows the first one
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  assert.ok(Math.abs(made[1].at - (1.1 + 0.005)) < 1e-9);
+  // feed until the schedule is over 2x target ahead: dropped, not scheduled
+  for (var i = 0; i < 100; i++) w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  var st = w.mlAudioStats();
+  assert.ok(st.dropped > 0 && st.scheduled < 102 && st.scheduled + st.dropped === st.received);
+  assert.ok(made[made.length - 1].at <= 1.2 + 0.005 + 1e-9);
+  // an underrun primes to the whole buffer again
+  T = 5;
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  assert.ok(Math.abs(made[made.length - 1].at - 5.1) < 1e-9);
+  assert.strictEqual(w.mlAudioStats().underruns, 1);
+  // a suspended context is resumed, the frame is not played
+  var n = made.length; state = 'suspended';
+  w.mlAudioStop(); w.mlAudioStart();
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));
+  assert.strictEqual(made.length, n); assert.ok(resumed >= 1); assert.strictEqual(closed, 1);
+  // a context at 44100 Hz: resampled, total duration stays close
+  state = 'running'; rate = 44100; made.length = 0;
+  w.mlAudioStop(); w.mlAudioStart();
+  var dur = 0;
+  for (i = 0; i < 20; i++) { w.mlAudioFeed(48000, 2, 240, frame(240, 2, function (k) { return k; })); }
+  made.forEach(function (s) { dur += s.buffer.duration; });
+  assert.ok(Math.abs(dur - 20 * 0.005) < 0.001, 'resampled duration ' + dur);
+  assert.ok(wwarns.some(function (m) { return /resampling/.test(m); }));
+  w.mlAudioStop();
+  assert.strictEqual(closed, 3);
+  w.mlAudioFeed(48000, 2, 240, frame(240, 2, function () { return 0; }));   // stopped: no-op
+  // no AudioContext: warn once, feed is a no-op
+  var w2 = {}, warns2 = [];
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
+    { window: w2, console: { log: function () {}, warn: function (m) { warns2.push(m); } }, Date: Date });
+  w2.mlAudioStart(); w2.mlAudioStart();
+  w2.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
+  assert.deepStrictEqual(warns2, ['audio output unavailable (Web Audio)']);
+});
+
+test('mlaudio: partial au frames expire (max 8) and clear on stop; other ids and traces unaffected', async function () {
+  var calls = [], l = logs.length;
+  win.mlAudioFeed = function (r, c, n, b) { calls.push(b); };
+  function part(id, seq, total, field, chunk) { listener([{ key: 'id', value: id }, { key: 'seq', value: String(seq) }, { key: 'total', value: String(total) }, { key: 'field', value: field }, { key: 'chunk', value: chunk }]); }
+  function first(id) { part(id, 0, 5, 'event', 'mlaudio'); }   // the rest never arrives
+  function full(id) { [['event', 'mlaudio'], ['rate', '48000'], ['ch', '6'], ['samples', '240'], ['data', bytes(1536)]].forEach(function (p, i) { part(id, i, 6, p[0], p[1]); }); part(id, 5, 6, 'data', bytes(1344)); }
+  first('xx1');   // other id: stays pending
+  for (var i = 1; i <= 9; i++) first('au' + i);   // au1 is expired by au9
+  full('au100');
+  assert.strictEqual(calls.length, 1); assert.strictEqual(calls[0].byteLength, 2880);
+  assert.strictEqual(new Uint8Array(calls[0])[1536], 0); assert.strictEqual(new Uint8Array(calls[0])[1535], 255);
+  assert.ok(!logs.slice(l).join('\n').match(/joined id=au/), 'no join trace for au');
+  // au9 is still pending: completing it works; after a stop it does not
+  [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('au9', i + 1, 5, p[0], p[1]); });
+  part('au9', 4, 5, 'data', bytes(960));
+  assert.strictEqual(calls.length, 2);
+  first('au20'); win.mlAudioStop = function () {};
+  win.mlAudioFeed = function () { calls.push('x'); };
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('au20', i + 1, 5, p[0], p[1]); });
+  part('au20', 4, 5, 'data', bytes(960));
+  assert.strictEqual(calls.length, 2, 'au20 was cleared at streamTerminated');
+  // the other id survived the stream end and the au expiry
+  [['rate', '48000'], ['ch', '2'], ['samples', '240']].forEach(function (p, i) { part('xx1', i + 1, 5, p[0], p[1]); });
+  part('xx1', 4, 5, 'data', bytes(960));
+  assert.strictEqual(calls.length, 3);
+  assert.ok(logs.slice(l).join('\n').indexOf('joined id=xx1') >= 0, 'other ids keep the trace');
+  delete win.mlAudioFeed; delete win.mlAudioStop;
+});
+
+test('mlaudio.js: resume at most once per second, rejection handled, second start keeps the context', async function () {
+  var T = 0, made = 0, resumed = 0, warns = [], handledRej = 0;
+  function FakeCtx() {
+    made++; this.sampleRate = 48000; this.state = 'suspended'; this.destination = {}; this.currentTime = 0;
+    this.close = function () {};
+    this.resume = function () { resumed++; return { catch: function (f) { handledRej++; f('denied'); } }; };
+  }
+  var w = { AudioContext: FakeCtx };
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlaudio.js', 'utf8'),
+    { window: w, console: { log: function () {}, warn: function (m) { warns.push(m); } }, Date: { now: function () { return T; } }, Int16Array: Int16Array, Float32Array: Float32Array, Math: Math });
+  w.mlAudioStart(); w.mlAudioStart();
+  assert.strictEqual(made, 1, 'second start is a no-op');
+  assert.strictEqual(resumed, 1);
+  for (var i = 0; i < 50; i++) { T += 5; w.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960)); }
+  assert.strictEqual(resumed, 1, 'throttled');
+  T += 1000; w.mlAudioFeed(48000, 2, 240, new ArrayBuffer(960));
+  assert.strictEqual(resumed, 2);
+  assert.strictEqual(handledRej, 2); assert.strictEqual(warns.length, 1, 'warned once');
+  assert.strictEqual(w.mlAudioStats().resumes, 2);
+});
+
 test('trace hides secrets', async function () {
   var all = logs.join('\n');
   assert.ok(logs.length > 0);
   ['CERTPEM', 'KEYPEM', 'PPKPEM', '1234'].forEach(function (s) { assert.strictEqual(all.indexOf(s), -1, s); });
-});
-
-// Persistent store (issue #21): a second context with an in-memory wgt-private and IndexedDB.
-function mkStore(o) {
-  o = o || {};
-  var e = { idb: o.idb || {}, files: {}, ls: {}, logs: [], warns: [], timers: [], now: 0, started: 0, held: [], opens: 0, maxOpen: 0, open: 0, moves: [], origGet: null, origStore: null };
-  if (o.file !== undefined) e.files['mlstore.json'] = o.file;
-  function mkfile(n) { return { fullPath: 'wgt-private/' + n, readAsText: function (ok) { if (!o.hang) ok(e.files[n]); }, name: n }; }
-  var dir = {
-    fullPath: 'wgt-private',
-    resolve: function (n) { if (e.files[n] === undefined) throw new Error('NotFound'); var f = mkfile(n);
-      f.openStream = function (m, ok) { assert.strictEqual(m, 'w'); e.files[n] = ''; e.open++; e.maxOpen = Math.max(e.maxOpen, e.open);
-        ok({ write: function (x) { e.files[n] += x; }, close: function () {} }); };
-      return f; },
-    createFile: function (n) { e.files[n] = ''; },
-    moveTo: function (a, b, ow, ok) { assert.strictEqual(ow, true); e.moves.push([a, b]);
-      e.held.push(function () { e.files[b.split('/')[1]] = e.files[a.split('/')[1]]; delete e.files[a.split('/')[1]]; e.open--; ok(); }); }
-  };
-  e.flush = function () { while (e.held.length) e.held.shift()(); };
-  var g = e.origGet = function (k, cb) { var r = {}; r[k] = e.idb[k] === undefined ? null : JSON.parse(e.idb[k]); cb(r); };
-  var st = e.origStore = function (k, d, cb) { e.idb[k] = JSON.stringify(d); if (cb) cb(); };
-  var w = { ML_TRACE: false, common: { domContentLoaded: function () {} }, moduleDidLoad: function () { e.started++; } };
-  if (!o.nogd) { w.getData = g; w.storeData = st; }
-  var sb = {
-    window: w, Promise: Promise, Uint8Array: Uint8Array, ArrayBuffer: ArrayBuffer,
-    tizen: { application: { getCurrentApplication: function () { return { appInfo: { id: 'Moonlight5.ui', packageId: 'Moonlight5' } }; },
-      getAppInfo: function () { return { id: 'x', version: '1', packageId: 'p' }; }, getAppsContext: function (ok) { ok([]); },
-      launch: function (i, ok) { ok(); } },
-      messageport: { requestLocalMessagePort: function () { return { addMessagePortListener: function () {} }; }, requestRemoteMessagePort: function () { throw new Error('x'); } } },
-    localStorage: { getItem: function (k) { return e.ls[k] === undefined ? null : e.ls[k]; }, setItem: function (k, v) { e.ls[k] = String(v); } },
-    document: { addEventListener: function (ev, f) { if (ev === 'DOMContentLoaded') e.dom = f; }, body: { appendChild: function () {} },
-      createElement: function () { return { style: {} }; }, getElementById: function () { return null; } },
-    console: { log: function () { e.logs.push([].join.call(arguments, ' ')); }, warn: function () { e.warns.push([].join.call(arguments, ' ')); }, error: function () {} },
-    setTimeout: function (f, ms) { e.timers.push({ at: e.now + ms, f: f }); return e.timers.length; },
-    clearTimeout: function () {}, setInterval: function () { return 0; }, clearInterval: function () {},
-    navigator: { getGamepads: function () { return []; } }
-  };
-  if (!o.nofs) sb.tizen.filesystem = { resolve: function (loc, ok, err, mode) { assert.strictEqual(loc, 'wgt-private'); assert.strictEqual(mode, 'rw'); ok(dir); } };
-  vm.runInNewContext(fs.readFileSync(__dirname + '/../pkg/ui/mlbridge.js', 'utf8'), sb);
-  e.w = w;
-  e.boot = function () { e.dom(); w.common.domContentLoaded(); };
-  e.advance = function (ms) { e.now += ms; e.timers.filter(function (t) { return t.at <= e.now; }).forEach(function (t) { t.at = Infinity; t.f(); }); };
-  e.get = function (k) { var r; w.getData(k, function (o) { r = o[k]; }); return r; };
-  e.file = function () { return JSON.parse(e.files['mlstore.json']); };
-  e.diag = function () { return e.logs.filter(function (l) { return l.indexOf('[mlbridge] storage:') === 0; }); };
-  return e;
-}
-var H1 = { u1: { serverUid: 'u1', hostname: 'SECRETNAME1', address: '10.9.9.1' } };
-var H2 = { u2: { serverUid: 'u2', hostname: 'SECRETNAME2', address: '10.9.9.2' } };
-function js(x) { return JSON.stringify(x); }
-
-test('store: no file, IndexedDB hosts are used and written to the file', function () {
-  var e = mkStore({ idb: { hosts: js(H1) } }); e.boot();
-  assert.strictEqual(e.started, 1);
-  assert.strictEqual(js(e.get('hosts')), js(H1));
-  assert.deepStrictEqual(e.moves, [['wgt-private/mlstore.json.tmp', 'wgt-private/mlstore.json']]);
-  e.flush(); assert.deepStrictEqual(e.file(), { hosts: H1 });
-  assert.deepStrictEqual(e.diag(), ['[mlbridge] storage: app Moonlight5.ui package Moonlight5, hosts in IndexedDB 1, in file 0, used indexeddb, file missing, merged 0']);
-});
-
-test('store: file hosts and empty IndexedDB (issue #21)', function () {
-  var e = mkStore({ file: js({ hosts: H1 }) }); e.boot();
-  assert.strictEqual(js(e.get('hosts')), js(H1));
-  assert.deepStrictEqual(JSON.parse(e.idb.hosts), H1);
-  assert.ok(/hosts in IndexedDB 0, in file 1, used file, file ok, merged 0/.test(e.diag()[0]));
-  assert.strictEqual(e.diag().length, 1);
-  e.get('hosts'); assert.strictEqual(e.diag().length, 1, 'one line only');
-});
-
-test('store: merge once by serverUid, file entries win', function () {
-  var fileH = { u1: { serverUid: 'u1', hostname: 'FILE' } };
-  var idbH = { u1: { serverUid: 'u1', hostname: 'IDB' }, u2: H2.u2 };
-  var e = mkStore({ file: js({ hosts: fileH }), idb: { hosts: js(idbH) } }); e.boot();
-  var h = e.get('hosts');
-  assert.strictEqual(Object.keys(h).sort().join(), 'u1,u2'); assert.strictEqual(h.u1.hostname, 'FILE');
-  assert.deepStrictEqual(Object.keys(JSON.parse(e.idb.hosts)).sort(), ['u1', 'u2']);
-  e.flush(); assert.deepStrictEqual(Object.keys(e.file().hosts).sort(), ['u1', 'u2']);
-  assert.strictEqual(e.ls.mlstoreHostsMerged, '1');
-  assert.ok(/merged 1/.test(e.diag()[0]));
-  // second launch: flag set, a host deleted in the file stays deleted
-  var e2 = mkStore({ file: js({ hosts: fileH }), idb: { hosts: js(idbH) } }); e2.ls.mlstoreHostsMerged = '1'; e2.boot();
-  assert.strictEqual(Object.keys(e2.get('hosts')).join(), 'u1');
-  assert.ok(/merged 0/.test(e2.diag()[0]));
-});
-
-test('store: storeData updates IndexedDB and file, one write in flight', function () {
-  var e = mkStore({ file: js({ resolution: 1 }) }); e.boot();
-  e.w.storeData('resolution', 2); e.w.storeData('resolution', 3); e.w.storeData('resolution', 4);
-  assert.strictEqual(e.idb.resolution, '4');
-  assert.strictEqual(e.maxOpen, 1);
-  e.flush(); e.flush();
-  assert.strictEqual(e.maxOpen, 1);
-  assert.strictEqual(e.file().resolution, 4);
-  assert.strictEqual(e.held.length, 0);
-});
-
-test('store: bad JSON file is ignored and overwritten', function () {
-  var e = mkStore({ file: '{oops', idb: { hosts: js(H1) } }); e.boot();
-  assert.strictEqual(js(e.get('hosts')), js(H1));
-  assert.ok(/file bad json/.test(e.diag()[0]));
-  e.flush(); assert.deepStrictEqual(e.file(), { hosts: H1 });
-});
-
-test('store: a read that never answers does not block the UI', function () {
-  var e = mkStore({ file: '{}', hang: true }); e.boot();
-  assert.strictEqual(e.started, 0);
-  e.advance(1999); assert.strictEqual(e.started, 0);
-  e.advance(1); assert.strictEqual(e.started, 1);
-  assert.ok(e.warns.some(function (w) { return w.indexOf('[mlbridge] storage:') === 0; }));
-});
-
-test('store: no tizen.filesystem keeps the plain behaviour', function () {
-  var e = mkStore({ nofs: true });
-  var g = e.w.getData, s = e.w.storeData; e.boot();
-  assert.strictEqual(e.started, 1); assert.strictEqual(e.w.getData, g); assert.strictEqual(e.w.storeData, s);
-  e = mkStore({ nogd: true }); e.boot(); assert.strictEqual(e.started, 1);
-});
-
-test('store: the diagnostic line holds no stored values', function () {
-  var e = mkStore({ file: js({ hosts: H1, cert: 'CERTVALUE' }), idb: { hosts: js(H2) } }); e.boot();
-  e.get('hosts'); e.get('cert');
-  var all = e.logs.concat(e.warns).join('\n');
-  ['SECRETNAME', '10.9.9', 'CERTVALUE', 'u1', 'u2'].forEach(function (x) { assert.strictEqual(all.indexOf(x), -1, x); });
-  assert.ok(e.diag().length === 1);
 });
 
 (async function () {

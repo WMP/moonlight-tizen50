@@ -174,19 +174,41 @@
 
   // Collects the parts of a chunked reply; returns the joined map once all arrived.
   var partial = {};   // id -> {total, n, seqs: {seq: {field, chunk}}}
+  var AU_PARTIAL_MAX = 8, auOrder = [];   // pending "au" ids, oldest first: a frame that lost a part must not stay
+  function isAu(id) { return String(id).indexOf('au') === 0; }
+  function clearAuPartials() { auOrder.forEach(function (id) { delete partial[id]; }); auOrder = []; }
   function join(m) {
+    var au = isAu(m.id);
+    if (au && !partial[m.id]) {
+      auOrder.push(m.id);
+      while (auOrder.length > AU_PARTIAL_MAX) delete partial[auOrder.shift()];
+    }
     var a = partial[m.id] || (partial[m.id] = { total: +m.total, n: 0, seqs: {} });
     if (!a.seqs[m.seq]) { a.seqs[m.seq] = { field: m.field, chunk: m.chunk }; a.n++; }
     if (a.n < a.total) return null;
     delete partial[m.id];
+    if (au) { var k = auOrder.indexOf(m.id); if (k >= 0) auOrder.splice(k, 1); }
     var out = { id: m.id };
+    if (au) {   // binary chunks: one Uint8Array, no concat per frame
+      var tl = 0, i0, c0;
+      for (i0 = 0; i0 < a.total; i0++) { c0 = a.seqs[i0]; if (c0 && c0.field === 'data' && typeof c0.chunk !== 'string') tl += c0.chunk.length; }
+      var bin = new Uint8Array(tl), off = 0;
+      for (i0 = 0; i0 < a.total; i0++) {
+        c0 = a.seqs[i0];
+        if (!c0) continue;
+        if (c0.field === 'data' && typeof c0.chunk !== 'string') { bin.set(c0.chunk, off); off += c0.chunk.length; }
+        else out[c0.field] = (out[c0.field] || '') + c0.chunk;
+      }
+      out.data = bin;
+      return out;
+    }
     for (var i = 0; i < a.total; i++) {
       var pt = a.seqs[i], prev = out[pt.field];
       if (prev === undefined) out[pt.field] = pt.chunk;
       else if (typeof prev === 'string') out[pt.field] = prev + pt.chunk;
       else out[pt.field] = prev.concat(Array.prototype.slice.call(pt.chunk));   // byte chunks
     }
-    trace('joined id=' + m.id, 'parts=' + a.total);
+    if (!au) trace('joined id=' + m.id, 'parts=' + a.total);
     return out;
   }
 
@@ -260,7 +282,14 @@
       'under/over ' + m.uo + '\n' +
       'errors ' + m.err + '  recoveries ' + m.rec + '\n' +
       'play ' + (Number(m.play) / 1000).toFixed(1) + ' s';
+    if (typeof window.mlAudioStats === 'function') {   // the host does not know the UI audio scheduler
+      var a = window.mlAudioStats();
+      el.textContent += '\nweb audio rx ' + a.received + ' sched ' + a.scheduled + ' drop ' + a.dropped + ' empty ' + a.empty +
+        '\nresync ' + a.resyncs + ' underrun ' + a.underruns + ' headroom ' + Number(a.headroomMs).toFixed(0) + ' ms';
+    }
   }
+  // Audio scheduler (mlaudio.js); absent = no audio, never an error.
+  function audioCall(fn) { if (fn === 'mlAudioStop') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
   function resetStats() {
     statsOn = false; statsGen++;
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
@@ -414,10 +443,18 @@
   }
 
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
+  var audioFailed = false;
   function onReply(data /*, remoteMessagePort */) {
     var m = {};
     for (var i = 0; i < data.length; i++) m[data[i].key] = data[i].value;
     if (m.total !== undefined) { m = join(m); if (!m) return; }
+    if (m.event === 'mlaudio') {   // PCM for Web Audio (~200/s: not traced, not for handleMessage)
+      if (typeof window.mlAudioFeed === 'function' && m.data !== undefined && typeof m.data !== 'string') {
+        try { window.mlAudioFeed(m.rate, m.ch, m.samples, (m.data instanceof Uint8Array ? m.data : new Uint8Array(m.data)).buffer); }
+        catch (e) { if (!audioFailed) { audioFailed = true; console.warn('[mlbridge] mlAudioFeed failed:', e); } }
+      }
+      return;
+    }
     if (m.event === 'mlstats') { showStats(m); return; }   // overlay only (2/s: not traced), not for handleMessage
     if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug); no reply trace: it doubled every line
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
@@ -427,7 +464,7 @@
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
-      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); }
+      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); }
       else if (m.event === 'Connection Established') startPads();
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
@@ -469,6 +506,7 @@
     httpInit: function (cert, key, uniqueId) { return call('httpInit', { cert: cert, key: key, uniqueId: uniqueId }); },
     startRequest: function () {
       var a = arguments;
+      audioCall('mlAudioStart');   // user-gesture flow: the autoplay policy needs it here
       padFlipAB = !!a[16]; padFlipXY = !!a[17];   // a[14] rumble and a[15] mouse emulation: not ported
       // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange
@@ -478,7 +516,7 @@
         audioConfig: a[19], videoCodec: a[24], hdr: String(!!a[25]), fullRange: String(!!a[26])
       });
     },
-    stopRequest: function () { stopPads(); return call('stopStream', {}); },
+    stopRequest: function () { stopPads(); audioCall('mlAudioStop'); return call('stopStream', {}); },
     cancelRequest: function () { return call('cancelRequest', {}); },
     toggleStats: toggleStats,
   };
@@ -524,7 +562,7 @@
     sendKeyboardEvent: function (keyCode, keyAction, modifiers) {
       return bridgeCall('sendKeyboardEvent', { key: keyCode, action: keyAction, mods: modifiers });
     },
-    stopStream: function () { stopPads(); return bridgeCall('stopStream', {}); },
+    stopStream: function () { stopPads(); audioCall('mlAudioStop'); return bridgeCall('stopStream', {}); },
     // the yellow-key caller ignores the promise: log a failure instead of an unhandled rejection
     toggleStats: function () { return toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); }); },
     HEAPF32: { buffer: new ArrayBuffer(0) },   // stub; perf-stats overlay disabled
@@ -627,91 +665,6 @@
     }
   }
 
-  // Issue #21: the UI keeps its hosts in IndexedDB, and a start from Apps2Samsung (debug)
-  // and a start from the remote can use separate WebView storage. wgt-private is per
-  // package, not per WebView profile, so the key/value store is mirrored in a file there.
-  // Any failure logs one line and the UI goes on with IndexedDB only.
-  var STORE_FILE = 'mlstore.json', mirror = {}, storeDir = null, fileState = 'unavailable';
-  var writing = false, dirty = false, diagDone = false;
-  function storeWarn(what, e) { console.warn('[mlbridge] storage: ' + what + (e ? ': ' + errText(e) : '')); }
-  function isObj(v) { return !!v && typeof v === 'object'; }
-  function flushStore() {
-    if (writing) { dirty = true; return; }
-    writing = true; dirty = false;
-    function end(what, e) { if (what) storeWarn(what, e); writing = false; if (dirty && !what) flushStore(); }
-    try {
-      var tmp = STORE_FILE + '.tmp', str = JSON.stringify(mirror);
-      try { storeDir.resolve(tmp); } catch (e) { storeDir.createFile(tmp); }
-      storeDir.resolve(tmp).openStream('w', function (st) {
-        try {
-          st.write(str); st.close();
-          storeDir.moveTo(storeDir.fullPath + '/' + tmp, storeDir.fullPath + '/' + STORE_FILE, true,
-                          function () { end(); }, function (e) { end('rename failed', e); });
-        } catch (e) { end('write failed', e); }
-      }, function (e) { end('open failed', e); }, 'UTF-8');
-    } catch (e) { end('write failed', e); }
-  }
-  function loadStore(done) {
-    var over = false;
-    function finish(wrap) { if (over) return; over = true; if (wrap) installStore(); done(); }
-    setTimeout(function () { if (!over) storeWarn('read timeout'); finish(false); }, 2000);
-    try {
-      tizen.filesystem.resolve('wgt-private', function (dir) {
-        storeDir = dir;
-        try {
-          var f; try { f = dir.resolve(STORE_FILE); } catch (e) { fileState = 'missing'; finish(true); return; }
-          f.readAsText(function (txt) {
-            try { var o = JSON.parse(txt); if (!isObj(o)) throw 0; mirror = o; fileState = 'ok'; }
-            catch (e) { fileState = 'bad json'; storeWarn('bad json in file'); }
-            finish(true);
-          }, function (e) { storeWarn('read failed', e); finish(false); }, 'UTF-8');
-        } catch (e) { storeWarn('read failed', e); finish(false); }
-      }, function (e) { storeWarn('no private dir', e); finish(false); }, 'rw');
-    } catch (e) { storeWarn('no private dir', e); finish(false); }
-  }
-  function installStore() {
-    var origGet = window.getData, origStore = window.storeData;
-    function clone(v) { var j = JSON.stringify(v); return j === undefined ? null : JSON.parse(j); }
-    window.storeData = function (key, data, cb) {
-      origStore.call(window, key, data, cb);
-      mirror[key] = clone(data); flushStore();
-    };
-    window.getData = function (key, cb) {
-      origGet.call(window, key, function (obj) {
-        try {
-          var idb = obj[key], idbJson = JSON.stringify(idb), used = 'none', merged = 0, inFile = 0, inIdb = 0;
-          if (key === 'hosts') {
-            inFile = isObj(mirror.hosts) ? Object.keys(mirror.hosts).length : 0;
-            inIdb = isObj(idb) ? Object.keys(idb).length : 0;
-            var done = false;
-            try { done = localStorage.getItem('mlstoreHostsMerged') === '1'; } catch (e) {}
-            if (!done) {
-              if (isObj(mirror.hosts) && isObj(idb)) {
-                for (var uid in idb) if (!(uid in mirror.hosts)) { mirror.hosts[uid] = idb[uid]; merged++; }
-                if (merged) flushStore();
-              }
-              try { localStorage.setItem('mlstoreHostsMerged', '1'); } catch (e) {}
-            }
-          }
-          if (mirror[key] != null) {
-            obj[key] = clone(mirror[key]); used = 'file';
-            if (JSON.stringify(mirror[key]) !== idbJson) origStore.call(window, key, mirror[key], function () {});
-          } else if (idb != null) {
-            mirror[key] = clone(idb); used = 'indexeddb'; flushStore();
-          }
-          if (key === 'hosts' && !diagDone) {
-            diagDone = true;
-            var me = {}; try { me = tizen.application.getCurrentApplication().appInfo; } catch (e) {}
-            console.log('[mlbridge] storage: app ' + (me.id || '?') + ' package ' + (me.packageId || '?') +
-                        ', hosts in IndexedDB ' + inIdb + ', in file ' + inFile + ', used ' + used +
-                        ', file ' + fileState + ', merged ' + merged);
-          }
-        } catch (e) { storeWarn('getData failed', e); }
-        cb(obj);
-      });
-    };
-  }
-
   // Boot without the WASM engine. The original starts the UI from the compiled
   // module: common.js on DOMContentLoaded calls createWASMModule() -> loads
   // moonlight-wasm.js -> (on WASM ready) window.moduleDidLoad(), which starts the
@@ -736,9 +689,7 @@
         connect();   // start/connect the host (commands queue until connected)
         if (debugStored()) window.mlDebug(true);
         trace('boot: moduleDidLoad found =', typeof window.moduleDidLoad === 'function');
-        function start() { if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad(); }
-        if (typeof tizen !== 'undefined' && tizen.filesystem && typeof window.getData === 'function' && typeof window.storeData === 'function') loadStore(start);
-        else start();
+        if (typeof window.moduleDidLoad === 'function') window.moduleDidLoad();
       };
     }
   }, false);

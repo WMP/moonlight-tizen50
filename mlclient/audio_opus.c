@@ -1,95 +1,90 @@
 /*
- * audio_opus.c - moonlight-common-c AUDIO_RENDERER_CALLBACKS backed by the shared
- * esplusplayer (esplus_player.c). Submits the host's Opus frames straight to an
- * audio/x-opus track on the same player as video, so audio and video share one
- * clock (tight A/V sync) - the native equivalent of the fork's EMSS audio track.
- * No libopus decode step: esplusplayer/GStreamer decodes Opus internally.
+ * audio_opus.c - moonlight-common-c AUDIO_RENDERER_CALLBACKS. The host's Opus frames are
+ * decoded in the engine with libopus (fixed point, from the submodule; libopus_tv.a) to S16LE
+ * PCM, which is handed to the host through ml_engine_set_audio_cb (mlengine.h); the host sends
+ * it to the web UI, which plays it with Web Audio.
  *
- * codec_data is a standard RFC 7845 OpusHead built from the negotiated
- * OPUS_MULTISTREAM_CONFIGURATION.
- *
- * UNTESTED: whether esplusplayer wants the OpusHead exactly like this as
- * codec_data is not yet confirmed on the TV. If it rejects it, the fallback is
- * to decode with libopus (vendored) and submit audio/x-raw PCM, or route PCM to
- * PulseAudio. The audio mime value OPUS=8 and the stream-info struct ARE
- * confirmed from the .so (see esplusplayer_tv50.h).
+ * Platform limitation: the TV player rejects engine-fed audio streams, so the esplusplayer
+ * carries only video (esplus_player.c) and audio does not share its clock.
+ * Without a callback at init the stream goes on without sound: init still returns 0 and
+ * decodeAndPlaySample returns at once (no decode: nobody could play it).
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include "Limelight.h"
-#include "esplusplayer_tv50.h"
-#include "mltrace.h"
+#include <opus_multistream.h>
 
-extern esplusplayer_handle esplus_create_open(void);
-extern esplusplayer_handle esplus_handle(void);
-extern int esplus_submit(const esplusplayer_es_packet *pkt);
+#include "Limelight.h"
+#include "mldiag.h"
+#include "mlengine.h"
+#include "mltrace.h"
 
 #define ALOG(...) fprintf(stderr, "[audio] " __VA_ARGS__)
 
-static uint8_t s_opushead[32];
-static int s_opushead_len;
-static int s_sample_rate = 48000, s_samples_per_frame = 240;
-static uint64_t s_pts_ns;
+static ml_engine_audio_cb s_cb_set;   /* set by the host, read once per session at init (atomic) */
+void ml_engine_set_audio_cb(ml_engine_audio_cb cb) { __atomic_store_n(&s_cb_set, cb, __ATOMIC_RELEASE); }
+void ml_engine_set_audio_drops(int dropped) { mldiag_adrops(dropped); }
+void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures) { mldiag_ahost(sent, dropped, send_failures); }
 
-/* RFC 7845 OpusHead. Returns length. */
-static int build_opushead(uint8_t *o, const POPUS_MULTISTREAM_CONFIGURATION c) {
-  int n = 0;
-  memcpy(o, "OpusHead", 8); n = 8;
-  o[n++] = 1;                               /* version */
-  o[n++] = (uint8_t)c->channelCount;        /* channel count */
-  uint16_t preskip = 3840;                  /* standard 80 ms at 48 kHz */
-  o[n++] = preskip & 0xff; o[n++] = preskip >> 8;
-  uint32_t sr = (uint32_t)c->sampleRate;    /* input sample rate */
-  o[n++] = sr & 0xff; o[n++] = (sr >> 8) & 0xff; o[n++] = (sr >> 16) & 0xff; o[n++] = (sr >> 24) & 0xff;
-  o[n++] = 0; o[n++] = 0;                    /* output gain */
-  if (c->channelCount <= 2 && c->streams == 1) {
-    o[n++] = 0;                             /* mapping family 0 */
-  } else {
-    o[n++] = 1;                             /* mapping family 1 (multichannel) */
-    o[n++] = (uint8_t)c->streams;
-    o[n++] = (uint8_t)c->coupledStreams;
-    for (int i = 0; i < c->channelCount; i++) o[n++] = c->mapping[i];
-  }
-  return n;
+static int s_samples_per_frame = 240, s_channels = 2, s_rate = 48000;
+static OpusMSDecoder *s_dec;
+static opus_int16 *s_pcm;   /* one frame, reused: the callback copies it */
+static ml_engine_audio_cb s_cb;   /* the callback of this session; NULL = no audio output */
+static unsigned s_nerr;
+
+static void ar_cleanup(void) {
+  if (s_dec) opus_multistream_decoder_destroy(s_dec);
+  free(s_pcm);
+  s_dec = NULL; s_pcm = NULL; s_cb = NULL;
 }
 
 static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, void *ctx, int flags) {
   (void)audioConfig; (void)ctx; (void)flags;
   MLT("audio init cfg=0x%x %d Hz %d ch streams=%d", audioConfig, cfg ? cfg->sampleRate : 0,
       cfg ? cfg->channelCount : 0, cfg ? cfg->streams : 0);
-  if (!cfg || cfg->channelCount <= 0 || cfg->channelCount > 8 || cfg->sampleRate <= 0) { MLT("audio init -> -1 (config)"); return -1; }
-  s_sample_rate = cfg->sampleRate;
+  if (!cfg || cfg->channelCount <= 0 || cfg->channelCount > 8 || cfg->sampleRate <= 0 || cfg->samplesPerFrame <= 0) { MLT("audio init -> -1 (config)"); return -1; }
+  ar_cleanup();   /* a decoder left over from a previous session */
   s_samples_per_frame = cfg->samplesPerFrame;
-  s_pts_ns = 0;
-  s_opushead_len = build_opushead(s_opushead, cfg);
+  s_channels = cfg->channelCount;
+  s_rate = cfg->sampleRate;
+  s_nerr = 0;
 
-  if (!esplus_create_open()) { ALOG("player create failed\n"); MLT("audio init -> -1 (player)"); return -1; }
-  esplusplayer_audio_stream_info ai = {
-    (char *)s_opushead, (uint32_t)s_opushead_len, ESPLUSPLAYER_AUDIO_MIME_TYPE_OPUS,
-    0, (uint32_t)cfg->channelCount, (uint32_t)cfg->sampleRate};
-  int ok = esplusplayer_add_audio_stream_info(esplus_handle(), &ai);
-  MLT("esplusplayer_add_audio_stream_info opus -> %d", ok);
-  if (!ok) { ALOG("add_audio_stream_info failed\n"); return -1; }
-  ALOG("init %d Hz, %d ch, %d samples/frame, OpusHead %d B\n",
-       cfg->sampleRate, cfg->channelCount, cfg->samplesPerFrame, s_opushead_len);
+  int err = 0;
+  s_dec = opus_multistream_decoder_create(cfg->sampleRate, cfg->channelCount, cfg->streams, cfg->coupledStreams, cfg->mapping, &err);
+  if (!s_dec) {
+    ALOG("opus decoder create failed %d\n", err); MLT("audio init -> -1 (opus %d)", err);
+    mldiag_adec(0, err);
+    return -1;
+  }
+  s_pcm = malloc((size_t)s_samples_per_frame * (size_t)s_channels * sizeof *s_pcm);
+  if (!s_pcm) { ar_cleanup(); ALOG("out of memory\n"); mldiag_adec(0, OPUS_ALLOC_FAIL); return -1; }
+
+  s_cb = __atomic_load_n(&s_cb_set, __ATOMIC_ACQUIRE);
+  mldiag_aout(s_cb != NULL);
+  if (!s_cb) { ALOG("audio output unavailable (no callback)\n"); MLT("audio output unavailable (no callback)"); }
+  ALOG("init %d Hz, %d ch, %d samples/frame, PCM S16LE -> host callback %s\n", cfg->sampleRate, cfg->channelCount, cfg->samplesPerFrame, s_cb ? "set" : "missing");
   return 0;
 }
 
 static void ar_start(void) {}
 static void ar_stop(void) {}
-static void ar_cleanup(void) {}
 
 static void ar_decodePlay(char *data, int len) {
-  if (len <= 0) return;
-  uint64_t dur_ns = (uint64_t)s_samples_per_frame * 1000000000ull / (uint64_t)s_sample_rate;
-  esplusplayer_es_packet pkt = {ESPLUSPLAYER_STREAM_TYPE_AUDIO, data, (uint32_t)len, s_pts_ns, dur_ns};
-  int r = esplus_submit(&pkt);
-  if (r != ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS && r != ESPLUSPLAYER_SUBMIT_STATUS_FULL
-      && r != ESPLUSPLAYER_SUBMIT_STATUS_NOT_PREPARED)
-    ALOG("submit audio failed %d\n", r);
-  s_pts_ns += dur_ns;
+  if (!s_dec || !s_pcm || !s_cb) return;
+  /* no data = a lost packet: libopus conceals it */
+  int n = (data == NULL || len <= 0)
+      ? opus_multistream_decode(s_dec, NULL, 0, s_pcm, s_samples_per_frame, 0)
+      : opus_multistream_decode(s_dec, (const unsigned char *)data, len, s_pcm, s_samples_per_frame, 0);
+  if (n <= 0) {
+    mldiag_adec(0, n);
+    if (s_nerr++ < 4 || s_nerr % 256 == 0) MLT("opus decode error %d (#%u)", n, s_nerr);
+    return;   /* nothing is handed over: the UI fills the gap */
+  }
+  mldiag_adec(1, 0);
+  mldiag_aframe(n * s_channels * 2);
+  s_cb((const short *)s_pcm, n, s_channels, s_rate);   /* the host copies and returns at once */
 }
 
 void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) {
@@ -99,5 +94,8 @@ void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) {
   cb->stop = ar_stop;
   cb->cleanup = ar_cleanup;
   cb->decodeAndPlaySample = ar_decodePlay;
+  /* DIRECT_SUBMIT: decodeAndPlaySample runs on the receive thread. Without it common-c's 30-packet audio queue
+     drops ALL queued packets on overflow (a 150 ms gap). A fixed-point decode of a 5 ms frame is cheap enough for
+     that thread, and the host callback only copies the frame and returns. */
   cb->capabilities = CAPABILITY_DIRECT_SUBMIT;
 }
