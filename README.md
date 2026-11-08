@@ -228,21 +228,31 @@ its ABI was reverse-engineered from the device binary — see
 Full map and attribution in [PROVENANCE](docs/PROVENANCE.en.md); design in
 [ARCHITECTURE](docs/ARCHITECTURE.en.md).
 
-## Architecture (hybrid package)
+## Architecture (two packages)
 
 ```
-┌─────────────────────────── Tizen hybrid package ───────────────────────────┐
-│  Web UI (wgt)  — moonlight-tizen front-end, unchanged logic                 │
-│      │  tizen.messageport  (mlbridge.js replaces the WASM embind transport)  │
-│      ▼                                                                       │
-│  Native service (tpk)  — mlservice.c                                         │
-│      makeCert / httpInit / openUrl / pair / startStream / sendKeyboardEvent  │
-│      → moonlight-common-c + libgamestream + esplusplayer video/audio + input │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────── Tizen app ────────────────────────┐
+│  Web UI (.wgt)  — moonlight-tizen front-end                │
+│      │  tizen.messageport  (mlbridge.js)                    │
+│      ▼                                                      │
+│  .NET host (.tpk)  — loads libmlengine.so (the engine)     │
+│      makeCert / pair / startStream / input                 │
+│      → moonlight-common-c + libgamestream + esplusplayer   │
+└────────────────────────────────────────────────────────────┘
 ```
 
-During streaming the native service owns the hardware video overlay; the web UI
-is the menu/launcher.
+Two packages, installed side by side: the **web UI** (`.wgt`, the moonlight-tizen
+front-end with the WASM transport swapped for the message-port bridge) and the
+**native engine host** (`.tpk`, a .NET app that loads `libmlengine.so`). The UI
+starts the host by itself when a stream begins; no service runs in the
+background otherwise. (An earlier single "hybrid package" with a native
+`mlservice.c` service was replaced by this split — see
+[ARCHITECTURE](docs/ARCHITECTURE.en.md).)
+
+During streaming the engine owns the hardware video overlay; the web UI is the
+menu/launcher. On this repo's device overlay the host loads the engine `.so`
+through the manual ELF loader (`ManualLoader.cs`) to work around the TV's
+exec-mmap policy — see [ENGINE-LOAD](docs/ENGINE-LOAD.en.md).
 
 ## Latency & statistics
 
@@ -375,7 +385,7 @@ Actions to create and approve pull requests*.
 ```
 esplusplayer_tv50.h   reverse-engineered ABI of the TV's libesplusplayer.so
 mlclient/             native engine + CLI harness (video, audio, input, pairing)
-pkg/                  hybrid package: Dockerfile, service (tpk), ui (wgt), build
+pkg/                  app packages: Dockerfile, .NET host (tpk), web UI (wgt), build
 tests/                esppplay probe + host self-tests used during bring-up
 docs/                 BACKPORT / PROVENANCE / ARCHITECTURE / ENGINE-LOAD / DEV-CERT (EN + PL)
 third_party/          moonlight-tizen (web UI + moonlight-common-c), git submodule
