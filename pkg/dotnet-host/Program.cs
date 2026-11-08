@@ -263,6 +263,8 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioDropsDelegate(int dropped);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioHostStatsDelegate(int sent, int dropped, int sendFailures);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetGameModeDelegate(int on);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int TvGameModeDelegate(int on, int saveType);
+        public static TvGameModeDelegate    TvGameMode;      // null with an engine that lacks it
         public static SetAudioCbDelegate    SetAudioCb;      // null with an engine that lacks it
         public static SetAudioDropsDelegate SetAudioDrops;   // null with an engine that lacks it
         public static SetAudioHostStatsDelegate SetAudioHostStats;   // null with an engine that lacks it
@@ -316,6 +318,8 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { SetAudioHostStats = null; }
             try { SetGameMode = MemLoader.GetDelegate<SetGameModeDelegate>(h, "ml_engine_set_gamemode"); }
             catch (EntryPointNotFoundException) { SetGameMode = null; }
+            try { TvGameMode = MemLoader.GetDelegate<TvGameModeDelegate>(h, "ml_engine_tv_game_mode"); }
+            catch (EntryPointNotFoundException) { TvGameMode = null; }
             try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
             catch (EntryPointNotFoundException) { GamepadArrival = null; }
             try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
@@ -888,6 +892,18 @@ namespace MoonlightHost
                         if (!int.TryParse(Item(b, "key"), out key) || !int.TryParse(Item(b, "action"), out action) ||
                             !int.TryParse(Item(b, "mods"), out mods)) return "bad args";
                         Engine.SendKey(key, action, mods);
+                        return null;
+                    }
+                case "tvGameMode":
+                    {
+                        int on = Item(b, "on") == "true" ? 1 : 0;
+                        int saveType;
+                        if (!int.TryParse(Item(b, "saveType"), out saveType)) saveType = 1;   // optional: the session's value
+                        if (Engine.TvGameMode == null) return "not supported";
+                        int rc;
+                        lock (s_engineLock) rc = Engine.TvGameMode(on, saveType);
+                        Log.Info("tv game mode " + on + " saveType " + saveType + " -> " + rc);
+                        r.Add("rc", rc.ToString());
                         return null;
                     }
                 case "toggleStats": return ToggleStats(Item(b, "on"));

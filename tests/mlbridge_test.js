@@ -5,7 +5,8 @@ var logs = [], warns = [], errs = [], timers = [], now = 0, tid = 1;
 var byId = {}, domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
 var cleared = {}, pads = [];
 var padListener = null, padCapture = null;
-var win = { addEventListener: function (ev, f, cap) { if (ev === 'gamepadinputchanged') { padListener = f; padCapture = cap; } }, ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
+var winListeners = {};
+var win = { addEventListener: function (ev, f, cap) { (winListeners[ev] = winListeners[ev] || []).push(f); if (ev === 'gamepadinputchanged') { padListener = f; padCapture = cap; } }, ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
   ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
@@ -337,6 +338,32 @@ test('mlDiag prints the host report line by line', async function () {
   await tick();
   assert.ok(logs.indexOf('[MLDIAG] diag#1 run: x') >= 0);
   assert.ok(logs.indexOf('[MLDIAG] diag#1 summary: file: read=ok exec=ok, dlopen ok') >= 0);
+});
+
+test('mlGameMode sends tvGameMode and logs the rc', async function () {
+  sent.length = 0;
+  assert.ok(/off/.test(win.mlGameMode(false)));
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'tvGameMode'); assert.strictEqual(f.on, 'false'); assert.ok(!('saveType' in f));
+  reply(f.id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode off -> rc 0') >= 0);
+  win.mlGameMode(true, 0);
+  f = fields(sent[1]);
+  assert.strictEqual(f.on, 'true'); assert.strictEqual(String(f.saveType), '0');
+  reply(f.id, { error: 'not supported' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode failed') === 0; }));
+});
+
+test('page gone: pagehide then unload send one stopStream, only during a stream', async function () {
+  function gone(ev) { (winListeners[ev] || []).forEach(function (f) { f({}); }); }
+  function stops() { return sent.map(fields).filter(function (f) { return f.cmd === 'stopStream'; }).length; }
+  sent.length = 0; gone('pagehide'); gone('unload');
+  assert.strictEqual(stops(), 0, 'no stream');
+  pads = [];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  gone('pagehide'); gone('unload');
+  assert.strictEqual(stops(), 1);
+  handled.length = 0;
 });
 
 test('mlDiag("launch") tries each way while the host does not run', async function () {

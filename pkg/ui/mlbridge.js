@@ -443,6 +443,16 @@
     padTimer = null; padSlots = [];   // the next stream announces the pads again
   }
 
+  // The page goes away during a stream (the UI is closed): stop the stream, the host would keep it
+  // running. Not visibilitychange: the host's video window may hide the page. stopPads() clears
+  // padTimer, so the second event (pagehide, then unload) sends nothing.
+  function onPageGone() {
+    if (!padTimer) return;
+    stopPads(); audioCall('mlAudioStop');
+    bridgeCall('stopStream', {}, 0).then(null, function () {});
+  }
+  if (window.addEventListener) { window.addEventListener('pagehide', onPageGone); window.addEventListener('unload', onPageGone); }
+
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
   var audioFailed = false;
   function onReply(data /*, remoteMessagePort */) {
@@ -617,6 +627,17 @@
     try { localStorage.setItem(DEBUG_KEY, on ? '1' : '0'); } catch (e) {}
     call('setLog', { on: String(on) }).then(null, function (e) { console.warn('[mlbridge] setLog failed:', e); });
     return 'host/engine log in this console: ' + (on ? 'on' : 'off');
+  };
+
+  // mlGameMode(false) switches the TV game mode off now (it can stay on after the app was
+  // closed); mlGameMode(true) on. saveType is optional (the host default is 1, the session's).
+  window.mlGameMode = function (on, saveType) {
+    bridgeCall('tvGameMode', { on: String(!!on), saveType: saveType }, DEFAULT_TIMEOUT).then(function (r) {
+      console.log('[mlbridge] TV game mode ' + (on ? 'on' : 'off') + ' -> rc ' + r.rc);
+    }, function (e) {
+      console.warn('[mlbridge] TV game mode failed:', e);
+    });
+    return 'TV game mode ' + (on ? 'on' : 'off') + ' requested';
   };
 
   // Diagnostics in this console (on a retail TV, Apps2Samsung's debug console is the

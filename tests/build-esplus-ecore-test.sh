@@ -42,6 +42,10 @@ for D in "" "-DMLT_TRACE"; do
   gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" \
     -o "$OUT-pad" "$HERE/engine_pad_test.c" "$R/mlclient/engine_pad.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-pad" 2>/dev/null
+  gcc -std=gnu11 -Wall -Wextra -Werror $D -Ddlopen=fake_dlopen -Ddlsym=fake_dlsym -Ddlclose=fake_dlclose -I"$R/mlclient" \
+    -o "$OUT-avoc" "$HERE/engine_avoc_test.c" "$R/mlclient/engine_avoc.c"
+  "$OUT-avoc" 2>/dev/null
+  "$OUT-avoc" nolib 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" -I"$R/third_party/moonlight-tizen/libgamestream" \
     -o "$OUT-api" "$HERE/engine_api_test.c" "$R/mlclient/engine_api.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-api" 2>/dev/null

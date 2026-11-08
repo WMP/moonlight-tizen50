@@ -60,7 +60,10 @@ uses one global cancel flag). `cancelRequest` does not wait for that queue.
 | `stun` | – | `result` = `""` | none (not supported yet) |
 | `wakeOnLan` | `mac` | `error` = `not supported` | none (not supported yet) |
 | `setLog` | `on` (`true`/`false`) | – | `ml_engine_set_log_cb` (works also when the engine did not load) |
+| `tvGameMode` | `on` (`true`/`false`), `saveType` (decimal, optional, default `1`: the value the session uses) | `rc` (the TV's return code; `-1` = TV library missing). `error` = `not supported` with an older engine | `ml_engine_tv_game_mode` (immediate call, used by `mlGameMode()` to switch the TV game mode off after the app was closed) |
 | `diag` | `rerun` (`true`: run the checks again now) | `report` (the lines of the last run, `\n`-separated) | none; works also when the engine did not load (see below) |
+
+The UI sends `stopStream` when the page is closed (`pagehide`/`unload`) during a stream.
 
 An engine error becomes `error` = the engine return code as a decimal string (the
 same values the WASM build rejects with, for example `-1` = GS_FAILED).

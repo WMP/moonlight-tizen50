@@ -115,6 +115,14 @@ Android). It shows the web UI console, and on request the host and engine log to
    mlDiag('launch')   // start the host in each way the UI can: [mldiag] lines
    ```
 
+   **TV game mode** stayed on after the app was closed? Switch it off now. The console
+   prints the TV's `rc` (0 = done). The optional second argument is the save type (default 1):
+
+   ```js
+   mlGameMode(false)  // game mode off
+   mlGameMode(true)   // game mode on
+   ```
+
    If no `[MLHOST]` line comes at all, the host did not start: run `mlDiag('launch')`.
 4. Do what fails (add a host, pair, start a stream), then save the console to a
    file (desktop Chrome: right-click in the console → *Save as…*; Android: share).

@@ -46,6 +46,7 @@ The point of this repo is to improve the client itself:
   Run it after touching `mlclient/esplus_player.c`, `mlclient/esplus_stats.h` or `mlclient/video_esplus.c`.
   The same script also runs `tests/mldiag_test.c` (the `ML-ERROR` line); run it after touching `mlclient/mldiag.c`.
   It also runs `tests/engine_pad_test.c` (gamepad calls, clamps, `pad` counters); run it after touching `mlclient/engine_pad.c`.
+  It also runs `tests/engine_avoc_test.c` (TV game mode calls); run it after touching `mlclient/engine_avoc.c`.
   It also runs `tests/audio_opus_test.c` (Opus decode to PCM, the host audio callback); run it after touching `mlclient/audio_opus.c`.
   It also runs `tests/engine_api_test.c` (start settings, Game Mode, rikey IV, host masking); run it after touching `mlclient/engine_api.c`.
   It also runs `tests/ctlcrypto_test.c` (control-stream encrypt check); run it after touching `mlclient/ctlcrypto.c`.

@@ -115,6 +115,11 @@ void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures);
  * itself never fails - TVs without the interface just keep the current mode. */
 void ml_engine_set_gamemode(int on);
 
+/* Immediate TV game mode call for recovery/diagnostics from the UI console (mlGameMode).
+ * save_type 1 = what the session uses. Returns the TV's rc, or -1 when the TV library or
+ * symbol is missing. */
+int ml_engine_tv_game_mode(int on, int save_type);
+
 #ifdef __cplusplus
 }
 #endif
