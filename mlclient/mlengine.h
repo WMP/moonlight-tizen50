@@ -109,6 +109,12 @@ void ml_engine_set_audio_drops(int dropped);
 /* The host's audio counters of the current session (frames sent to the UI, frames dropped by its queue, failed sends), for the ML-ERROR line. */
 void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures);
 
+/* The UI's "Game Mode" setting (PROTOCOL.md startStream `gameMode`): on != 0 asks the
+ * TV for its game picture/low-latency mode while a stream runs and restores the previous
+ * mode when the stream ends (stop, host drop or error). Set before startStream; the call
+ * itself never fails - TVs without the interface just keep the current mode. */
+void ml_engine_set_gamemode(int on);
+
 #ifdef __cplusplus
 }
 #endif

@@ -263,9 +263,11 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioCbDelegate(AudioCbDelegate cb);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioDropsDelegate(int dropped);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioHostStatsDelegate(int sent, int dropped, int sendFailures);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetGameModeDelegate(int on);
         public static SetAudioCbDelegate    SetAudioCb;      // null with an engine that lacks it
         public static SetAudioDropsDelegate SetAudioDrops;   // null with an engine that lacks it
         public static SetAudioHostStatsDelegate SetAudioHostStats;   // null with an engine that lacks it
+        public static SetGameModeDelegate   SetGameMode;     // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
@@ -313,6 +315,8 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { SetAudioDrops = null; }
             try { SetAudioHostStats = MemLoader.GetDelegate<SetAudioHostStatsDelegate>(h, "ml_engine_set_audio_host_stats"); }
             catch (EntryPointNotFoundException) { SetAudioHostStats = null; }
+            try { SetGameMode = MemLoader.GetDelegate<SetGameModeDelegate>(h, "ml_engine_set_gamemode"); }
+            catch (EntryPointNotFoundException) { SetGameMode = null; }
             try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
             catch (EntryPointNotFoundException) { GamepadArrival = null; }
             try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
@@ -856,6 +860,7 @@ namespace MoonlightHost
                             return "bad args";
                         if (!int.TryParse(Item(b, "codecMode"), out codec)) codec = 0;   // optional: engine defaults to H.264
                         int fullRange = Item(b, "fullRange") == "true" ? 1 : 0;   // optional: absent = limited
+                        Engine.SetGameMode?.Invoke(Item(b, "gameMode") == "true" ? 1 : 0);   // optional: absent = off
                         lock (s_engineLock)
                         {
                             if (s_active && Engine.Running() != 0)   // already streaming: keep the audio path as it is
