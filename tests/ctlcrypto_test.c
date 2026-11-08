@@ -37,7 +37,7 @@ bool __real_PltEncryptMessage(void *ctx, int algorithm, int flags, unsigned char
 }
 
 static void enc(int ivlen, int len, int algorithm) {
-  unsigned char key[16] = "0123456789abcdef", iv[16] = { 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 'C', 'C' };
+  unsigned char key[] = "0123456789abcdef", iv[16] = { 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 'C', 'C' };
   static unsigned char buf[16 + 2048]; unsigned char in[2048];
   memset(in, 0x5a, sizeof in);
   int outlen = 0;
