@@ -11,8 +11,7 @@
  * messages.js's sendMessage() contract. Wire format: see pkg/ui/PROTOCOL.md.
  *
  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
- * and sendMessage. Note: needs validation on a device (tizen.messageport
- * behaviour); host-side tests only cover tests/mlbridge_test.js.
+ * and sendMessage. Host-side test: tests/mlbridge_test.js.
  */
 (function () {
   var ENGINE_APPID = 'org.moonlight.host.app';
@@ -276,7 +275,7 @@
     var el = statsDiv(statsOn);
     if (!el || !statsOn) return;
     el.style.display = 'block';
-    el.textContent = 'depth ' + m.depth + ' ms (audio ' + m.addepth + ' ms)\n' +
+    el.textContent = 'depth ' + m.depth + ' ms\n' +
       'fps ' + m.fps + '\n' +
       'dropped late ' + m.drop + ' / full ' + m.full + '\n' +
       'under/over ' + m.uo + '\n' +

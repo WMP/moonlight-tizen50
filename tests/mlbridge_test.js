@@ -359,7 +359,7 @@ test('event with a long diag sent in parts is joined', async function () {
   assert.ok(errs.indexOf('[ML-ERROR] ' + line) >= 0);
 });
 
-var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'addepth', value: '8' }, { key: 'fps', value: '60' },
+var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'fps', value: '60' },
   { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' }];
 async function toggleStats(err, on) {
   var n = sent.length, p = win.SyncFunctions.toggleStats();
@@ -381,7 +381,7 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
   listener(STATS);
   var el = byId.mlstats;
   assert.ok(el && el.style.display !== 'none' && el.id === 'mlstats');
-  assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms (audio 8 ms)');
+  assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms');
   assert.ok(/play 12\.3 s/.test(el.textContent), el.textContent);
   assert.strictEqual(handled.length, h);
 });

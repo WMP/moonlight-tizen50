@@ -1,14 +1,14 @@
 /*
  * MoonlightHost - Tizen .NET host for the dev-cert path.
  *
- * On a retail (unrooted) Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
+ * On a retail Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
  * the installable unit is a dev-signed .NET .tpk; our native streaming engine ships
  * inside it as libmlengine.so and is driven over the stable C ABI (mlengine.h).
  *
  * The engine is loaded from memory rather than from a file in the app folder: we
  * read libmlengine.so's bytes and load them from an anonymous in-memory fd
- * (memfd_create -> write -> dlopen /proc/self/fd/N). This is also how a downloaded
- * engine update is applied without rewriting the app folder. Only OUR .so comes from
+ * (memfd_create -> write -> dlopen /proc/self/fd/N); when that fails, it dlopens the
+ * packaged file. Only OUR .so comes from
  * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
  * the TV's /usr/lib.
  *
@@ -82,8 +82,7 @@ namespace MoonlightHost
         }
     }
 
-    // Loads a shared object from memory (lets downloaded engine updates apply
-    // without rewriting the app folder).
+    // Loads a shared object from memory (an anonymous memfd).
     internal static class MemLoader
     {
         private const uint MFD_CLOEXEC = 0x0001u;
@@ -610,7 +609,6 @@ namespace MoonlightHost
                 var m = new Tizen.Applications.Bundle();
                 m.AddItem("event", "mlstats");
                 m.AddItem("depth", s.DepthMs.ToString(c));
-                m.AddItem("addepth", s.AudioDepthMs.ToString(c));
                 m.AddItem("fps", s.FpsSubmitted.ToString(c));
                 m.AddItem("drop", s.DroppedLate.ToString(c));
                 m.AddItem("full", s.DroppedFull.ToString(c));
