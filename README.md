@@ -8,12 +8,48 @@ It streams games from a GameStream host (Sunshine, GeForce Experience,
 [Wolf](https://games-on-whales.github.io/wolf/)) and decodes video on the TV's
 hardware video plane through the vendor library `libesplusplayer.so`.
 
-> Status: **experimental / work in progress.** The streaming engine is verified
-> end-to-end on real hardware (pairing → launch → RTSP → hardware decode, 2–3
-> frame player latency). The hybrid app package (UI + service) is still being
-> brought up. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the step-by-step state,
-> and [ENGINE-LOAD](docs/ENGINE-LOAD.en.md) ([PL](docs/ENGINE-LOAD.md)) for how the engine `.so` is
-> loaded on a retail TV (the exec-mmap policy and the manual loader).
+> Status: **experimental / work in progress.** See the feature table below for
+> what is verified to work, what is implemented but not yet field-tested, and
+> what is still on the list. See [BACKPORT](docs/BACKPORT.en.md) ([PL](docs/BACKPORT.md)) for the
+> step-by-step state, and [ENGINE-LOAD](docs/ENGINE-LOAD.en.md) ([PL](docs/ENGINE-LOAD.md)) for how
+> the engine `.so` is loaded on a retail TV (the exec-mmap policy and the
+> manual loader).
+
+## v0.2 in action
+
+[![Moonlight Tizen 5.0 — v0.2 streaming demo](https://img.youtube.com/vi/dFGEaQFeYeA/maxresdefault.jpg)](https://youtu.be/dFGEaQFeYeA)
+
+A full session on a 2026 Tizen 5.0 TV (Muse.M): pairing with a Wolf host,
+launching a game, hardware H.264 video, Web Audio sound, an Xbox controller
+over Bluetooth, live statistics overlay, and leaving the stream with the
+Remote's Back key.
+
+## Feature status (v0.2)
+
+What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
+
+| Feature | State | Notes |
+|---|---|---|
+| Host discovery (mDNS) + manual add | **works** | |
+| Pairing (PIN) | **works** | own certificate generated on the TV |
+| App / game list | **works** | |
+| Hardware H.264 decode (720p–1080p, up to 60 fps) | **works** | 720p60 and 1080p60 verified |
+| Opus → PCM audio, played by the UI (Web Audio) | **works** | ~100 ms jitter buffer; loss counters in the overlay |
+| Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers |
+| Statistics overlay (`toggleStats`) | **works** | queue depth, fps, audio counters |
+| Remote Back key leaves the stream | **works** | core #20 |
+| HEVC / AV1 video | untested | engine path exists; not verified on a TV |
+| HDR | untested | |
+| 4K resolutions | untested | the player takes them; the test TV is 1080p |
+| Keyboard / mouse input | untested | engine path exists |
+| TV Game Mode during a stream (core #32) | untested | implemented, built; needs an on-TV test |
+| Rumble feedback | **todo** | |
+| Surround sound (5.1/7.1) | **todo** | the player carries video only |
+| A/V sync (shared audio clock) | **todo** | audio runs on the Web Audio clock |
+| Player stall recovery (`MLENGINE_RECOVER_MAX`) | **todo** | implemented, off by default until validated |
+
+The debug packages (`-debug` file suffix) log everything: see
+[Getting the logs](#getting-the-logs-apps2samsung) below before reporting.
 
 > **Where to make changes:** the engine and UI are developed in
 > **[moonlight-tizen50-core](https://github.com/WMP/moonlight-tizen50-core)**. This repo
@@ -151,6 +187,21 @@ grep -n -E '\bid=28\b' $F
 
 The base UI's lines carry CSS noise (`%c[index.js, …] color: green;`); to keep
 them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
+
+## v0.2 changelog
+
+Highlights of this release; the [Releases](../../releases) page has the full list.
+
+- **Audio works**: the engine decodes Opus to PCM and the UI plays it with Web
+  Audio (core #22). Video-only is no longer the only option.
+- **The stream survives player hiccups**: one automatic player rebuild before
+  the fatal watchdogs (core #22), IDR retry at start.
+- **Remote Back leaves the stream** and returns to the app list (core #20).
+- **TV Game Mode while streaming** (core #32): the TV's game picture mode comes
+  on with the stream and is restored when it ends — implemented, awaiting an
+  on-TV test (see the table above).
+- Diagnostics: every failure produces one `ML-ERROR` line with the session
+  config, counters and player state.
 
 ## Why this exists
 
