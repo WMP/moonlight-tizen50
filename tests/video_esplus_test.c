@@ -29,11 +29,11 @@ void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *), void *data) { r
 static void (*async_cb)(void *); static void *async_data;   /* queued; run_async() plays the main loop */
 void ecore_main_loop_thread_safe_call_async(void (*cb)(void *), void *data) { async_cb = cb; async_data = data; }
 static void run_async(void) { void (*c)(void *) = async_cb; async_cb = NULL; if (c) c(async_data); }
-static int pl;
-esplusplayer_handle esplusplayer_create(void) { return (esplusplayer_handle)&pl; }
+static int pl, create_calls, stop_calls, addv_ok = 1;
+esplusplayer_handle esplusplayer_create(void) { create_calls++; return (esplusplayer_handle)&pl; }
 int esplusplayer_open(esplusplayer_handle h) { (void)h; return 1; }
 int esplusplayer_close(esplusplayer_handle h) { (void)h; return 1; }
-int esplusplayer_stop(esplusplayer_handle h) { (void)h; return 1; }
+int esplusplayer_stop(esplusplayer_handle h) { (void)h; stop_calls++; return 1; }
 static esplusplayer_prepare_async_done_cb cb_prepared;
 static esplusplayer_error_cb cb_error;
 static esplusplayer_buffer_status_cb cb_buffer;
@@ -52,7 +52,7 @@ int esplusplayer_set_display_mode(esplusplayer_handle h, esplusplayer_display_mo
 static int seek_calls; static uint64_t seek_target;
 int esplusplayer_seek(esplusplayer_handle h, uint64_t t) { (void)h; seek_calls++; seek_target = t; return 1; }
 void esplusplayer_set_seek_done_cb(esplusplayer_handle h, esplusplayer_seek_done_cb c) { (void)h;(void)c; }
-int esplusplayer_add_video_stream_info(esplusplayer_handle h, const esplusplayer_video_stream_info *i) { (void)h;(void)i; return 1; }
+int esplusplayer_add_video_stream_info(esplusplayer_handle h, const esplusplayer_video_stream_info *i) { (void)h;(void)i; return addv_ok; }
 static uint64_t play_ms = 1;
 int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *t) { (void)h; *t = play_ms; return 1; }
 /* submit stub: record packets; return script[0..n_script) in order, then SUCCESS */
@@ -151,5 +151,13 @@ int main(void) {
   assert(frame(9116, P) == DR_OK && rec_ms[1] == 16);
   assert(frame(9132, P) == DR_OK && rec_ms[2] == 32);               /* no second rebase */
   end(); start_ret = 1;
+  /* 8: a failed setup (common-c skips cleanup then) closes the player; the next setup makes a new one */
+  VidEsplus_FillCallbacks(&cb);
+  addv_ok = 0; create_calls = stop_calls = 0;
+  assert(cb.setup(VIDEO_FORMAT_H264, 1280, 720, 60, NULL, 0) == -1);
+  assert(create_calls == 1 && stop_calls == 1);
+  addv_ok = 1;
+  assert(cb.setup(VIDEO_FORMAT_H264, 1280, 720, 60, NULL, 0) == 0 && create_calls == 2 && stop_calls == 1);
+  end();
   puts("video esplus ok"); return 0;
 }

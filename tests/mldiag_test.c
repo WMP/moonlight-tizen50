@@ -5,7 +5,7 @@
 #include <string.h>
 #include "mldiag.h"
 
-static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74", NULL, 0, NULL };
+static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74", NULL, 0, NULL, NULL };
 
 static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0, 0, 0, 0); }
 
@@ -114,6 +114,19 @@ int main(void) {
   mldiag_note_launch("https://h/launch?rikey=zz112233445566778899aabbccddeeff");
   mldiag_reset(&kc); fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, "rikey=bad rikeyid=- "));
+
+  /* the host address is masked in the cc lines (also when it is cut by the line limit) */
+  { mldiag_cfg hc = CFG; hc.host = "192.168.1.20"; mldiag_reset(&hc);
+    mldiag_cc_line("No working addresses found for host: 192.168.1.20\n");
+    mldiag_cc_line("a 192.168.1.20 b 192.168.1.20\n");
+    char big2[256]; memset(big2, 'x', 155); strcpy(big2 + 155, "192.168.1.20\n"); mldiag_cc_line(big2);
+    fail(-101); mldiag_last(buf, sizeof buf);
+    assert(strstr(buf, "No working addresses found for host: <host>") && strstr(buf, "a <host> b <host>"));
+    assert(!strstr(buf, "192.168") && !strstr(buf, "1.20"));
+    hc.host = ""; mldiag_reset(&hc); mldiag_cc_line("host 192.168.1.20\n"); fail(-101); mldiag_last(buf, sizeof buf);
+    assert(strstr(buf, "host 192.168.1.20") && !strstr(buf, "<host>"));
+    mldiag_reset(&CFG); mldiag_cc_line("host 192.168.1.20\n"); fail(-101); mldiag_last(buf, sizeof buf);
+    assert(strstr(buf, "host 192.168.1.20")); }
 
   /* control stream encrypt counters */
   mldiag_reset(&CFG);

@@ -42,6 +42,9 @@ for D in "" "-DMLT_TRACE"; do
   gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" \
     -o "$OUT-pad" "$HERE/engine_pad_test.c" "$R/mlclient/engine_pad.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-pad" 2>/dev/null
+  gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" -I"$R/third_party/moonlight-tizen/libgamestream" \
+    -o "$OUT-api" "$HERE/engine_api_test.c" "$R/mlclient/engine_api.c" "$R/mlclient/mldiag.c" -lpthread -ldl
+  "$OUT-api" 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" -I"$LC" -I"$OPUS/include" \
     -o "$OUT-audio" "$HERE/audio_opus_test.c" "$R/mlclient/audio_opus.c" "$R/mlclient/mldiag.c" "$OPUSD/libopus_host.a" -lpthread -ldl -lm
   "$OUT-audio" 2>/dev/null

@@ -14,7 +14,7 @@
 
 static pthread_mutex_t s_mu = PTHREAD_MUTEX_INITIALIZER;
 static mldiag_cfg s_cfg;
-static char s_appver[64], s_gfever[64], s_rtsp[12] = "-";
+static char s_appver[64], s_gfever[64], s_rtsp[12] = "-", s_host[256];   /* s_host: only to mask the cc lines */
 static long long s_t0;
 static char s_first[FIRST_N][LINE_MAX_CC + 1], s_last[LAST_N][LINE_MAX_CC + 1];
 static int s_nlines;                      /* total cc lines seen */
@@ -117,6 +117,8 @@ void mldiag_reset(const mldiag_cfg *cfg) {
     snprintf(s_appver, sizeof s_appver, "%s", cfg->app_version ? cfg->app_version : "");
     snprintf(s_gfever, sizeof s_gfever, "%s", cfg->gfe_version ? cfg->gfe_version : "");
   } else s_appver[0] = s_gfever[0] = 0;
+  snprintf(s_host, sizeof s_host, "%s", cfg && cfg->host ? cfg->host : "");
+  s_cfg.host = NULL;   /* never kept or printed */
   s_cfg.app_version = s_appver; s_cfg.gfe_version = s_gfever;
   snprintf(s_rtsp, sizeof s_rtsp, "%s", cfg && cfg->rtsp_scheme ? cfg->rtsp_scheme : "-");
   snprintf(s_launch, sizeof s_launch, "-"); snprintf(s_rikey, sizeof s_rikey, "-"); snprintf(s_rikeyid, sizeof s_rikeyid, "-");
@@ -133,7 +135,17 @@ void mldiag_reset(const mldiag_cfg *cfg) {
 
 void mldiag_cc_line(const char *line) {
   if (!line) return;
-  char b[LINE_MAX_CC + 1];
+  char b[LINE_MAX_CC + 1], m[2048];
+  pthread_mutex_lock(&s_mu);
+  size_t hl = strlen(s_host), mn = 0;
+  if (hl) {   /* mask the whole line before the cut, so a cut-off address cannot slip through */
+    for (const char *p = line; *p && mn < sizeof m - 6; ) {
+      if (!strncmp(p, s_host, hl)) { memcpy(m + mn, "<host>", 6); mn += 6; p += hl; }
+      else m[mn++] = *p++;
+    }
+    m[mn] = 0; line = m;
+  }
+  pthread_mutex_unlock(&s_mu);
   size_t n = strlen(line);
   while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
   if (n > LINE_MAX_CC) n = LINE_MAX_CC;
