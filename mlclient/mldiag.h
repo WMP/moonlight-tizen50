@@ -2,7 +2,7 @@
  * mldiag.h - engine-internal session diagnostics (not part of the ABI, mlengine.h).
  * Collects counters and a few moonlight-common-c log lines in release builds too, and
  * on a failed session builds ONE "ML-ERROR ..." line. Pure C, no engine headers.
- * Holds no host address, key, PIN, URL or certificate.
+ * Holds no host address, key, PIN, URL or certificate (the host is masked as <host> in the cc lines).
  */
 #ifndef MLDIAG_H
 #define MLDIAG_H
@@ -14,6 +14,7 @@ typedef struct {
   const unsigned char *aes_key;            /* 16 bytes, compare only (never stored or printed); NULL = unknown */
   int rikeyid;                             /* compare only */
   const char *rtsp_scheme;                 /* "rtsp" or "rtspenc" (copied; no secret); NULL = unknown */
+  const char *host;                        /* copied, only to mask it in the cc lines (never printed); NULL = none */
 } mldiag_cfg;
 
 void mldiag_reset(const mldiag_cfg *cfg);                 /* session start: clears everything */

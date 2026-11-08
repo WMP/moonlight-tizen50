@@ -22,7 +22,7 @@ int LiSendMultiControllerEvent(short i, short m, int b, unsigned char lt, unsign
   g_calls++; S.idx = i; S.mask = m; S.btn = b; S.lt = lt; S.rt = rt; S.lsx = lsx; S.lsy = lsy; S.rsx = rsx; S.rsy = rsy; return g_rc;
 }
 
-static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "a", "b", NULL, 0, NULL };
+static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "a", "b", NULL, 0, NULL, NULL };
 
 int main(void) {
   char buf[4096];

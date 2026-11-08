@@ -1,14 +1,14 @@
 /*
  * MoonlightHost - Tizen .NET host for the dev-cert path.
  *
- * On a retail (unrooted) Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
+ * On a retail Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
  * the installable unit is a dev-signed .NET .tpk; our native streaming engine ships
  * inside it as libmlengine.so and is driven over the stable C ABI (mlengine.h).
  *
  * The engine is loaded from memory rather than from a file in the app folder: we
  * read libmlengine.so's bytes and load them from an anonymous in-memory fd
- * (memfd_create -> write -> dlopen /proc/self/fd/N). This is also how a downloaded
- * engine update is applied without rewriting the app folder. Only OUR .so comes from
+ * (memfd_create -> write -> dlopen /proc/self/fd/N); when that fails, it dlopens the
+ * packaged file. Only OUR .so comes from
  * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
  * the TV's /usr/lib.
  *
@@ -82,8 +82,7 @@ namespace MoonlightHost
         }
     }
 
-    // Loads a shared object from memory (lets downloaded engine updates apply
-    // without rewriting the app folder).
+    // Loads a shared object from memory (an anonymous memfd).
     internal static class MemLoader
     {
         private const uint MFD_CLOEXEC = 0x0001u;
@@ -279,6 +278,8 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioDropsDelegate(int dropped);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioHostStatsDelegate(int sent, int dropped, int sendFailures);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetGameModeDelegate(int on);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int TvGameModeDelegate(int on, int saveType);
+        public static TvGameModeDelegate    TvGameMode;      // null with an engine that lacks it
         public static SetAudioCbDelegate    SetAudioCb;      // null with an engine that lacks it
         public static SetAudioDropsDelegate SetAudioDrops;   // null with an engine that lacks it
         public static SetAudioHostStatsDelegate SetAudioHostStats;   // null with an engine that lacks it
@@ -332,6 +333,8 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { SetAudioHostStats = null; }
             try { SetGameMode = MemLoader.GetDelegate<SetGameModeDelegate>(h, "ml_engine_set_gamemode"); }
             catch (EntryPointNotFoundException) { SetGameMode = null; }
+            try { TvGameMode = MemLoader.GetDelegate<TvGameModeDelegate>(h, "ml_engine_tv_game_mode"); }
+            catch (EntryPointNotFoundException) { TvGameMode = null; }
             try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
             catch (EntryPointNotFoundException) { GamepadArrival = null; }
             try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
@@ -625,7 +628,6 @@ namespace MoonlightHost
                 var m = new Tizen.Applications.Bundle();
                 m.AddItem("event", "mlstats");
                 m.AddItem("depth", s.DepthMs.ToString(c));
-                m.AddItem("addepth", s.AudioDepthMs.ToString(c));
                 m.AddItem("fps", s.FpsSubmitted.ToString(c));
                 m.AddItem("drop", s.DroppedLate.ToString(c));
                 m.AddItem("full", s.DroppedFull.ToString(c));
@@ -633,6 +635,10 @@ namespace MoonlightHost
                 m.AddItem("err", s.Errors.ToString(c));
                 m.AddItem("rec", s.Recoveries.ToString(c));
                 m.AddItem("play", s.PlayingMs.ToString(c));
+                long aSent, aDrop; lock (s_aLock) { aSent = s_aSent; aDrop = s_aDropped; }
+                m.AddItem("asent", aSent.ToString(c));
+                m.AddItem("adrop", aDrop.ToString(c));
+                m.AddItem("afail", Interlocked.Read(ref s_aFailed).ToString(c));
                 Send(m, s_uiApp, s_uiPort);
             }
             catch (Exception ex) { Log.Error("stats failed: " + ex.Message); }
@@ -901,6 +907,18 @@ namespace MoonlightHost
                         if (!int.TryParse(Item(b, "key"), out key) || !int.TryParse(Item(b, "action"), out action) ||
                             !int.TryParse(Item(b, "mods"), out mods)) return "bad args";
                         Engine.SendKey(key, action, mods);
+                        return null;
+                    }
+                case "tvGameMode":
+                    {
+                        int on = Item(b, "on") == "true" ? 1 : 0;
+                        int saveType;
+                        if (!int.TryParse(Item(b, "saveType"), out saveType)) saveType = 1;   // optional: the session's value
+                        if (Engine.TvGameMode == null) return "not supported";
+                        int rc;
+                        lock (s_engineLock) rc = Engine.TvGameMode(on, saveType);
+                        Log.Info("tv game mode " + on + " saveType " + saveType + " -> " + rc);
+                        r.Add("rc", rc.ToString());
                         return null;
                     }
                 case "toggleStats": return ToggleStats(Item(b, "on"));

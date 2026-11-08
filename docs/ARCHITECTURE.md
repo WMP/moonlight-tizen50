@@ -1,17 +1,10 @@
-# Pakiet Moonlight dla Tizen 5.0 (UI z moonlight-tizen + natywny silnik)
+# Hybrydowy pakiet Moonlight dla Tizen 5.0 (UI z moonlight-tizen + natywny silnik)
 
 Cel: w pasku aplikacji TV pojawia się **UI moonlight-tizena** (web), a strumieniowanie
 robi **nasz natywny silnik** przez `libesplusplayer.so` (bo EMSS jest dopiero od 5.5).
 Bez NaCl, bez WASM.
 
-> **Aktualny układ (od v0.0.x): dwa pakiety.** Web UI jedzie jako `.wgt`, a host
-> natywnego silnika jako osobny `.tpk` (aplikacja .NET ładująca `libmlengine.so`).
-> UI uruchamia hosta w momencie startu streamu. „Pakiet hybrydowy” opisany
-> poniżej to wcześniejszy projekt — jeden pakiet z natywną usługą `mlservice.c` —
-> zachowany tu jako historia projektowa, która doprowadziła do obecnego
-> kontraktu mostka.
-
-## Pakiet hybrydowy Tizen (zastąpiony; patrz notka wyżej)
+## Pakiet hybrydowy Tizen
 
 Jeden pakiet zawiera dwie aplikacje (Tizen "hybrid app"):
 - **UI = wgt** (web): `wasm/platform/*.js` + `index.html` + `res/` z moonlight-tizena,
@@ -60,21 +53,20 @@ steruje JS — albo zostawiamy gs_client jako całość i dodajemy jedną funkcj
 - Wyjście ze streamingu przez powłokę (Wstecz/Domek) → powłoka przywraca źródło
   (rozwiązuje "czarny ekran" z testów CLI).
 
-## Co dziś buduje Docker (pkg/Dockerfile + build-*.sh)
+## Co buduje Docker (pkg/Dockerfile + build-package.sh)
 
-1. Silnik: `build-deps-lib.sh` (moonlight-common-c, libgamestream, libopus,
-   depsy crypto/http) + `mlclient/build-engine-so.sh` → `libmlengine.so`
-   (ARM, cross GCC 6.2, linkuje esplusplayer z `tv-libs/`).
-2. Host: `pkg/build-tpk.sh` → `org.moonlight.host-*.tpk` (aplikacja .NET
-   ładująca silnik; overlay tego repo dokłada ręczny loader ELF).
-3. UI: `pkg/build-package.sh` → `Moonlight-*.wgt` (front-end moonlight-tizena
-   + `mlbridge.js`/`mlaudio.js`, podpis dev profilem w kontenerze).
+1. Natywna usługa: fetch-tizen-sources + fetch-backport-deps + build silnika
+   (reużywa build-deps-lib.sh/build-client.sh) → ELF usługi + mostek.
+2. UI: kopiuje `wasm/platform` + `index.html` + `res`, podmienia transport
+   sendMessage/handleMessage na klienta mostka.
+3. Składa pakiet hybrydowy (wgt UI + tpk usługa), podpisuje profilem `Moonlight`
+   (Tizen CLI + cert, montowane z hosta).
 
-Wejścia montowane (nie w repo): `tv-libs/` (biblioteki .so z TV); CI pobiera je
-z prywatnego magazynu przez sekrety `TV_LIBS_URL`/`TV_LIBS_TOKEN`.
+Wejścia montowane (nie w repo): `tizen-deps/` (toolchain+źródła), `tv-libs/`
+(biblioteki .so z TV), Tizen CLI, cert `Moonlight.p12`.
 
 ## Status
 
-Patrz `ARCHITECTURE.md` po polsku i `../BACKPORT.en.md` dla stanu krok po kroku.
-Rdzeń silnika (cert/http/pair/wideo/audio/wejście) DZIAŁA natywnie i jest
-przetestowany end-to-end z hostem.
+Scaffolding. Mostek (natyw+JS), service-application wrapper i hybrydowe pakowanie
+do implementacji. Rdzeń silnika (cert/http/pair/wideo/audio/wejście) DZIAŁA
+natywnie i jest przetestowany end-to-end z hostem (patrz BACKPORT.md).

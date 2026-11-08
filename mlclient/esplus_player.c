@@ -455,8 +455,6 @@ esplusplayer_handle esplus_create_open(void) {
   return s_pl;
 }
 
-esplusplayer_handle esplus_handle(void) { return s_pl; }
-
 /* Adds the video stream and keeps a copy for a player rebuild. A codec_data pointer is not kept (it may not outlive
    the call): the copy has NULL/0. Our H.264/HEVC path passes none. */
 int esplus_add_video_info(const esplusplayer_video_stream_info *vi) {
