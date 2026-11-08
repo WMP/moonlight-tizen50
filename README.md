@@ -305,7 +305,8 @@ is created (for example on the CLI harness command line; the .NET host sets none
 | `MLENGINE_FATAL_STALL_MS` | `10000` (0 = off) | fatal `-111`: playing time frozen this long while submitting |
 
 **Overlay.** `toggleStats` in the UI turns on a live overlay (`mlstats` events from
-`ml_engine_get_stats`, every 500 ms); see `pkg/ui/PROTOCOL.md`.
+`ml_engine_get_stats`, every 500 ms); see `pkg/ui/PROTOCOL.md`. The UI's performance statistics setting turns it on at stream start.
+It also shows the host audio counters.
 
 ## Build (headless, Docker)
 

@@ -260,6 +260,7 @@
   }
 
   // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
+  var wantStats = false;   // startRequest a[29]: turn the overlay on at Connection Established
   var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
   function statsDiv(create) {
     if (!statsEl && create && typeof document !== 'undefined' && document.body && document.createElement) {
@@ -286,6 +287,7 @@
       el.textContent += '\nweb audio rx ' + a.received + ' sched ' + a.scheduled + ' drop ' + a.dropped + ' empty ' + a.empty +
         '\nresync ' + a.resyncs + ' underrun ' + a.underruns + ' headroom ' + Number(a.headroomMs).toFixed(0) + ' ms';
     }
+    if (m.asent !== undefined) el.textContent += '\nhost audio sent ' + m.asent + ' drop ' + m.adrop + ' fail ' + m.afail;   // older host: absent
   }
   // Audio scheduler (mlaudio.js); absent = no audio, never an error.
   function audioCall(fn) { if (fn === 'mlAudioStop') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
@@ -464,7 +466,10 @@
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
       if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); }
-      else if (m.event === 'Connection Established') startPads();
+      else if (m.event === 'Connection Established') {
+        startPads();
+        if (wantStats && !statsOn) toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); });
+      }
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
     }
@@ -509,7 +514,8 @@
       padFlipAB = !!a[16]; padFlipXY = !!a[17];   // a[14] rumble and a[15] mouse emulation: not ported
       // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange,
-      // a[27] gameMode (the TV's game picture/low-latency mode)
+      // a[27] gameMode (the TV's game picture/low-latency mode), a[29] performanceStats (overlay at stream start)
+      wantStats = !!a[29];
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
         appVer: a[8], gfeVer: a[9], rtspUrl: a[10], codecMode: a[11],

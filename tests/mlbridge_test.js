@@ -153,6 +153,23 @@ test('startRequest gameMode a[27]', async function () {
   await p;
 });
 
+test('startRequest performanceStats a[29] turns the overlay on at Connection Established', async function () {
+  for (var want of [true, false, undefined]) {
+    var a = ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]; a[29] = want;
+    sent.length = 0;
+    var p = win.sendMessage('startRequest', a);
+    reply(fields(sent[0]).id, {}); await p;
+    sent.length = 0;
+    listener([{ key: 'event', value: 'Connection Established' }]);
+    advance(250);
+    var t = sent.map(fields).filter(function (f) { return f.cmd === 'toggleStats'; });
+    assert.strictEqual(t.length, want ? 1 : 0, String(want));
+    if (want) { assert.strictEqual(t[0].on, 'true'); reply(t[0].id, {}); await Promise.resolve(); }
+    listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  }
+  handled.length = 0;   // 'event passes string' expects only its own event
+});
+
 test('pair mapping and serverCert', async function () {
   sent.length = 0;
   var p = win.sendMessage('pair', [7, '1.2.3.4', 47989, '1234', 'uid']);
@@ -360,7 +377,8 @@ test('event with a long diag sent in parts is joined', async function () {
 });
 
 var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'fps', value: '60' },
-  { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' }];
+  { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' },
+  { key: 'asent', value: '190' }, { key: 'adrop', value: '3' }, { key: 'afail', value: '1' }];
 async function toggleStats(err, on) {
   var n = sent.length, p = win.SyncFunctions.toggleStats();
   advance(250);
@@ -383,6 +401,7 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
   assert.ok(el && el.style.display !== 'none' && el.id === 'mlstats');
   assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms');
   assert.ok(/play 12\.3 s/.test(el.textContent), el.textContent);
+  assert.ok(/\nhost audio sent 190 drop 3 fail 1$/.test(el.textContent), el.textContent);
   assert.strictEqual(handled.length, h);
 });
 

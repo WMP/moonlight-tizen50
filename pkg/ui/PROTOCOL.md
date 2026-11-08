@@ -122,7 +122,8 @@ buffer again, and a frame is dropped when the schedule is over twice the buffer 
 stream is resampled when the context does not run at the stream rate. Statistics go to the console
 every 5 s (`[mlaudio, statistics]`: received, scheduled, dropped, resync, underrun, headroom).
 With the stats overlay on, the overlay also shows the counters of the scheduler (`mlAudioStats()`);
-the host does not know them. Without Web Audio the UI logs `audio output unavailable (Web Audio)`
+the host does not know them. Comparing the host `asent` (`mlstats`) with the UI `rx` shows frames lost
+on the message port; `adrop` = host queue overflow; `afail` = refused sends. Without Web Audio the UI logs `audio output unavailable (Web Audio)`
 once and drops the frames.
 
 ### `mlstats`
@@ -139,9 +140,14 @@ Fields (all decimal strings; the message is well under 4 KB, so it is never spli
 | `err` | player errors |
 | `rec` | recoveries |
 | `play` | playing time in ms |
+| `asent` | host audio frames sent to the UI (session total; absent with an older host) |
+| `adrop` | host audio frames dropped by the 500 ms queue (session total) |
+| `afail` | host audio sends refused by the message port (session total) |
 
 The UI shows these in an overlay and does not pass the event to `window.handleMessage`.
 The host stops the polling and the UI hides the overlay on `streamTerminated`.
+The overlay also starts at stream start (`Connection Established`) when the UI's performance statistics
+setting is on (`startRequest` a[29]).
 
 ## Timeouts (UI side)
 

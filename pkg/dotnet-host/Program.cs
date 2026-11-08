@@ -616,6 +616,10 @@ namespace MoonlightHost
                 m.AddItem("err", s.Errors.ToString(c));
                 m.AddItem("rec", s.Recoveries.ToString(c));
                 m.AddItem("play", s.PlayingMs.ToString(c));
+                long aSent, aDrop; lock (s_aLock) { aSent = s_aSent; aDrop = s_aDropped; }
+                m.AddItem("asent", aSent.ToString(c));
+                m.AddItem("adrop", aDrop.ToString(c));
+                m.AddItem("afail", Interlocked.Read(ref s_aFailed).ToString(c));
                 Send(m, s_uiApp, s_uiPort);
             }
             catch (Exception ex) { Log.Error("stats failed: " + ex.Message); }
