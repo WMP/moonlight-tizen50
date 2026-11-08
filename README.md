@@ -267,6 +267,11 @@ falls behind; `nudge` is what lowers `depth_ms`). Both return `DR_NEED_IDR`:
 moonlight-common-c then drops the frames that reference the lost one and asks the
 host for an IDR.
 
+**Catch-up.** Frames submitted while `prepare_async` runs build a queue that never drains, so every input shows that much
+later. When `depth_ms` stays above `MLENGINE_CATCHUP_MS` on two ticks in a row, the engine makes one flushing seek to the last
+submitted PTS and asks for an IDR frame. Once per session (and once per rebuilt player); a failed seek is not retried. The
+`ML-ERROR` line shows it as `catchup=`.
+
 **Recovery.** When playing time stops for `MLENGINE_STALL_MS` while frames are
 still submitted, or after a player error, the engine does a flushing
 `esplusplayer_seek` to `MLENGINE_RECOVER_BACK_MS` before the last video PTS and
@@ -309,6 +314,7 @@ is created (for example on the CLI harness command line; the .NET host sets none
 | `MLENGINE_RECOVER_MAX` | `0` (off) | recoveries per session (3 recommended once validated on a TV) |
 | `MLENGINE_RECOVER_BACK_MS` | `250` | seek target behind the last video PTS |
 | `MLENGINE_START_TIMEOUT_MS` | `5000` (0 = off) | fatal `-110`: no successful `start()` this long after the first video submit |
+| `MLENGINE_CATCHUP_MS` | `150` (0 = off) | queue depth above which the one-time catch-up seek runs (two ticks in a row) |
 | `MLENGINE_PLAYER_REBUILD_MAX` | `1` (0 = off) | player rebuilds per session after a failed `start()` or an unreadable playing time |
 | `MLENGINE_FATAL_STALL_MS` | `10000` (0 = off) | fatal `-111`: playing time frozen this long while submitting |
 

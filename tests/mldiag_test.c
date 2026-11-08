@@ -188,6 +188,17 @@ int main(void) {
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " state=-99 rebuilds=0 rb=-99/-99/-99/-99 vsub="));
 
+  /* catch-up seek */
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " err=0/0 catchup=0/-/-"));
+  mldiag_catchup(730, 1);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " catchup=1/730/1"));
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " catchup=0/-/-"));
+
   /* the host reports its audio counters after the failure: mldiag_last shows the values at read time, the rest is unchanged */
   mldiag_reset(&CFG); mldiag_aout(1); mldiag_aframe(960);
   fail(-101); mldiag_last(buf, sizeof buf);

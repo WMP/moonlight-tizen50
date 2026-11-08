@@ -73,6 +73,7 @@ static void script_set(int n, int st) { n_script = n; for (int i = 0; i < n; i++
 /* fresh session: mode may be NULL (off); depth thread off; player prepared */
 static void begin(const char *mode, const char *drop) {
   sub_calls = 0; n_script = 0; idr_calls = 0; play_ms = 1;
+  setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 in the nudge test: no catch-up seek */
   setenv("MLENGINE_DEPTH_POLL_MS", "0", 1);
   if (mode) setenv("MLENGINE_LATENCY_MODE", mode, 1); else unsetenv("MLENGINE_LATENCY_MODE");
   if (drop) setenv("MLENGINE_DROP_AFTER_MS", drop, 1); else unsetenv("MLENGINE_DROP_AFTER_MS");
