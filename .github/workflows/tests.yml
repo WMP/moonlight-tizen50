@@ -1,0 +1,40 @@
+name: Host self-tests
+
+# Runs the host self-tests: player/window, UI bridge, XML parser, access-unit
+# splitter. They run on the plain GitHub runner; no TV and no TV libraries needed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with moonlight-tizen submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Player, window, sink, diag, pad and audio tests
+        run: sh tests/build-esplus-ecore-test.sh
+
+      - name: UI bridge test
+        run: node tests/mlbridge_test.js
+
+      - name: XML parser test
+        run: |
+          mlt=third_party/moonlight-tizen
+          gcc -D_GNU_SOURCE -I "$mlt/moonlight-common-c/src" -I "$mlt/libgamestream" \
+              -o "$RUNNER_TEMP/xmltest" mlclient/xml_selftest.c mlclient/gs_client.c \
+              mlclient/xml_selftest_stubs.c -lcrypto
+          "$RUNNER_TEMP/xmltest"
+
+      - name: Access-unit splitter test
+        run: |
+          gcc -DSELFTEST -o "$RUNNER_TEMP/esppplay" tests/esppplay.c
+          "$RUNNER_TEMP/esppplay"
