@@ -38,7 +38,7 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | HDR | untested | |
 | 4K resolutions | untested | the player takes them; the test TV is 1080p |
 | Keyboard / mouse input | untested | engine path exists |
-| TV Game Mode during a stream (#32) | untested | implemented, built; needs an on-TV test |
+| TV Game Mode during a stream (#32) | **works** | on at stream start, off at stream stop (the TV menu shows the change after you leave Moonlight); stop when the app is closed mid-stream: untested |
 | Rumble feedback | **todo** | |
 | Surround sound (5.1/7.1) | **todo** | the player carries video only |
 | A/V sync (shared audio clock) | **todo** | audio runs on the Web Audio clock |
