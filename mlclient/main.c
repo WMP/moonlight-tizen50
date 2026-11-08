@@ -3,7 +3,8 @@
  *
  * All the real work lives in the engine .so (mlengine.h / engine_api.c); this just
  * parses argv, starts a session, waits, and stops cleanly on the host drop or a
- * signal. The .NET host drives the same four ml_engine_* functions.
+ * signal. The .NET host uses the per-step calls instead (ml_engine_start_session_v2
+ * and the rest of mlengine.h).
  */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200112L

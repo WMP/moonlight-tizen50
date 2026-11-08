@@ -15,7 +15,7 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 
 [![Moonlight Tizen 5.0 — v0.2 streaming demo](https://img.youtube.com/vi/dFGEaQFeYeA/maxresdefault.jpg)](https://youtu.be/dFGEaQFeYeA)
 
-A full session on a 2026 Tizen 5.0 TV (Muse.M): pairing with a Wolf host,
+A full session on a Tizen 5.0 TV (Muse.M): pairing with a Wolf host,
 launching a game, hardware H.264 video, Web Audio sound, an Xbox controller
 over Bluetooth, live statistics overlay, and leaving the stream with the
 Remote's Back key.
@@ -65,8 +65,8 @@ CI builds the packages on every release
    which is what the TV accepts. No Samsung certificate to create by hand, no
    `sdb` commands.
 
-> **Moving back from the hybrid package:** uninstall the hybrid Moonlight package
-> first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
+> **Moving back from the hybrid package:** older builds shipped one hybrid package
+> (the UI and the host in one `.wgt`). Uninstall it first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
 > `org.moonlight.host.app`, so the TV refuses the host `.tpk` while it is installed.
 > Then install the two packages above.
 
@@ -99,7 +99,7 @@ Android). It shows the web UI console, and on request the host and engine log to
    (desktop: Chrome `chrome://inspect`; Android: the app's own console).
 3. **Debug packages:** the host and engine log appear in the same console by
    themselves (`[MLHOST]` / `[MLENGINE]`). On start the host first sends its last
-   100 lines (start-up, engine load), then new lines as they come.
+   1000 lines (start-up, engine load; normal packages: 100), then new lines as they come.
    **Normal packages** (host lines only, the engine has no trace there), or to turn it
    off or on again; the choice is remembered:
 
@@ -183,7 +183,7 @@ Highlights of this release; the [Releases](../../releases) page has the full lis
 - **TV Game Mode while streaming** (#32): the TV's game picture mode comes on
   with the stream and is restored when it ends — implemented, awaiting an
   on-TV test (see the table above).
-- Diagnostics: every failure produces one `ML-ERROR` line with the session
+- Diagnostics: every stream failure produces one `ML-ERROR` line with the session
   config, counters and player state.
 
 ## Why this exists
@@ -325,7 +325,10 @@ ghcr.io/<owner>/moonlight-tizen-build:latest        # default branch only
 (both workflows use it).
 
 The one thing **not** in the image: `tv-libs/` — the `.so` libraries copied from
-**your** TV (Samsung's, never redistribute them). Mount them at
+**your** TV (Samsung's, never redistribute them). Copy the TV's `/usr/lib` to
+`tv-libs/usr/lib` (the build reads only that folder; the engine links
+`libesplusplayer.so`, `libecore_wl2.so.1`, `libecore.so.1`, `libssl.so.1.0.0`,
+`libcrypto.so.1.0.0` and `libcurl.so.4` from it) and mount `tv-libs` at
 `/opt/tizen-deps/tv-libs`.
 
 ```bash
@@ -354,11 +357,22 @@ docker run --rm --network none -v "$PWD":/work/repo \
 
 `.github/workflows/build-packages.yml` is the reference for the full sequence.
 
+## Tests (no TV needed)
+
+```bash
+git submodule update --init --depth 1 third_party/moonlight-tizen
+sh tests/build-esplus-ecore-test.sh   # engine: player, video, audio, pad, start settings, ML-ERROR line
+node tests/mlbridge_test.js           # UI bridge
+```
+
+CI runs them on every pull request (`.github/workflows/tests.yml`). `AGENTS.md` lists
+which test to run after which change.
+
 ## Requirements
 
 - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
 - A GameStream host on the LAN (Sunshine / GeForce Experience / Wolf).
-- To build: Linux with Docker/podman, the build image, and the TV's `/lib` + `/usr/lib` (copied once).
+- To build: Linux with Docker/podman, the build image, and the TV's `/usr/lib` (copied once).
 
 ## Repository layout
 

@@ -37,7 +37,9 @@ The point of this repo is to improve the client itself:
   See `README.md` for the full flow (engine `.so` → `.tpk` host → web `.wgt`).
 - Host self-tests that need no TV: `mlclient/xml_selftest.c` (XML parser),
   `tests/esppplay.c -DSELFTEST` (access-unit splitter). Run these after touching the
-  parser or the bitstream code.
+  parser or the bitstream code:
+  `gcc -D_GNU_SOURCE -Ithird_party/moonlight-tizen/moonlight-common-c/src -Ithird_party/moonlight-tizen/libgamestream -o /tmp/xmltest mlclient/xml_selftest.c mlclient/gs_client.c mlclient/xml_selftest_stubs.c -lcrypto && /tmp/xmltest`
+  and `gcc -DSELFTEST -o /tmp/esppplay tests/esppplay.c && /tmp/esppplay`.
 - Player/window self-test (host gcc): `sh tests/build-esplus-ecore-test.sh` (ecore balance,
   statistics, `nudge` pacing, watchdog/recovery, sampler join; plus the video sink
   test `tests/video_esplus_test.c`: PTS modes, FULL retries, late-frame cap). Needs the submodule.
@@ -45,6 +47,9 @@ The point of this repo is to improve the client itself:
   The same script also runs `tests/mldiag_test.c` (the `ML-ERROR` line); run it after touching `mlclient/mldiag.c`.
   It also runs `tests/engine_pad_test.c` (gamepad calls, clamps, `pad` counters); run it after touching `mlclient/engine_pad.c`.
   It also runs `tests/audio_opus_test.c` (Opus decode to PCM, the host audio callback); run it after touching `mlclient/audio_opus.c`.
+  It also runs `tests/engine_api_test.c` (start settings, Game Mode, rikey IV, host masking); run it after touching `mlclient/engine_api.c`.
+  It also runs `tests/ctlcrypto_test.c` (control-stream encrypt check); run it after touching `mlclient/ctlcrypto.c`.
+- CI runs all of these on every pull request (`.github/workflows/tests.yml`).
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching
   `pkg/ui/mlbridge.js`.
 - `BUILD_VARIANT=debug|release` (default `release`) is honoured by
@@ -79,7 +84,8 @@ The point of this repo is to improve the client itself:
   the host writes it to dlog and sends it in the `diag` field of `streamTerminated`, and
   the UI writes it to the console with `console.error('[ML-ERROR] ...')`.
 - **No secrets in the line.** Never put the rikey, PIN, certificates, client unique id,
-  RTSP session URL or host address in it.
+  RTSP session URL or host address in it. `mldiag` shows the session host in library
+  log lines as `<host>`.
 - **When you handle a bug report:**
   1. Find the `ML-ERROR` line in the reporter's log. Do not guess the cause from a log
      without it or from a log that starts in the middle of a session.

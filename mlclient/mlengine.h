@@ -2,7 +2,7 @@
  * mlengine.h - public C ABI of libmlengine.so.
  *
  * One stable surface used by both the .NET (TizenFX) host and the CLI harness:
- *   - the .NET host loads the .so and P/Invokes these symbols (1:1 DllImport);
+ *   - the .NET host loads the .so and binds these symbols with dlsym (Program.cs Engine.Load);
  *   - the CLI harness (main.c) links this .so directly for bring-up/testing.
  * Keep this ABI additive: never change a signature, only append new functions.
  */

@@ -8,22 +8,21 @@ message ports. The host calls the engine (`libmlengine.so`, `mlclient/mlengine.h
 |-----------|--------|------|---------|
 | UI → host (commands) | `org.moonlight.host.app` | `moonlight` | no |
 | host → UI (replies, events) | `Moonlight5.ui` | `moonlightui` | no |
-| UI → host (debug console relay) | `org.moonlight.host.app` | `mllog` | no |
+| UI → host (debug console relay, debug builds only) | `org.moonlight.host.app` | `mllog` | no |
 
 When the `moonlight` port is missing, the UI starts the host with
-`tizen.application.launchAppControl` (operation `default`, explicit app id; fallback
-`tizen.application.launch`) and retries with backoff; it asks again every 8 missed
-connects. Commands sent before the port exists are queued. A command's timeout starts
+`tizen.application.launch` and retries with backoff; it starts it again every 8 missed
+connects (`mlDiag('launch')` also tries `launchAppControl`). Commands sent before the port exists are queued. A command's timeout starts
 when it is sent, not when it is queued.
 
 ## Message shape
 
 Every message is a list of `{key, value}` (a Bundle on the host side). All values
-are strings, except the binary `data` of an `openUrl` reply (bytes).
+are strings, except the binary `data` of an `openUrl` reply and of an `mlaudio` event (bytes).
 
 - Command: `cmd`, `id` (decimal string, unique per UI session), plus the fields below.
 - Reply: `id`, plus either the result fields or `error` (string). One reply per command.
-- Event: `event` (string, no `id`). The UI passes it to `handleMessage(event)` of
+- Event: `event` (string, no `id`; an event sent as parts has an `ev<n>` or `au<n>` id, see below). The UI passes it to `handleMessage(event)` of
   moonlight-tizen's `messages.js`, which expects the same strings as the WASM build,
   for example `streamTerminated: 0` or `Connection Established`.
 
@@ -91,18 +90,18 @@ One line, sections separated by ` | `. It is built when a session fails (also in
 An event with `diag` can be larger than one message, so the host sends it like a large reply:
 as ordered parts with its own id (`ev<n>`, never a command id); the UI joins them first.
 
-`ML-ERROR code=<n> name=<NAME> stage=<stage|-> t=<ms> | cfg ... | video ... | player ... | ctl ... | pad ... | cc ... | cc-first: ... | cc-last: ...`
+`ML-ERROR code=<n> name=<NAME> stage=<stage|-> t=<ms> | cfg ... | video ... | player ... | prep-t ... | aout ... | ctl ... | pad ... | cc ... | cc-first: ... | cc-last: ...`
 
-- `code`, `name`: the termination code (`-100` NO_VIDEO_TRAFFIC, `-101` NO_VIDEO_FRAME, `-102` UNEXPECTED_EARLY_TERMINATION, `-103` PROTECTED_CONTENT, `-104` FRAME_CONVERSION, `-110` PLAYER_NOT_STARTED, `-111` PLAYER_STALLED, other: OTHER). `stage`: the failed connection stage, or `-`. `t`: ms since session start.
+- `code`, `name`: the termination code (`-100` NO_VIDEO_TRAFFIC, `-101` NO_VIDEO_FRAME, `-102` UNEXPECTED_EARLY_TERMINATION, `-103` PROTECTED_CONTENT, `-104` FRAME_CONVERSION, `-110` PLAYER_NOT_STARTED, `-111` PLAYER_STALLED, other: OTHER). `stage`: the failed connection stage, `settings` when `startStream` had bad settings (code `-3`, GS_INVALID; `cfg` then holds only the requested size, fps and bitrate), or `-`. `t`: ms since session start.
 - `cfg`: the requested stream (size, fps, bitrate, packet size, formats, color, audio, server codec support, requested encryption (`enc`), the negotiated encryption features `encf=<host supported>/<host requested>/<enabled>` (bits: 0x1 control stream v2, 0x2 video, 0x4 audio), `rtsp=<rtsp|rtspenc|->` (the RTSP transport the host gave: `rtspenc` = encrypted RTSP; the encryption features are read from this response), `launch=<launch|resume|->`, `rikey=<ok|DIFF|bad|->`, `rikeyid=<ok|DIFF|->` (the key and id of the session compared with the ones in the `/launch` or `/resume` URL that started it: `DIFF` = the server got another key than the client uses, `bad` = the URL key was not 32 hex chars, `-` = unknown), server versions, host feature flags, RTT/variance). No address, key or PIN.
 - `video`: sink setup result, decode units (`du`), IDR frames (`idr`), ms to the first decode unit, ms to the first video packet, `idr_retry` = IDR requests repeated at the start because no video packet had reached the player yet (the first request can be lost before the host pipeline is up; at most 10).
-- `player`: results of `open`, window (`win`), `prepare_async` (`prep`), the prepare-done callback (`pdone`) and `start` (`-99` = not reached), `state` (raw player state at a `-110`/`-111` stop, else `-99`), `rebuilds` (player rebuilds this session, see `MLENGINE_PLAYER_REBUILD_MAX`; a rebuild is also visible as a second `open` and `prep`), packets submitted (`vsub`; `asub` stays 0, audio does not go through the player), failed submits (`subfail=<count>/<last status>`, status `0` = NOT_PREPARED; `vfail`, `afail` = the same for video and audio alone, last status `0` when none failed), decoded audio packets (`adec`), libopus failures (`adec_fail=<count>/<last opus error>`), player errors (`err=<count>/<last>`).
-- `prep-t`: times in ms after the `prepare_async` call (`-` = not reached): `pdone` = prepare-done callback, `err` = first player error, `v1`/`a1` = first accepted video/audio packet, `vpts1`/`apts1` = their PTS in ms. How to read it: `adec_fail` > 0 = corrupt audio packets (or a decoder that could not be created); `afail` high and `a1` after `v1` = the player refused audio until the first video packet; `err` right at `pdone` = the prepare failed.
+- `player`: results of `open`, window (`win`), `prepare_async` (`prep`), the prepare-done callback (`pdone`) and `start` (`-99` = not reached), `state` (raw player state at a `-110`/`-111` stop, else `-99`), `rebuilds` (player rebuilds this session, see `MLENGINE_PLAYER_REBUILD_MAX`; a rebuild is also visible as a second `open` and `prep`), `rb=<open>/<addv>/<disp>/<prep>` (the result of each step of the last rebuild: open, add video stream info, display, `prepare_async`; `-99` = not reached), packets submitted (`vsub`; `asub` stays 0, audio does not go through the player), failed submits (`subfail=<count>/<last status>`, status `0` = NOT_PREPARED; `vfail`, `afail` = the same for video and audio alone, last status `0` when none failed), decoded audio packets (`adec`), libopus failures (`adec_fail=<count>/<last opus error>`), player errors (`err=<count>/<last>`).
+- `prep-t`: times in ms after the `prepare_async` call (`-` = not reached): `pdone` = prepare-done callback, `err` = first player error, `v1`/`a1` = first accepted video/audio packet, `vpts1`/`apts1` = their PTS in ms (`a1` and `apts1` stay `-`: audio does not go through the player). How to read it: `adec_fail` > 0 = corrupt audio packets (or a decoder that could not be created); `err` right at `pdone` = the prepare failed.
 - `aout`: the audio output. The player has only a video stream (platform limitation: the TV player rejects engine-fed audio streams); audio is decoded with libopus and sent to the UI as `mlaudio` events, which the UI plays with Web Audio. ` | aout webaudio frames=<n> bytes=<n> sent=<n> drops=<n> sendfail=<n>`: `frames`, `bytes` = PCM the engine handed to the host, `sent` = `mlaudio` events the host sent, `drops` = frames the host's queue dropped (not sent), `sendfail` = failed sends. The engine re-reads all of them when the host reads the line, so they are final. ` | aout none reason=<no-callback|->`: no audio output; the stream goes on without sound. How to read it: `frames` far below the stream time x 200/s = audio decode problem (see `adec`, `adec_fail`); `drops` > 0 = the host or the message port cannot keep up; `sendfail` > 0 = the message port refused messages; all counters fine but no sound = check the UI console (`[mlaudio, statistics]`).
 - `ctl`: control-stream encryption: `enc` = AES-GCM messages encrypted, `fail` = encrypt calls that failed, `iv` = IV length of the last one (12 = V2, 16 = V1), `verify=<ok>/<fail>/<not verified>`: each message is decrypted again with OpenSSL and compared with the plaintext. How to read it: `verify=N/0/0` while the server logs decrypt errors means the key or the IV convention differs (check `rikey`, `rikeyid`, `iv`); `verify` with fails means the client crypto is wrong on this device.
 - `pad`: gamepad calls of this session: `arr` = arrival calls, `st` = state calls, `fail=<count>/<last rc>` = calls that returned non-zero (`-1` = bad index or no running stream). `arr=0 st=0` with a pad connected: the UI sent no pad data (check the port).
 - `cc`: counters of moonlight-common-c log messages (lost frames, IDR requests, FEC recoveries, and so on).
-- `cc-first`, `cc-last`: the first 4 and the last 8 moonlight-common-c log lines.
+- `cc-first`, `cc-last`: the first 4 and the last 8 moonlight-common-c log lines. The session host in them is shown as `<host>`.
 
 ### `mlaudio`
 
@@ -133,7 +132,6 @@ Fields (all decimal strings; the message is well under 4 KB, so it is never spli
 | Key | Meaning |
 |-----|---------|
 | `depth` | video queue depth in ms: last submitted video PTS minus the player playing time |
-| `addepth` | the same for audio |
 | `fps` | video packets accepted in the last second |
 | `drop` | frames skipped by the late-frame cap |
 | `full` | frames lost because the player queue stayed full |

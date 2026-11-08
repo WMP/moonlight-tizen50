@@ -31,11 +31,10 @@ done
 
 # libmlengine.so: engine objects + the static deps (moonlight-common-c core,
 # libgamestream, mbedcrypto) + the TV's shared libs, resolved into the .so.
-# --hash-style=both: the .NET host loads the engine from memory (so downloaded
-# engine updates apply without rewriting the app folder) and its fallback ELF
-# loader resolves symbols via a SYSV DT_HASH. The engine is also built TLS-free
-# (that loader can't do R_ARM_TLS_*); verified: no _Thread_local in the
-# engine/moonlight-common-c.
+# --hash-style=both and a TLS-free engine (no _Thread_local in the engine or
+# moonlight-common-c): the .NET host loads the engine with dlopen (from a memfd,
+# then the packaged file) and has no ELF loader of its own; keep both until a TV
+# test shows they are not needed.
 "$GCC" --sysroot=$DEPS/sysroot $ARCH $LOPT -shared -Wl,-soname,libmlengine.so \
   -Wl,--hash-style=both -Wl,--wrap=PltEncryptMessage \
   -o "$OUT/libmlengine.so" \
