@@ -283,7 +283,6 @@ namespace MoonlightHost
         public static GetAudioRouteDelegate GetAudioRoute;   // null with an engine that lacks it
         public static GetAudioStatsDelegate GetAudioStats;   // null with an engine that lacks it
         public static SetGameModeDelegate   SetGameMode;     // null with an engine that lacks it
-        public static SetGameModeDelegate   SetGameMode;     // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
 
