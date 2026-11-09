@@ -37,7 +37,7 @@ bool __real_PltEncryptMessage(void *ctx, int algorithm, int flags, unsigned char
 }
 
 static void enc(int ivlen, int len, int algorithm) {
-  unsigned char key[16] = "0123456789abcdef", iv[16] = { 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 'C', 'C' };
+  unsigned char key[] = "0123456789abcdef", iv[16] = { 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 'C', 'C' };
   static unsigned char buf[16 + 2048]; unsigned char in[2048];
   memset(in, 0x5a, sizeof in);
   int outlen = 0;
@@ -48,7 +48,7 @@ static void enc(int ivlen, int len, int algorithm) {
 
 int main(void) {
   char buf[4096];
-  mldiag_cfg cfg = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, NULL, NULL, NULL, 0, NULL };
+  mldiag_cfg cfg = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, NULL, NULL, NULL, 0, NULL, NULL };
   mldiag_reset(&cfg);
   enc(12, 40, 2); enc(16, 40, 2);
   mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(buf, sizeof buf);

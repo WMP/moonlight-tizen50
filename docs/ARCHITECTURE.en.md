@@ -1,4 +1,4 @@
-# Moonlight package layout for Tizen 5.0 (moonlight-tizen UI + native engine)
+# Hybrid Moonlight package for Tizen 5.0 (moonlight-tizen UI + native engine)
 
 *(Polish version: [ARCHITECTURE.md](ARCHITECTURE.md))*
 
@@ -6,14 +6,7 @@ Goal: the **moonlight-tizen web UI** appears in the TV app bar, while streaming 
 done by **our native engine** through `libesplusplayer.so` (EMSS exists only from
 5.5). No NaCl, no WASM.
 
-> **Current layout (since v0.0.x): two packages.** The web UI ships as a `.wgt`
-> and the native engine host as a separate `.tpk` (a .NET app that loads
-> `libmlengine.so`). The UI launches the host when a stream starts. The
-> "hybrid package" described below was the earlier design — one package with a
-> native `mlservice.c` service — kept here as the design history that led to
-> the current bridge contract.
-
-## Tizen hybrid package (superseded; see the note above)
+## Tizen hybrid package
 
 One package contains two applications (a Tizen "hybrid app"):
 - **UI = wgt** (web): `wasm/platform/*.js` + `index.html` + `res/` from
@@ -64,18 +57,17 @@ Decided at bridge-implementation time.
 - Exiting the stream via the shell (Back/Home) → the shell restores the source
   (this resolves the "black screen" seen in CLI tests).
 
-## What the Docker builds today (pkg/Dockerfile + build-*.sh)
+## What the Docker builds (pkg/Dockerfile + build-package.sh)
 
-1. The engine: `build-deps-lib.sh` (moonlight-common-c, libgamestream, libopus,
-   crypto/http deps) + `mlclient/build-engine-so.sh` → `libmlengine.so`
-   (ARM, cross GCC 6.2, links esplusplayer from `tv-libs/`).
-2. The host: `pkg/build-tpk.sh` → `org.moonlight.host-*.tpk` (the .NET app that
-   loads the engine; this repo's overlay adds the manual ELF loader).
-3. The UI: `pkg/build-package.sh` → `Moonlight-*.wgt` (moonlight-tizen front-end
-   + `mlbridge.js`/`mlaudio.js`, signed with a dev profile in-container).
+1. Native service: fetch-tizen-sources + fetch-backport-deps + build the engine
+   (reuses build-deps-lib.sh/build-client.sh) → service ELF + bridge.
+2. UI: copies `wasm/platform` + `index.html` + `res`, swaps the
+   sendMessage/handleMessage transport for the bridge client.
+3. Assembles the hybrid package (wgt UI + tpk service), signs with the `Moonlight`
+   profile (Tizen CLI + cert, mounted from the host or generated in-container).
 
-Mounted inputs (not in the repo): `tv-libs/` (the TV's `.so`); CI fetches them
-from a private store via the `TV_LIBS_URL`/`TV_LIBS_TOKEN` secrets.
+Mounted inputs (not in the repo): `tizen-deps/` (toolchain+sources), `tv-libs/`
+(the TV's `.so`), the Tizen CLI, the signing cert.
 
 ## Status
 

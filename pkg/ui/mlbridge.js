@@ -11,8 +11,7 @@
  * messages.js's sendMessage() contract. Wire format: see pkg/ui/PROTOCOL.md.
  *
  * Load this AFTER platform/messages.js so it overrides SyncFunctions/AsyncFunctions
- * and sendMessage. Note: needs validation on a device (tizen.messageport
- * behaviour); host-side tests only cover tests/mlbridge_test.js.
+ * and sendMessage. Host-side test: tests/mlbridge_test.js.
  */
 (function () {
   var ENGINE_APPID = 'org.moonlight.host.app';
@@ -261,6 +260,7 @@
   }
 
   // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
+  var wantStats = false;   // startRequest a[29]: turn the overlay on at Connection Established
   var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
   function statsDiv(create) {
     if (!statsEl && create && typeof document !== 'undefined' && document.body && document.createElement) {
@@ -276,7 +276,7 @@
     var el = statsDiv(statsOn);
     if (!el || !statsOn) return;
     el.style.display = 'block';
-    el.textContent = 'depth ' + m.depth + ' ms (audio ' + m.addepth + ' ms)\n' +
+    el.textContent = 'depth ' + m.depth + ' ms\n' +
       'fps ' + m.fps + '\n' +
       'dropped late ' + m.drop + ' / full ' + m.full + '\n' +
       'under/over ' + m.uo + '\n' +
@@ -287,6 +287,7 @@
       el.textContent += '\nweb audio rx ' + a.received + ' sched ' + a.scheduled + ' drop ' + a.dropped + ' empty ' + a.empty +
         '\nresync ' + a.resyncs + ' underrun ' + a.underruns + ' headroom ' + Number(a.headroomMs).toFixed(0) + ' ms';
     }
+    if (m.asent !== undefined) el.textContent += '\nhost audio sent ' + m.asent + ' drop ' + m.adrop + ' fail ' + m.afail;   // older host: absent
   }
   // Audio scheduler (mlaudio.js); absent = no audio, never an error.
   function audioCall(fn) { if (fn === 'mlAudioStop') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
@@ -442,6 +443,16 @@
     padTimer = null; padSlots = [];   // the next stream announces the pads again
   }
 
+  // The page goes away during a stream (the UI is closed): stop the stream, the host would keep it
+  // running. Not visibilitychange: the host's video window may hide the page. stopPads() clears
+  // padTimer, so the second event (pagehide, then unload) sends nothing.
+  function onPageGone() {
+    if (!padTimer) return;
+    stopPads(); audioCall('mlAudioStop');
+    bridgeCall('stopStream', {}, 0).then(null, function () {});
+  }
+  if (window.addEventListener) { window.addEventListener('pagehide', onPageGone); window.addEventListener('unload', onPageGone); }
+
   // Replies arrive as an array of {key,value}. We key everything by 'id'.
   var audioFailed = false;
   function onReply(data /*, remoteMessagePort */) {
@@ -465,7 +476,10 @@
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
       if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); }
-      else if (m.event === 'Connection Established') startPads();
+      else if (m.event === 'Connection Established') {
+        startPads();
+        if (wantStats && !statsOn) toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); });
+      }
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
       return;
     }
@@ -510,7 +524,8 @@
       padFlipAB = !!a[16]; padFlipXY = !!a[17];   // a[14] rumble and a[15] mouse emulation: not ported
       // host, httpPort, w, h, fps, bitrate, rikey, rikeyid, appVer, gfeVer, rtspUrl, then a[11] codecMode,
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange,
-      // a[27] gameMode (the TV's game picture/low-latency mode)
+      // a[27] gameMode (the TV's game picture/low-latency mode), a[29] performanceStats (overlay at stream start)
+      wantStats = !!a[29];
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
         appVer: a[8], gfeVer: a[9], rtspUrl: a[10], codecMode: a[11],
@@ -612,6 +627,17 @@
     try { localStorage.setItem(DEBUG_KEY, on ? '1' : '0'); } catch (e) {}
     call('setLog', { on: String(on) }).then(null, function (e) { console.warn('[mlbridge] setLog failed:', e); });
     return 'host/engine log in this console: ' + (on ? 'on' : 'off');
+  };
+
+  // mlGameMode(false) switches the TV game mode off now (it can stay on after the app was
+  // closed); mlGameMode(true) on. saveType is optional (the host default is 1, the session's).
+  window.mlGameMode = function (on, saveType) {
+    bridgeCall('tvGameMode', { on: String(!!on), saveType: saveType }, DEFAULT_TIMEOUT).then(function (r) {
+      console.log('[mlbridge] TV game mode ' + (on ? 'on' : 'off') + ' -> rc ' + r.rc);
+    }, function (e) {
+      console.warn('[mlbridge] TV game mode failed:', e);
+    });
+    return 'TV game mode ' + (on ? 'on' : 'off') + ' requested';
   };
 
   // Diagnostics in this console (on a retail TV, Apps2Samsung's debug console is the

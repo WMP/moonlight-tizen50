@@ -2,7 +2,7 @@
  * mlengine.h - public C ABI of libmlengine.so.
  *
  * One stable surface used by both the .NET (TizenFX) host and the CLI harness:
- *   - the .NET host loads the .so and P/Invokes these symbols (1:1 DllImport);
+ *   - the .NET host loads the .so and binds these symbols with dlsym (Program.cs Engine.Load);
  *   - the CLI harness (main.c) links this .so directly for bring-up/testing.
  * Keep this ABI additive: never change a signature, only append new functions.
  */
@@ -114,6 +114,11 @@ void ml_engine_set_audio_host_stats(int sent, int dropped, int send_failures);
  * mode when the stream ends (stop, host drop or error). Set before startStream; the call
  * itself never fails - TVs without the interface just keep the current mode. */
 void ml_engine_set_gamemode(int on);
+
+/* Immediate TV game mode call for recovery/diagnostics from the UI console (mlGameMode).
+ * save_type 1 = what the session uses. Returns the TV's rc, or -1 when the TV library or
+ * symbol is missing. */
+int ml_engine_tv_game_mode(int on, int save_type);
 
 #ifdef __cplusplus
 }
