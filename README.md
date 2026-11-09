@@ -34,18 +34,18 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | Pairing (PIN) | **works** | own certificate generated on the TV |
 | App / game list | **works** | |
 | Hardware H.264 decode (720p–1080p, up to 60 fps) | **works** | 720p60 and 1080p60 verified |
-| Opus → PCM audio, played by the UI (Web Audio) | **works** | ~100 ms jitter buffer; loss counters in the overlay |
-| Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers |
-| Statistics overlay (`toggleStats`) | **works** | queue depth, fps, audio counters |
-| Remote Back key leaves the stream | **works** | core #20 |
+| Opus → PCM audio, played natively by the engine (audio-io) | **works** | stereo, verified on a TV; fewer dropouts and a faster gamepad than with Web Audio; 5.1 and an audio-io failure fall back to Web Audio |
+| Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers; the UI polls every 8 ms, but the host gets a state only every 15–20 ms (gaps up to 70 ms) — the native evdev path (`input_evdev.c`) is untested |
+| Statistics overlay (`toggleStats`) | **partial** | queue depth, fps, audio counters; during a stream it is drawn under the video plane (visible only after the stop combo) and not scaled to the screen size |
+| Remote Back key leaves the stream | **works** | #20 |
 | HEVC / AV1 video | untested | engine path exists; not verified on a TV |
 | HDR | untested | |
 | 4K resolutions | untested | the player takes them; the test TV is 1080p |
 | Keyboard / mouse input | untested | engine path exists |
-| TV Game Mode during a stream (core #32) | untested | implemented, built; needs an on-TV test |
+| TV Game Mode during a stream (#32) | **works** | on at stream start, off at stream stop (the TV menu shows the change after you leave Moonlight); stop when the app is closed mid-stream: untested |
 | Rumble feedback | **todo** | |
 | Surround sound (5.1/7.1) | **todo** | the player carries video only |
-| A/V sync (shared audio clock) | **todo** | audio runs on the Web Audio clock |
+| A/V sync (shared audio clock) | **todo** | audio runs on the audio-io clock (Web Audio clock on the fallback), not on the player clock |
 | Player stall recovery (`MLENGINE_RECOVER_MAX`) | **todo** | implemented, off by default until validated |
 
 The debug packages (`-debug` file suffix) log everything: see
