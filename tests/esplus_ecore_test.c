@@ -130,7 +130,7 @@ int main(void) {
   play_ok = 0; play_ms = 9999; esplus_sample_tick(3000); assert(esplus_stats.playing_ms == 500);   /* failed read: unchanged */
   esplus_close();
   /* b: nudge. Correction grows by at most nudge_max*dt; inside the hysteresis it holds. */
-  setenv("MLENGINE_LATENCY_MODE", "nudge", 1);
+  setenv("MLENGINE_LATENCY_MODE", "nudge", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 here: no catch-up seek */
   begin(); vsub(1000); play_ms = 100;               /* depth 900, target 50 */
   esplus_sample_tick(1000); assert(esplus_correction_ms() == 0);     /* first tick: no change */
   esplus_sample_tick(2000); assert(esplus_correction_ms() == 10);    /* 10 ms/s * 1 s */
@@ -172,6 +172,35 @@ int main(void) {
   vsub(1010); cb_error(7); esplus_sample_tick(2000); assert(seek_calls == 0);
   esplus_close();
   unsetenv("MLENGINE_RECOVER_MAX");
+  /* c2: catch-up: one seek to the last PTS when depth stays above catchup_ms on two ticks */
+  setenv("MLENGINE_CATCHUP_MS", "150", 1); setenv("MLENGINE_STALL_MS", "700", 1);
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);   /* depth 900: first hit */
+  assert(seek_calls == 0);
+  esplus_sample_tick(1250);
+  assert(seek_calls == 1 && seek_target == 1000 && esplus_take_need_idr() == 1 && esplus_correction_ms() == 0);
+  esplus_sample_tick(1500); esplus_sample_tick(1750); assert(seek_calls == 1);   /* once per session */
+  /* e: the pause after the seek is no stall (same playing time, less than stall_ms) */
+  setenv("MLENGINE_RECOVER_MAX", "2", 1); esplus_close(); seek_calls = 0; begin(); vsub(1000); play_ms = 100;
+  esplus_sample_tick(1000); esplus_sample_tick(1250); assert(seek_calls == 1);
+  vsub(1010); esplus_sample_tick(1900);   /* 650 ms after the seek, below stall_ms 700: no recovery seek */
+  assert(seek_calls == 1 && esplus_stats.recoveries == 0);
+  vsub(1020); esplus_sample_tick(1960); assert(seek_calls == 2 && esplus_stats.recoveries == 1);   /* control: a real stall still recovers */
+  unsetenv("MLENGINE_RECOVER_MAX");
+  esplus_close();
+  /* b2: a single spike does not seek */
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000);
+  play_ms = 900; esplus_sample_tick(1250); play_ms = 100; esplus_sample_tick(1500);
+  assert(seek_calls == 0);
+  esplus_close();
+  /* d2: depth below the threshold */
+  seek_calls = 0; begin(); vsub(1000); play_ms = 900; esplus_sample_tick(1000); esplus_sample_tick(1250); esplus_sample_tick(1500);
+  assert(seek_calls == 0);
+  esplus_close();
+  /* c3: off */
+  setenv("MLENGINE_CATCHUP_MS", "0", 1);
+  seek_calls = 0; begin(); vsub(1000); play_ms = 100; esplus_sample_tick(1000); esplus_sample_tick(1250); esplus_sample_tick(1500);
+  assert(seek_calls == 0);
+  esplus_close();
   /* f: prepare done with ok=0 still starts the player, once; a failed start is not retried */
   start_calls = 0; start_ret = 1; esplus_create_open(); cb_prepared(0); esplus_prepare(); vsub(0); vsub(16);
   assert(start_calls == 1);
