@@ -22,12 +22,17 @@ typedef struct {
   volatile uint32_t playing_ms;
   volatile uint32_t fps_submitted;  /* submits in the last full second */
   volatile int      fatal;          /* 0, or an ML_ERR_PLAYER_* code: the engine ends the session */
+  /* native audio output (audio_opus.c; update with __atomic in audio_opus.c) */
+  volatile int32_t  aout_route;     /* 0 none, 1 callback (web audio), 2 native */
+  volatile uint32_t aout_frames;    /* frames written to the ring */
+  volatile uint32_t aout_underruns, aout_overruns, aout_drops;   /* native path counters */
+  volatile int32_t  aout_buf_ms;    /* ring fill in ms (last report) */
 } esplus_stats_t;
 
 enum { ESPLUS_LAT_OFF, ESPLUS_LAT_NUDGE, ESPLUS_LAT_ARRIVAL };
 typedef struct { int latency_mode, target_depth_ms, nudge_max_ms_per_s, drop_after_ms,
                  depth_poll_ms, stall_ms, recover_max, recover_back_ms,
-                 start_timeout_ms, fatal_stall_ms, rebuild_max; } esplus_cfg_t;   /* the last three: 0 = off */
+                 start_timeout_ms, fatal_stall_ms, rebuild_max, catchup_ms; } esplus_cfg_t;   /* the last four: 0 = off */
 
 /* engine-local fatal codes (moonlight-common-c uses -100..-104) */
 #define ML_ERR_PLAYER_NOT_STARTED -110   /* no start() success, video submitted for start_timeout_ms */

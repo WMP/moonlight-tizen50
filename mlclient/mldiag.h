@@ -32,14 +32,22 @@ unsigned mldiag_ctl_encrypt(int ok, int ivlen, int verify);   /* returns this se
 void mldiag_pad(int arrival, int rc);
 /* Audio: one libopus decode: ok != 0 = decoded packet, else a failure (err = opus code, last kept). */
 void mldiag_adec(int ok, int err);
-/* Audio output (audio_opus.c): the host audio callback is present or not (at audio init). One frame handed to it (bytes of PCM).
-   The host's dropped audio frames of this session (ml_engine_set_audio_drops; last report kept). */
+/* Audio output (audio_opus.c): which path is active. 0 = not decided yet, 1 = the host audio callback
+   (web UI / Web Audio), 2 = none (no callback), 3 = native audio-io (audio_out_*), 4 = native failed,
+   fell back to the callback. One frame handed to the output (bytes of PCM).
+   The host's dropped audio frames of this session (ml_engine_set_audio_drops; last report kept).
+   Native counters (path 3/4): written frames, underruns, overruns, dropped bytes (latency cap) and
+   the ring-buffer fill in ms at read time. */
 void mldiag_aout(int has_cb);
+void mldiag_aout_native(int active);   /* audio_opus.c: native output came up (1) or fell back (0) */
+void mldiag_aout_reason(const char *reason);   /* audio_opus.c: why native output is not used ("" = none yet) */
+void mldiag_anative(unsigned frames, unsigned underruns, unsigned overruns, unsigned drops, int buf_ms);
 void mldiag_aframe(int bytes);
 void mldiag_adrops(int dropped);
 /* The host's audio counters (ml_engine_set_audio_host_stats): sent to the UI, dropped by its queue, failed sends. mldiag_last shows the values at read time. */
 void mldiag_ahost(int sent, int dropped, int send_failures);
 void mldiag_rebuild(void);            /* one player rebuild (esplus_player.c) */
+void mldiag_catchup(int depth_ms, int seek_ok);   /* the one-time catch-up seek (esplus_player.c): depth before, seek result */
 void mldiag_idr_retry(void);          /* one IDR request retry at the start (no video packet yet) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */

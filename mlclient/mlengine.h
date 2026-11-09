@@ -120,6 +120,31 @@ void ml_engine_set_gamemode(int on);
  * symbol is missing. */
 int ml_engine_tv_game_mode(int on, int save_type);
 
+/* Which audio output path the current session uses (audio_opus.c): 0 = no session or no
+ * audio output, 1 = the callback path (the host sends mlaudio events, the UI plays them
+ * with Web Audio), 2 = native output on the TV (capi-media-audio-io; the host sends no
+ * mlaudio events). The engine decides at audio init; call this after Connection
+ * Established (before it, and with an engine that lacks the function, the answer is the
+ * callback path). Works in release builds. */
+int ml_engine_get_audio_route(void);
+
+/* Live audio output statistics (UI overlay, works in release builds). The caller sets
+ * struct_size = sizeof(ml_engine_audio_stats); the engine fills the struct and returns 0,
+ * or GS_INVALID when out is NULL or struct_size is too small. route as in
+ * ml_engine_get_audio_route(); the counters are the native path's (0 on the callback
+ * path, which the UI knows from its own scheduler). buf_ms = the ring-buffer fill in ms
+ * at the last report. */
+typedef struct ml_engine_audio_stats {
+  int32_t  struct_size;
+  int32_t  route;        /* 0 none, 1 callback (web audio), 2 native */
+  uint32_t frames;       /* native: frames written to the ring */
+  uint32_t underruns;    /* native: the ring ran dry */
+  uint32_t overruns;     /* native: ring full, oldest data dropped */
+  uint32_t drops;        /* native: bytes dropped by the ~2x-target latency cap */
+  int32_t  buf_ms;       /* native: ring fill in ms (last report) */
+} ml_engine_audio_stats;
+int ml_engine_get_audio_stats(ml_engine_audio_stats *out);
+
 #ifdef __cplusplus
 }
 #endif
