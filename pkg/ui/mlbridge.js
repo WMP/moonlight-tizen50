@@ -262,6 +262,7 @@
   // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
   var wantStats = false;   // startRequest a[29]: turn the overlay on at Connection Established
   var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
+  var audioRoute = 'none';   // last mlaroute: 'native' | 'webaudio' | 'none' (see PROTOCOL.md)
   function statsDiv(create) {
     if (!statsEl && create && typeof document !== 'undefined' && document.body && document.createElement) {
       statsEl = document.createElement('div');
@@ -282,17 +283,22 @@
       'under/over ' + m.uo + '\n' +
       'errors ' + m.err + '  recoveries ' + m.rec + '\n' +
       'play ' + (Number(m.play) / 1000).toFixed(1) + ' s';
-    if (typeof window.mlAudioStats === 'function') {   // the host does not know the UI audio scheduler
-      var a = window.mlAudioStats();
-      el.textContent += '\nweb audio rx ' + a.received + ' sched ' + a.scheduled + ' drop ' + a.dropped + ' empty ' + a.empty +
-        '\nresync ' + a.resyncs + ' underrun ' + a.underruns + ' headroom ' + Number(a.headroomMs).toFixed(0) + ' ms';
+    if (m.aroute === 'native') {   // the engine plays audio itself (no mlaudio events)
+      el.textContent += '\naudio native  buf ' + m.abuf + ' ms  frames ' + m.aframes +
+        '\nunder/over ' + m.auo + '  dropped ' + m.adrops;
+    } else {   // callback path: the host counters and the UI's own scheduler counters
+      if (m.asent !== undefined) el.textContent += '\nhost audio sent ' + m.asent + ' drop ' + m.adrop + ' fail ' + m.afail;   // older host: absent
+      if (typeof window.mlAudioStats === 'function') {   // the host does not know the UI audio scheduler
+        var a = window.mlAudioStats();
+        el.textContent += '\nweb audio rx ' + a.received + ' sched ' + a.scheduled + ' drop ' + a.dropped + ' empty ' + a.empty +
+          '\nresync ' + a.resyncs + ' underrun ' + a.underruns + ' headroom ' + Number(a.headroomMs).toFixed(0) + ' ms';
+      }
     }
-    if (m.asent !== undefined) el.textContent += '\nhost audio sent ' + m.asent + ' drop ' + m.adrop + ' fail ' + m.afail;   // older host: absent
   }
   // Audio scheduler (mlaudio.js); absent = no audio, never an error.
   function audioCall(fn) { if (fn === 'mlAudioStop') clearAuPartials(); if (typeof window[fn] === 'function') { try { window[fn](); } catch (e) { console.warn('[mlbridge] ' + fn + ' failed:', e); } } }
   function resetStats() {
-    statsOn = false; statsGen++;
+    statsOn = false; statsGen++; audioRoute = 'none';
     if (statsEl) { statsEl.textContent = ''; statsEl.style.display = 'none'; }
   }
   // Sends the wanted state (on), so a lost reply cannot leave the host and the overlay inverted.
@@ -467,6 +473,14 @@
       return;
     }
     if (m.event === 'mlstats') { showStats(m); return; }   // overlay only (2/s: not traced), not for handleMessage
+    if (m.event === 'mlaroute') {   // which audio path this session uses (not for handleMessage)
+      if (m.route === 'native' || m.route === 'webaudio' || m.route === 'none') {
+        audioRoute = m.route;
+        if (audioRoute === 'native') audioCall('mlAudioStop');   // the engine plays audio itself: stop the Web Audio scheduler
+        console.log('[mlbridge] audio route: ' + audioRoute);
+      }
+      return;
+    }
     if (m.log !== undefined) {   // forwarded host/engine log line (on demand, see mlDebug); no reply trace: it doubled every line
       console.log('[' + (m.tag || 'host') + '] ' + m.log);
       return;

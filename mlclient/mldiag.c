@@ -37,7 +37,10 @@ static unsigned long long s_abytes;       /* PCM bytes handed to the audio callb
 static int s_adrops, s_asent, s_asendfail;   /* the host's audio counters (last report): dropped, sent to the UI, failed sends */
 static int s_aout_off = -1, s_aout_end;   /* where the aout section sits in s_out (-1 = none); mldiag_last re-renders it */
 static int s_adec_err;                    /* last libopus error */
-static int s_aout;                        /* audio output: 0 not reached, 1 callback present, 2 none (no callback) */
+static int s_aout;                        /* audio output: 0 not reached, 1 callback present, 2 none (no callback), 3 native, 4 native -> callback fallback */
+static char s_aio_reason[48] = "-";       /* why the native output is not used (audio_opus.c token) */
+static unsigned s_an_frames, s_an_under, s_an_over, s_an_drops;   /* native audio-io counters (last report kept) */
+static int s_an_bufms;                    /* ring-buffer fill in ms at the last report */
 static int s_pad_rc;                      /* last failed pad call rc */
 static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
 /* the noted /launch or /resume (survives mldiag_reset until one reset consumes it) */
@@ -88,6 +91,23 @@ void mldiag_pad(int arrival, int rc) {
 }
 
 void mldiag_aout(int has_cb) { __atomic_store_n(&s_aout, has_cb ? 1 : 2, __ATOMIC_RELAXED); }
+void mldiag_aout_native(int active) { __atomic_store_n(&s_aout, active ? 3 : 4, __ATOMIC_RELAXED); }
+/* Why the native output is not used; shown in the "aout webaudio fallback=native" variant.
+   The audio_opus.c token (no-library, no-symbols, channels-N, create-N, prepare-N, write-N, oom, no-thread). */
+void mldiag_aout_reason(const char *reason) {
+  pthread_mutex_lock(&s_mu);
+  snprintf(s_aio_reason, sizeof s_aio_reason, "%s", reason && *reason ? reason : "-");
+  for (char *p = s_aio_reason; *p; p++) if (*p == '\n' || *p == '\r' || *p == '|') *p = ' ';   /* one line, no section breaks */
+  pthread_mutex_unlock(&s_mu);
+}
+/* Native counters: written by the audio worker once per event (cheap stores). */
+void mldiag_anative(unsigned frames, unsigned underruns, unsigned overruns, unsigned drops, int buf_ms) {
+  __atomic_store_n(&s_an_frames, frames, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_under, underruns, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_over, overruns, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_drops, drops, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_bufms, buf_ms, __ATOMIC_RELAXED);
+}
 void mldiag_aframe(int bytes) { INC(C_AFRAMES); __atomic_fetch_add(&s_abytes, (unsigned long long)bytes, __ATOMIC_RELAXED); }
 void mldiag_adrops(int dropped) { __atomic_store_n(&s_adrops, dropped, __ATOMIC_RELAXED); }
 void mldiag_ahost(int sent, int dropped, int send_failures) {
@@ -109,7 +129,8 @@ void mldiag_adec(int ok, int err) {
 void mldiag_reset(const mldiag_cfg *cfg) {
   pthread_mutex_lock(&s_mu);
   memset(s_c, 0, sizeof s_c); s_ctl_iv = -1; s_pad_rc = 0; s_adec_err = 0;
-  s_aout = 0; s_abytes = 0; s_adrops = s_asent = s_asendfail = 0; s_aout_off = -1;
+  s_aout = 0; s_abytes = 0; s_adrops = s_asent = s_asendfail = 0; s_aout_off = -1; s_aio_reason[0] = '-'; s_aio_reason[1] = 0;
+  s_an_frames = s_an_under = s_an_over = s_an_drops = 0; s_an_bufms = 0;
   s_rb_open = s_rb_addv = s_rb_disp = s_rb_prep = -99;
   s_cu_n = 0; s_cu_depth = -1; s_cu_rc = -99;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
@@ -221,10 +242,17 @@ void mldiag_player(const char *what, int rc) {
 /* The aout section. The host reports its final audio counters after the failure and before it reads the line, so
    mldiag_last renders this section again. */
 static void aout_text(char *d, size_t n) {
-  if (GET_A(s_aout) == 1)
+  int a = GET_A(s_aout);
+  if (a == 3)
+    snprintf(d, n, " | aout native frames=%u underruns=%u overruns=%u drops=%u buf_ms=%d",
+             GET_A(s_an_frames), GET_A(s_an_under), GET_A(s_an_over), GET_A(s_an_drops), GET_A(s_an_bufms));
+  else if (a == 4)   /* native output failed: this session fell back to the callback path */
+    snprintf(d, n, " | aout webaudio fallback=native reason=%s frames=%u bytes=%llu sent=%d drops=%d sendfail=%d",
+             s_aio_reason, GET(C_AFRAMES), GET_A(s_abytes), GET_A(s_asent), GET_A(s_adrops), GET_A(s_asendfail));
+  else if (a == 1)
     snprintf(d, n, " | aout webaudio frames=%u bytes=%llu sent=%d drops=%d sendfail=%d", GET(C_AFRAMES), GET_A(s_abytes), GET_A(s_asent), GET_A(s_adrops), GET_A(s_asendfail));
   else
-    snprintf(d, n, " | aout none reason=%s", GET_A(s_aout) == 2 ? "no-callback" : "-");
+    snprintf(d, n, " | aout none reason=%s", a == 2 ? "no-callback" : "-");
 }
 
 static const char *code_name(int c) {

@@ -30,7 +30,7 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | Pairing (PIN) | **works** | own certificate generated on the TV |
 | App / game list | **works** | |
 | Hardware H.264 decode (720p–1080p, up to 60 fps) | **works** | 720p60 and 1080p60 verified |
-| Opus → PCM audio, played by the UI (Web Audio) | **works** | ~100 ms jitter buffer; loss counters in the overlay |
+| Opus → PCM audio, played natively by the engine (audio-io) | **works** | Web Audio fallback when audio-io is missing/fails; loss counters in the overlay |
 | Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers |
 | Statistics overlay (`toggleStats`) | **works** | queue depth, fps, audio counters |
 | Remote Back key leaves the stream | **works** | #20 |
@@ -238,13 +238,26 @@ counters and the sampler also run in release builds). `audio_depth_ms` is always
 player has no audio stream.
 
 **Audio.** The esplusplayer carries video only. Platform limitation: the TV player rejects engine-fed
-audio streams. The host sends Opus; the engine decodes it with libopus (fixed point, from the submodule;
-`build-deps-lib.sh` makes `libopus_tv.a`) and hands the PCM S16LE (one Opus frame, 5 ms, per call) to the host
-through `ml_engine_set_audio_cb` (`mlengine.h`; set it before the stream starts). The host sends it to the UI as
-`mlaudio` events and the UI plays it with Web Audio (`pkg/ui/mlaudio.js`, jitter buffer default 100 ms). The host
-reports its dropped frames with `ml_engine_set_audio_drops`; the `ML-ERROR` line shows
-`aout webaudio frames=<n> bytes=<n> sent=<n> drops=<n> sendfail=<n>` (the last three are the host's counters, read at the time of `ml_engine_last_error()`), or `aout none reason=no-callback` (the stream then has no sound).
-Audio does not share the player clock, so there is no engine-side A/V sync.
+audio streams. The engine decodes the host's Opus with libopus (fixed point, from the submodule;
+`build-deps-lib.sh` makes `libopus_tv.a`) and plays the PCM S16LE **natively** through
+`libcapi-media-audio-io` (`audio_out_*`, dlopen'd at session start; mono/stereo — 5.1 falls back),
+fed by a ring buffer (target 50 ms, hard cap ~100 ms: above it the oldest data is dropped, counted)
+on its own worker thread; the receive thread only copies into the ring. If the library is missing
+or create/prepare/write fails (also mid-session), the session falls back to the old path: the PCM
+goes to the host through `ml_engine_set_audio_cb` (`mlengine.h`; set before the stream starts),
+the host sends it to the UI as `mlaudio` events and the UI plays it with Web Audio
+(`pkg/ui/mlaudio.js`, jitter buffer default 100 ms). The host asks
+`ml_engine_get_audio_route` (new; an old engine = the callback path) after Connection Established
+and on every stats tick, starts the `mlaudio` sender only on the callback route, and tells the UI
+with an `mlaroute` event (`native|webaudio|none`); the UI stops its Web Audio scheduler when the
+route is native. The `ML-ERROR` line shows `aout native frames=<n> underruns=<n> overruns=<n>
+drops=<n> buf_ms=<n>` (the ring counters), `aout webaudio fallback=native reason=<token>
+frames=... sendfail=<n>` (a native attempt failed: `no-library`, `no-symbols`, `channels-<n>`,
+`create-<rc>`, `prepare-<rc>`, `write-<rc>`, `oom`, `no-thread`), plain
+`aout webaudio frames=<n> ...` (an old engine), or `aout none reason=no-callback` (the stream
+then has no sound). The overlay (`toggleStats`) shows the native counters through
+`ml_engine_get_audio_stats` (new). Audio does not share the player clock, so there is no
+engine-side A/V sync.
 
 **Start retry.** If no video packet has reached the player 300 ms after prepare, the engine asks for an IDR frame again
 (every 500 ms, at most 10 times): the first request can be lost before the host pipeline is up.
