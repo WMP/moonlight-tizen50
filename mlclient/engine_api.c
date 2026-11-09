@@ -174,6 +174,8 @@ int ml_engine_start(const char *host, int appId, const char *pin,
   return 0;
 }
 
+/* The audio route/stats exports live in audio_opus.c (it owns the audio state). */
+
 int ml_engine_get_stats(ml_engine_stats *out) {
   if (!out || out->struct_size < (int32_t)sizeof *out) return GS_INVALID;
   const esplus_stats_t *s = &esplus_stats;

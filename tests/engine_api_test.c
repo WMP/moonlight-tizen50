@@ -14,6 +14,7 @@ uint32_t EncryptionFeaturesSupported, EncryptionFeaturesRequested, EncryptionFea
 static int avoc_on, avoc_off, start_calls;
 static unsigned char iv0[4];
 static CONNECTION_LISTENER_CALLBACKS lcb;
+int ml_engine_audio_route_native(void) { return 0; }   /* audio_opus.c is not linked here */
 int ml_avoc_set_game_mode(int on) { if (on) avoc_on++; else avoc_off++; return 0; }
 void VidEsplus_FillCallbacks(PDECODER_RENDERER_CALLBACKS cb) { memset(cb, 0, sizeof *cb); }
 void AudEsplus_FillCallbacks(PAUDIO_RENDERER_CALLBACKS cb) { memset(cb, 0, sizeof *cb); }

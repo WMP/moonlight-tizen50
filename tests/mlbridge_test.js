@@ -432,6 +432,32 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
   assert.strictEqual(handled.length, h);
 });
 
+test('mlaroute is not passed to handleMessage; native stops the Web Audio scheduler', async function () {
+  var h = handled.length, stopped = 0;
+  win.mlAudioStop = function () { stopped++; };
+  win.mlAudioStats = function () { return { received: 1, scheduled: 1, dropped: 0, empty: 0, resyncs: 0, underruns: 0, headroomMs: 40 }; };
+  listener([{ key: 'event', value: 'mlaroute' }, { key: 'route', value: 'webaudio' }]);
+  assert.strictEqual(stopped, 0);                   // webaudio: the scheduler keeps running
+  assert.strictEqual(handled.length, h);
+  listener([{ key: 'event', value: 'mlstats' }].concat(STATS.slice(1)));   // web audio counters still shown
+  assert.ok(/web audio rx 1/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  listener([{ key: 'event', value: 'mlaroute' }, { key: 'route', value: 'native' }]);
+  assert.strictEqual(stopped, 1);                   // native: the scheduler is stopped
+  assert.strictEqual(handled.length, h);
+  var NATIVE = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'fps', value: '60' },
+    { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' },
+    { key: 'aroute', value: 'native' }, { key: 'aframes', value: '990' }, { key: 'auo', value: '1/2' }, { key: 'adrops', value: '3' }, { key: 'abuf', value: '50' }];
+  listener(NATIVE);                                 // native counters replace the web audio lines
+  assert.ok(/audio native  buf 50 ms  frames 990/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  assert.ok(/under\/over 1\/2  dropped 3/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  assert.ok(!/web audio rx/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  listener([{ key: 'event', value: 'mlaroute' }, { key: 'route', value: 'bogus' }]);   // unknown: ignored
+  listener(NATIVE);
+  assert.ok(/audio native/.test(byId.mlstats.textContent));   // the bogus route changed nothing: native stats still render
+  delete win.mlAudioStop; delete win.mlAudioStats;
+  // leave the overlay on: the next test toggles it off (as it did before this test existed)
+});
+
 test('a second toggle hides the overlay', async function () {
   assert.ok(await toggleStats(undefined, 'false'));
   assert.strictEqual(byId.mlstats.style.display, 'none');

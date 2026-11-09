@@ -176,6 +176,28 @@ int main(void) {
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " idr_retry=0 | player ") && strstr(buf, " | aout none reason=- | ctl "));
 
+  /* native audio-io output (audio_opus.c): counters, and the fallback variant */
+  mldiag_reset(&CFG);
+  mldiag_aout_native(1); mldiag_anative(100, 2, 3, 4, 55);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | aout native frames=100 underruns=2 overruns=3 drops=4 buf_ms=55 | ctl "));
+  mldiag_anative(200, 0, 0, 0, 60);   /* read time: the worker's last report wins */
+  mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | aout native frames=200 underruns=0 overruns=0 drops=0 buf_ms=60 | ctl "));
+  mldiag_aout_native(0);   /* native failed: fell back to the callback path */
+  mldiag_aout_reason("create--13");
+  mldiag_aframe(960); mldiag_ahost(5, 1, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | aout webaudio fallback=native reason=create--13 frames=1 bytes=960 sent=5 drops=1 sendfail=0 | ctl "));
+  mldiag_last(buf, sizeof buf);   /* reason survives a re-render */
+  assert(strstr(buf, "reason=create--13"));
+  mldiag_aout_native(1); mldiag_anative(7, 1, 0, 0, 48);   /* a later session decides again */
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | aout native frames=7 underruns=1 overruns=0 drops=0 buf_ms=48 | ctl "));
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " | aout none reason=- | ctl "));
+
   /* player rebuilds */
   mldiag_reset(&CFG);
   mldiag_rebuild(); mldiag_rebuild();
