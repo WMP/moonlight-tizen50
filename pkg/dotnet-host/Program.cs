@@ -1,14 +1,14 @@
 /*
  * MoonlightHost - Tizen .NET host for the dev-cert path.
  *
- * On a retail (unrooted) Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
+ * On a retail Samsung TV only Web (.wgt) and .NET (.tpk) apps install, so
  * the installable unit is a dev-signed .NET .tpk; our native streaming engine ships
  * inside it as libmlengine.so and is driven over the stable C ABI (mlengine.h).
  *
  * The engine is loaded from memory rather than from a file in the app folder: we
  * read libmlengine.so's bytes and load them from an anonymous in-memory fd
- * (memfd_create -> write -> dlopen /proc/self/fd/N). This is also how a downloaded
- * engine update is applied without rewriting the app folder. Only OUR .so comes from
+ * (memfd_create -> write -> dlopen /proc/self/fd/N); when that fails, it dlopens the
+ * packaged file. Only OUR .so comes from
  * memory; its dependencies (esplusplayer, ssl, curl, ecore...) resolve normally from
  * the TV's /usr/lib.
  *
@@ -82,8 +82,7 @@ namespace MoonlightHost
         }
     }
 
-    // Loads a shared object from memory (lets downloaded engine updates apply
-    // without rewriting the app folder).
+    // Loads a shared object from memory (an anonymous memfd).
     internal static class MemLoader
     {
         private const uint MFD_CLOEXEC = 0x0001u;
@@ -200,6 +199,15 @@ namespace MoonlightHost
         public int RecoveryState;
     }
 
+    // ml_engine_audio_stats (mlengine.h): 7 x 4 bytes, no padding.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct EngineAudioStats
+    {
+        public int StructSize, Route;
+        public uint Frames, Underruns, Overruns, Drops;
+        public int BufMs;
+    }
+
     // The engine C ABI (mlengine.h), bound at runtime from the in-memory .so.
     internal static class Engine
     {
@@ -263,10 +271,17 @@ namespace MoonlightHost
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioCbDelegate(AudioCbDelegate cb);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioDropsDelegate(int dropped);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetAudioHostStatsDelegate(int sent, int dropped, int sendFailures);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GetAudioRouteDelegate();
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int GetAudioStatsDelegate(ref EngineAudioStats s);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate void SetGameModeDelegate(int on);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] public delegate int TvGameModeDelegate(int on, int saveType);
+        public static TvGameModeDelegate    TvGameMode;      // null with an engine that lacks it
+
         public static SetAudioCbDelegate    SetAudioCb;      // null with an engine that lacks it
         public static SetAudioDropsDelegate SetAudioDrops;   // null with an engine that lacks it
         public static SetAudioHostStatsDelegate SetAudioHostStats;   // null with an engine that lacks it
+        public static GetAudioRouteDelegate GetAudioRoute;   // null with an engine that lacks it
+        public static GetAudioStatsDelegate GetAudioStats;   // null with an engine that lacks it
         public static SetGameModeDelegate   SetGameMode;     // null with an engine that lacks it
         public static volatile bool         Loaded;
         public static string                LoadError = "not tried";   // reason shown in the UI's error replies
@@ -315,8 +330,14 @@ namespace MoonlightHost
             catch (EntryPointNotFoundException) { SetAudioDrops = null; }
             try { SetAudioHostStats = MemLoader.GetDelegate<SetAudioHostStatsDelegate>(h, "ml_engine_set_audio_host_stats"); }
             catch (EntryPointNotFoundException) { SetAudioHostStats = null; }
+            try { GetAudioRoute = MemLoader.GetDelegate<GetAudioRouteDelegate>(h, "ml_engine_get_audio_route"); }
+            catch (EntryPointNotFoundException) { GetAudioRoute = null; }
+            try { GetAudioStats = MemLoader.GetDelegate<GetAudioStatsDelegate>(h, "ml_engine_get_audio_stats"); }
+            catch (EntryPointNotFoundException) { GetAudioStats = null; }
             try { SetGameMode = MemLoader.GetDelegate<SetGameModeDelegate>(h, "ml_engine_set_gamemode"); }
             catch (EntryPointNotFoundException) { SetGameMode = null; }
+            try { TvGameMode = MemLoader.GetDelegate<TvGameModeDelegate>(h, "ml_engine_tv_game_mode"); }
+            catch (EntryPointNotFoundException) { TvGameMode = null; }
             try { GamepadArrival = MemLoader.GetDelegate<GamepadArrivalDelegate>(h, "ml_engine_gamepad_arrival"); }
             catch (EntryPointNotFoundException) { GamepadArrival = null; }
             try { GamepadState = MemLoader.GetDelegate<GamepadStateDelegate>(h, "ml_engine_gamepad_state"); }
@@ -448,7 +469,14 @@ namespace MoonlightHost
 
             if (cmd == "startStream")
             {
-                if (err == null) { s_active = true; SendEvent("Connection Established"); }
+                if (err == null)
+                {
+                    s_active = true; SendEvent("Connection Established");
+                    // The engine picked its audio route at init: start the mlaudio sender now
+                    // on the callback route (native output sends no mlaudio events).
+                    lock (s_aLock) { if (s_aOn) { int gen = s_aGen; int route = AudioRoute();
+                        if (route != 2) AudioSenderStart(gen); else SendAudioRoute(2); } }
+                }
                 else { AudioStop(); ReadLastError(out string diag); if (diag != null) Log.Error(diag); SendTerminated("streamTerminated: -1", diag); }
             }
         }
@@ -610,7 +638,6 @@ namespace MoonlightHost
                 var m = new Tizen.Applications.Bundle();
                 m.AddItem("event", "mlstats");
                 m.AddItem("depth", s.DepthMs.ToString(c));
-                m.AddItem("addepth", s.AudioDepthMs.ToString(c));
                 m.AddItem("fps", s.FpsSubmitted.ToString(c));
                 m.AddItem("drop", s.DroppedLate.ToString(c));
                 m.AddItem("full", s.DroppedFull.ToString(c));
@@ -618,6 +645,22 @@ namespace MoonlightHost
                 m.AddItem("err", s.Errors.ToString(c));
                 m.AddItem("rec", s.Recoveries.ToString(c));
                 m.AddItem("play", s.PlayingMs.ToString(c));
+                long aSent, aDrop; lock (s_aLock) { aSent = s_aSent; aDrop = s_aDropped; }
+                m.AddItem("asent", aSent.ToString(c));
+                m.AddItem("adrop", aDrop.ToString(c));
+                m.AddItem("afail", Interlocked.Read(ref s_aFailed).ToString(c));
+                if (Engine.GetAudioStats != null)   // native audio counters (new engine)
+                {
+                    var a = new EngineAudioStats { StructSize = Marshal.SizeOf<EngineAudioStats>() };
+                    if (Engine.GetAudioStats(ref a) == 0 && a.Route == 2)
+                    {
+                        m.AddItem("aroute", "native");
+                        m.AddItem("aframes", a.Frames.ToString(c));
+                        m.AddItem("auo", a.Underruns.ToString(c) + "/" + a.Overruns.ToString(c));
+                        m.AddItem("adrops", a.Drops.ToString(c));
+                        m.AddItem("abuf", a.BufMs.ToString(c));
+                    }
+                }
                 Send(m, s_uiApp, s_uiPort);
             }
             catch (Exception ex) { Log.Error("stats failed: " + ex.Message); }
@@ -635,6 +678,8 @@ namespace MoonlightHost
         private static double s_aQueuedMs;
         private static int s_aGen;                       // session generation; a sender of an older one exits
         private static volatile bool s_aOn;
+        private static bool s_aSenderOn;                 // the mlaudio sender thread runs (callback route)
+        private static int s_aRouteLast = -1;            // last route sent to the UI (mlaroute); -1 = none yet
         private static bool s_aSkipLogged;
         private static readonly Stack<byte[]> s_aFree = new Stack<byte[]>();   // under s_aLock; exact-size frame buffers
         private const int AudioFreeMax = 16;
@@ -673,6 +718,28 @@ namespace MoonlightHost
             catch { }
         }
 
+        // The engine's audio route (mlengine.h): 0 none, 1 callback (this host sends mlaudio
+        // events), 2 native audio-io in the engine (no mlaudio events). An old engine has
+        // no ml_engine_get_audio_route: the callback path is the only one, so 1.
+        private static int AudioRoute()
+        {
+            try { if (Engine.GetAudioRoute != null) return Engine.GetAudioRoute(); }
+            catch (Exception ex) { Log.Error("audio route read failed: " + ex.Message); }
+            return 1;
+        }
+
+        private static void SendAudioRoute(int route)
+        {
+            try
+            {
+                var m = new Tizen.Applications.Bundle();
+                m.AddItem("event", "mlaroute");
+                m.AddItem("route", route == 2 ? "native" : route == 1 ? "webaudio" : "none");
+                Send(m, s_uiApp, s_uiPort);
+            }
+            catch (Exception ex) { Log.Error("audio route send failed: " + ex.Message); }
+        }
+
         private static void AudioStart()
         {
             if (Engine.SetAudioCb == null)
@@ -691,13 +758,27 @@ namespace MoonlightHost
             }
             try { PushAudioStats(0, 0, 0); Engine.SetAudioCb(s_audioCb); }
             catch (Exception ex) { Log.Error("audio callback set failed: " + ex.Message); }
-            new Thread(() => AudioSender(gen)) { IsBackground = true, Name = "mlaudio" }.Start();
+            // The engine picks its route at audio init (after Connection Established): the
+            // callback must be registered by then, but the sender only runs on the callback
+            // route. ReportDrops re-checks: a mid-session fallback to the callback starts it.
+            s_aSenderOn = false;
             lock (s_aLock)   // AudioStop may run on another thread (Poll) at the same time
             {
                 s_aTimer?.Dispose();
                 s_aTimer = new System.Threading.Timer(_ => ReportDrops(), null, 1000, 1000);
             }
             Log.Info("audio output start");
+        }
+
+        // Starts the mlaudio sender (called when the route is / becomes the callback path).
+        private static void AudioSenderStart(int gen)
+        {
+            lock (s_aLock)
+            {
+                if (!s_aOn || gen != s_aGen || s_aSenderOn) return;
+                s_aSenderOn = true;
+            }
+            new Thread(() => AudioSender(gen)) { IsBackground = true, Name = "mlaudio" }.Start();
         }
 
         // New engines take sent/dropped/failed; an older one only the drop count.
@@ -712,7 +793,16 @@ namespace MoonlightHost
         {
             try
             {
-                long s, d; lock (s_aLock) { s = s_aSent; d = s_aDropped; }
+                long s, d; int gen;
+                lock (s_aLock) { if (!s_aOn) return; s = s_aSent; d = s_aDropped; gen = s_aGen; }
+                int route = AudioRoute();
+                if (route != 2) AudioSenderStart(gen);   // callback route (or none): the sender is the fallback path
+                if (route != s_aRouteLast)
+                {
+                    s_aRouteLast = route;
+                    if (route == 2) Log.Info("audio route: native audio-io");
+                    SendAudioRoute(route);
+                }
                 PushAudioStats(s, d, Interlocked.Read(ref s_aFailed));
             }
             catch (Exception ex) { Log.Error("audio drops report failed: " + ex.Message); }
@@ -725,6 +815,8 @@ namespace MoonlightHost
             {
                 if (!s_aOn) return;   // not running (also: a second stop path)
                 s_aOn = false;
+                s_aSenderOn = false;
+                s_aRouteLast = -1;
                 s_aGen++;
                 s_aQueue.Clear(); s_aQueuedMs = 0; s_aFree.Clear();
                 sent = s_aSent; dropped = s_aDropped; failed = Interlocked.Read(ref s_aFailed);
@@ -886,6 +978,18 @@ namespace MoonlightHost
                         if (!int.TryParse(Item(b, "key"), out key) || !int.TryParse(Item(b, "action"), out action) ||
                             !int.TryParse(Item(b, "mods"), out mods)) return "bad args";
                         Engine.SendKey(key, action, mods);
+                        return null;
+                    }
+                case "tvGameMode":
+                    {
+                        int on = Item(b, "on") == "true" ? 1 : 0;
+                        int saveType;
+                        if (!int.TryParse(Item(b, "saveType"), out saveType)) saveType = 1;   // optional: the session's value
+                        if (Engine.TvGameMode == null) return "not supported";
+                        int rc;
+                        lock (s_engineLock) rc = Engine.TvGameMode(on, saveType);
+                        Log.Info("tv game mode " + on + " saveType " + saveType + " -> " + rc);
+                        r.Add("rc", rc.ToString());
                         return null;
                     }
                 case "toggleStats": return ToggleStats(Item(b, "on"));

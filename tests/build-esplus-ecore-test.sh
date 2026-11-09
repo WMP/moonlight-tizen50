@@ -4,11 +4,12 @@
 # it, and the test does not depend on it, so those asserts are compiled out here.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd); R="$HERE/.."
+cd "$R"   # the opus cflags are passed unquoted: keep them free of spaces (a checkout path may have them)
 OUT=${OUT:-${TMPDIR:-/tmp}/esplus_ecore_test}
 LC="$R/third_party/moonlight-tizen/moonlight-common-c/src"
 [ -f "$LC/Limelight.h" ] || { echo "Limelight.h missing: run 'git submodule update --init'" >&2; exit 1; }
 # libopus for the host (the engine decodes Opus to PCM; the test also uses the encoder). Third-party code: -w.
-OPUS="$R/third_party/moonlight-tizen/opus"
+OPUS=third_party/moonlight-tizen/opus
 . "$R/mlclient/opus-sources.sh"
 OUT=$(mkdir -p "$(dirname "$OUT")" && cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")   # absolute: never write into the working tree
 OPUSF=$(opus_cflags "$OPUS")
@@ -42,8 +43,16 @@ for D in "" "-DMLT_TRACE"; do
   gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" \
     -o "$OUT-pad" "$HERE/engine_pad_test.c" "$R/mlclient/engine_pad.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-pad" 2>/dev/null
-  gcc -std=gnu11 -Wall -Wextra -Werror $D '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" -I"$LC" -I"$OPUS/include" \
-    -o "$OUT-audio" "$HERE/audio_opus_test.c" "$R/mlclient/audio_opus.c" "$R/mlclient/mldiag.c" "$OPUSD/libopus_host.a" -lpthread -ldl -lm
+  gcc -std=gnu11 -Wall -Wextra -Werror $D -Ddlopen=fake_dlopen -Ddlsym=fake_dlsym -Ddlclose=fake_dlclose -I"$R/mlclient" \
+    -o "$OUT-avoc" "$HERE/engine_avoc_test.c" "$R/mlclient/engine_avoc.c"
+  "$OUT-avoc" 2>/dev/null
+  "$OUT-avoc" nolib 2>/dev/null
+  gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" -I"$R/third_party/moonlight-tizen/libgamestream" \
+    -o "$OUT-api" "$HERE/engine_api_test.c" "$R/mlclient/engine_api.c" "$R/mlclient/mldiag.c" -lpthread -ldl
+  "$OUT-api" 2>/dev/null
+  gcc -std=gnu11 -Wall -Wextra -Werror $D -DML_AUDIO_IO_FAKE '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" -I"$LC" -I"$R/third_party/moonlight-tizen/libgamestream" -I"$OPUS/include" \
+    -o "$OUT-audio" "$HERE/audio_opus_test.c" "$R/mlclient/audio_opus.c" "$R/mlclient/mldiag.c" "$OPUSD/libopus_host.a" \
+    -lpthread -ldl -lm
   "$OUT-audio" 2>/dev/null
 done
 # mldiag self-test

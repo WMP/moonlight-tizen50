@@ -15,7 +15,7 @@ hardware video plane through the vendor library `libesplusplayer.so`.
 
 [![Moonlight Tizen 5.0 — v0.2 streaming demo](https://img.youtube.com/vi/dFGEaQFeYeA/maxresdefault.jpg)](https://youtu.be/dFGEaQFeYeA)
 
-A full session on a 2026 Tizen 5.0 TV (Muse.M): pairing with a Wolf host,
+A full session on a Tizen 5.0 TV (Muse.M): pairing with a Wolf host,
 launching a game, hardware H.264 video, Web Audio sound, an Xbox controller
 over Bluetooth, live statistics overlay, and leaving the stream with the
 Remote's Back key.
@@ -30,7 +30,7 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | Pairing (PIN) | **works** | own certificate generated on the TV |
 | App / game list | **works** | |
 | Hardware H.264 decode (720p–1080p, up to 60 fps) | **works** | 720p60 and 1080p60 verified |
-| Opus → PCM audio, played by the UI (Web Audio) | **works** | ~100 ms jitter buffer; loss counters in the overlay |
+| Opus → PCM audio, played natively by the engine (audio-io) | **works** | Web Audio fallback when audio-io is missing/fails; loss counters in the overlay |
 | Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers |
 | Statistics overlay (`toggleStats`) | **works** | queue depth, fps, audio counters |
 | Remote Back key leaves the stream | **works** | #20 |
@@ -38,7 +38,7 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | HDR | untested | |
 | 4K resolutions | untested | the player takes them; the test TV is 1080p |
 | Keyboard / mouse input | untested | engine path exists |
-| TV Game Mode during a stream (#32) | untested | implemented, built; needs an on-TV test |
+| TV Game Mode during a stream (#32) | **works** | on at stream start, off at stream stop (the TV menu shows the change after you leave Moonlight); stop when the app is closed mid-stream: untested |
 | Rumble feedback | **todo** | |
 | Surround sound (5.1/7.1) | **todo** | the player carries video only |
 | A/V sync (shared audio clock) | **todo** | audio runs on the Web Audio clock |
@@ -65,8 +65,8 @@ CI builds the packages on every release
    which is what the TV accepts. No Samsung certificate to create by hand, no
    `sdb` commands.
 
-> **Moving back from the hybrid package:** uninstall the hybrid Moonlight package
-> first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
+> **Moving back from the hybrid package:** older builds shipped one hybrid package
+> (the UI and the host in one `.wgt`). Uninstall it first (Apps2Samsung → *On the TV* → *Uninstall*). It holds the host app id
 > `org.moonlight.host.app`, so the TV refuses the host `.tpk` while it is installed.
 > Then install the two packages above.
 
@@ -99,7 +99,7 @@ Android). It shows the web UI console, and on request the host and engine log to
    (desktop: Chrome `chrome://inspect`; Android: the app's own console).
 3. **Debug packages:** the host and engine log appear in the same console by
    themselves (`[MLHOST]` / `[MLENGINE]`). On start the host first sends its last
-   100 lines (start-up, engine load), then new lines as they come.
+   1000 lines (start-up, engine load; normal packages: 100), then new lines as they come.
    **Normal packages** (host lines only, the engine has no trace there), or to turn it
    off or on again; the choice is remembered:
 
@@ -113,6 +113,14 @@ Android). It shows the web UI console, and on request the host and engine log to
    ```js
    mlDiag()           // the host runs its engine load checks again: [MLDIAG] lines
    mlDiag('launch')   // start the host in each way the UI can: [mldiag] lines
+   ```
+
+   **TV game mode** stayed on after the app was closed? Switch it off now. The console
+   prints the TV's `rc` (0 = done). The optional second argument is the save type (default 1):
+
+   ```js
+   mlGameMode(false)  // game mode off
+   mlGameMode(true)   // game mode on
    ```
 
    If no `[MLHOST]` line comes at all, the host did not start: run `mlDiag('launch')`.
@@ -183,7 +191,7 @@ Highlights of this release; the [Releases](../../releases) page has the full lis
 - **TV Game Mode while streaming** (#32): the TV's game picture mode comes on
   with the stream and is restored when it ends — implemented, awaiting an
   on-TV test (see the table above).
-- Diagnostics: every failure produces one `ML-ERROR` line with the session
+- Diagnostics: every stream failure produces one `ML-ERROR` line with the session
   config, counters and player state.
 
 ## Why this exists
@@ -230,13 +238,26 @@ counters and the sampler also run in release builds). `audio_depth_ms` is always
 player has no audio stream.
 
 **Audio.** The esplusplayer carries video only. Platform limitation: the TV player rejects engine-fed
-audio streams. The host sends Opus; the engine decodes it with libopus (fixed point, from the submodule;
-`build-deps-lib.sh` makes `libopus_tv.a`) and hands the PCM S16LE (one Opus frame, 5 ms, per call) to the host
-through `ml_engine_set_audio_cb` (`mlengine.h`; set it before the stream starts). The host sends it to the UI as
-`mlaudio` events and the UI plays it with Web Audio (`pkg/ui/mlaudio.js`, jitter buffer default 100 ms). The host
-reports its dropped frames with `ml_engine_set_audio_drops`; the `ML-ERROR` line shows
-`aout webaudio frames=<n> bytes=<n> sent=<n> drops=<n> sendfail=<n>` (the last three are the host's counters, read at the time of `ml_engine_last_error()`), or `aout none reason=no-callback` (the stream then has no sound).
-Audio does not share the player clock, so there is no engine-side A/V sync.
+audio streams. The engine decodes the host's Opus with libopus (fixed point, from the submodule;
+`build-deps-lib.sh` makes `libopus_tv.a`) and plays the PCM S16LE **natively** through
+`libcapi-media-audio-io` (`audio_out_*`, dlopen'd at session start; mono/stereo — 5.1 falls back),
+fed by a ring buffer (target 50 ms, hard cap ~100 ms: above it the oldest data is dropped, counted)
+on its own worker thread; the receive thread only copies into the ring. If the library is missing
+or create/prepare/write fails (also mid-session), the session falls back to the old path: the PCM
+goes to the host through `ml_engine_set_audio_cb` (`mlengine.h`; set before the stream starts),
+the host sends it to the UI as `mlaudio` events and the UI plays it with Web Audio
+(`pkg/ui/mlaudio.js`, jitter buffer default 100 ms). The host asks
+`ml_engine_get_audio_route` (new; an old engine = the callback path) after Connection Established
+and on every stats tick, starts the `mlaudio` sender only on the callback route, and tells the UI
+with an `mlaroute` event (`native|webaudio|none`); the UI stops its Web Audio scheduler when the
+route is native. The `ML-ERROR` line shows `aout native frames=<n> underruns=<n> overruns=<n>
+drops=<n> buf_ms=<n>` (the ring counters), `aout webaudio fallback=native reason=<token>
+frames=... sendfail=<n>` (a native attempt failed: `no-library`, `no-symbols`, `channels-<n>`,
+`create-<rc>`, `prepare-<rc>`, `write-<rc>`, `oom`, `no-thread`), plain
+`aout webaudio frames=<n> ...` (an old engine), or `aout none reason=no-callback` (the stream
+then has no sound). The overlay (`toggleStats`) shows the native counters through
+`ml_engine_get_audio_stats` (new). Audio does not share the player clock, so there is no
+engine-side A/V sync.
 
 **Start retry.** If no video packet has reached the player 300 ms after prepare, the engine asks for an IDR frame again
 (every 500 ms, at most 10 times): the first request can be lost before the host pipeline is up.
@@ -258,6 +279,11 @@ value (a skip does not move the PTS timeline, so it only helps when the decoder
 falls behind; `nudge` is what lowers `depth_ms`). Both return `DR_NEED_IDR`:
 moonlight-common-c then drops the frames that reference the lost one and asks the
 host for an IDR.
+
+**Catch-up.** Frames submitted while `prepare_async` runs build a queue that never drains, so every input shows that much
+later. When `depth_ms` stays above `MLENGINE_CATCHUP_MS` on two ticks in a row, the engine makes one flushing seek to the last
+submitted PTS and asks for an IDR frame. Once per session (and once per rebuilt player); a failed seek is not retried. The
+`ML-ERROR` line shows it as `catchup=`.
 
 **Recovery.** When playing time stops for `MLENGINE_STALL_MS` while frames are
 still submitted, or after a player error, the engine does a flushing
@@ -301,11 +327,13 @@ is created (for example on the CLI harness command line; the .NET host sets none
 | `MLENGINE_RECOVER_MAX` | `0` (off) | recoveries per session (3 recommended once validated on a TV) |
 | `MLENGINE_RECOVER_BACK_MS` | `250` | seek target behind the last video PTS |
 | `MLENGINE_START_TIMEOUT_MS` | `5000` (0 = off) | fatal `-110`: no successful `start()` this long after the first video submit |
+| `MLENGINE_CATCHUP_MS` | `150` (0 = off) | queue depth above which the one-time catch-up seek runs (two ticks in a row) |
 | `MLENGINE_PLAYER_REBUILD_MAX` | `1` (0 = off) | player rebuilds per session after a failed `start()` or an unreadable playing time |
 | `MLENGINE_FATAL_STALL_MS` | `10000` (0 = off) | fatal `-111`: playing time frozen this long while submitting |
 
 **Overlay.** `toggleStats` in the UI turns on a live overlay (`mlstats` events from
-`ml_engine_get_stats`, every 500 ms); see `pkg/ui/PROTOCOL.md`.
+`ml_engine_get_stats`, every 500 ms); see `pkg/ui/PROTOCOL.md`. The UI's performance statistics setting turns it on at stream start.
+It also shows the host audio counters.
 
 ## Build (headless, Docker)
 
@@ -325,7 +353,10 @@ ghcr.io/<owner>/moonlight-tizen-build:latest        # default branch only
 (both workflows use it).
 
 The one thing **not** in the image: `tv-libs/` — the `.so` libraries copied from
-**your** TV (Samsung's, never redistribute them). Mount them at
+**your** TV (Samsung's, never redistribute them). Copy the TV's `/usr/lib` to
+`tv-libs/usr/lib` (the build reads only that folder; the engine links
+`libesplusplayer.so`, `libecore_wl2.so.1`, `libecore.so.1`, `libssl.so.1.0.0`,
+`libcrypto.so.1.0.0` and `libcurl.so.4` from it) and mount `tv-libs` at
 `/opt/tizen-deps/tv-libs`.
 
 ```bash
@@ -354,11 +385,22 @@ docker run --rm --network none -v "$PWD":/work/repo \
 
 `.github/workflows/build-packages.yml` is the reference for the full sequence.
 
+## Tests (no TV needed)
+
+```bash
+git submodule update --init --depth 1 third_party/moonlight-tizen
+sh tests/build-esplus-ecore-test.sh   # engine: player, video, audio, pad, start settings, ML-ERROR line
+node tests/mlbridge_test.js           # UI bridge
+```
+
+CI runs them on every pull request (`.github/workflows/tests.yml`). `AGENTS.md` lists
+which test to run after which change.
+
 ## Requirements
 
 - Samsung TV, **Tizen 5.0**, Muse.M, armv7l.
 - A GameStream host on the LAN (Sunshine / GeForce Experience / Wolf).
-- To build: Linux with Docker/podman, the build image, and the TV's `/lib` + `/usr/lib` (copied once).
+- To build: Linux with Docker/podman, the build image, and the TV's `/usr/lib` (copied once).
 
 ## Repository layout
 

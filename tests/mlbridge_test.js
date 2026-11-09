@@ -5,7 +5,8 @@ var logs = [], warns = [], errs = [], timers = [], now = 0, tid = 1;
 var byId = {}, domReady = null, remoteUp = false, hostDead = false, launchFails = false, launches = 0, sentAt = 0, sent = [], listener = null, handled = [];
 var cleared = {}, pads = [];
 var padListener = null, padCapture = null;
-var win = { addEventListener: function (ev, f, cap) { if (ev === 'gamepadinputchanged') { padListener = f; padCapture = cap; } }, ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
+var winListeners = {};
+var win = { addEventListener: function (ev, f, cap) { (winListeners[ev] = winListeners[ev] || []).push(f); if (ev === 'gamepadinputchanged') { padListener = f; padCapture = cap; } }, ML_TRACE: true, handleMessage: function (m) { handled.push(m); } };
 var tizen = {
   ApplicationControl: function (op) { this.operation = op; },
   ApplicationControlData: function (k, v) { this.key = k; this.value = v; },
@@ -151,6 +152,23 @@ test('startRequest gameMode a[27]', async function () {
   assert.strictEqual(f.fullRange, 'true');
   reply(f.id, {});
   await p;
+});
+
+test('startRequest performanceStats a[29] turns the overlay on at Connection Established', async function () {
+  for (var want of [true, false, undefined]) {
+    var a = ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]; a[29] = want;
+    sent.length = 0;
+    var p = win.sendMessage('startRequest', a);
+    reply(fields(sent[0]).id, {}); await p;
+    sent.length = 0;
+    listener([{ key: 'event', value: 'Connection Established' }]);
+    advance(250);
+    var t = sent.map(fields).filter(function (f) { return f.cmd === 'toggleStats'; });
+    assert.strictEqual(t.length, want ? 1 : 0, String(want));
+    if (want) { assert.strictEqual(t[0].on, 'true'); reply(t[0].id, {}); await Promise.resolve(); }
+    listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  }
+  handled.length = 0;   // 'event passes string' expects only its own event
 });
 
 test('pair mapping and serverCert', async function () {
@@ -322,6 +340,32 @@ test('mlDiag prints the host report line by line', async function () {
   assert.ok(logs.indexOf('[MLDIAG] diag#1 summary: file: read=ok exec=ok, dlopen ok') >= 0);
 });
 
+test('mlGameMode sends tvGameMode and logs the rc', async function () {
+  sent.length = 0;
+  assert.ok(/off/.test(win.mlGameMode(false)));
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'tvGameMode'); assert.strictEqual(f.on, 'false'); assert.ok(!('saveType' in f));
+  reply(f.id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode off -> rc 0') >= 0);
+  win.mlGameMode(true, 0);
+  f = fields(sent[1]);
+  assert.strictEqual(f.on, 'true'); assert.strictEqual(String(f.saveType), '0');
+  reply(f.id, { error: 'not supported' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode failed') === 0; }));
+});
+
+test('page gone: pagehide then unload send one stopStream, only during a stream', async function () {
+  function gone(ev) { (winListeners[ev] || []).forEach(function (f) { f({}); }); }
+  function stops() { return sent.map(fields).filter(function (f) { return f.cmd === 'stopStream'; }).length; }
+  sent.length = 0; gone('pagehide'); gone('unload');
+  assert.strictEqual(stops(), 0, 'no stream');
+  pads = [];
+  listener([{ key: 'event', value: 'Connection Established' }]);
+  gone('pagehide'); gone('unload');
+  assert.strictEqual(stops(), 1);
+  handled.length = 0;
+});
+
 test('mlDiag("launch") tries each way while the host does not run', async function () {
   var n = logs.length, l0 = launches;
   win.mlDiag('launch');
@@ -359,8 +403,9 @@ test('event with a long diag sent in parts is joined', async function () {
   assert.ok(errs.indexOf('[ML-ERROR] ' + line) >= 0);
 });
 
-var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'addepth', value: '8' }, { key: 'fps', value: '60' },
-  { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' }];
+var STATS = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'fps', value: '60' },
+  { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' },
+  { key: 'asent', value: '190' }, { key: 'adrop', value: '3' }, { key: 'afail', value: '1' }];
 async function toggleStats(err, on) {
   var n = sent.length, p = win.SyncFunctions.toggleStats();
   advance(250);
@@ -381,9 +426,36 @@ test('mlstats updates the overlay and is not passed to handleMessage', async fun
   listener(STATS);
   var el = byId.mlstats;
   assert.ok(el && el.style.display !== 'none' && el.id === 'mlstats');
-  assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms (audio 8 ms)');
+  assert.strictEqual(el.textContent.split('\n')[0], 'depth 12 ms');
   assert.ok(/play 12\.3 s/.test(el.textContent), el.textContent);
+  assert.ok(/\nhost audio sent 190 drop 3 fail 1$/.test(el.textContent), el.textContent);
   assert.strictEqual(handled.length, h);
+});
+
+test('mlaroute is not passed to handleMessage; native stops the Web Audio scheduler', async function () {
+  var h = handled.length, stopped = 0;
+  win.mlAudioStop = function () { stopped++; };
+  win.mlAudioStats = function () { return { received: 1, scheduled: 1, dropped: 0, empty: 0, resyncs: 0, underruns: 0, headroomMs: 40 }; };
+  listener([{ key: 'event', value: 'mlaroute' }, { key: 'route', value: 'webaudio' }]);
+  assert.strictEqual(stopped, 0);                   // webaudio: the scheduler keeps running
+  assert.strictEqual(handled.length, h);
+  listener([{ key: 'event', value: 'mlstats' }].concat(STATS.slice(1)));   // web audio counters still shown
+  assert.ok(/web audio rx 1/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  listener([{ key: 'event', value: 'mlaroute' }, { key: 'route', value: 'native' }]);
+  assert.strictEqual(stopped, 1);                   // native: the scheduler is stopped
+  assert.strictEqual(handled.length, h);
+  var NATIVE = [{ key: 'event', value: 'mlstats' }, { key: 'depth', value: '12' }, { key: 'fps', value: '60' },
+    { key: 'drop', value: '0' }, { key: 'full', value: '0' }, { key: 'uo', value: '0/0' }, { key: 'err', value: '0' }, { key: 'rec', value: '0' }, { key: 'play', value: '12300' },
+    { key: 'aroute', value: 'native' }, { key: 'aframes', value: '990' }, { key: 'auo', value: '1/2' }, { key: 'adrops', value: '3' }, { key: 'abuf', value: '50' }];
+  listener(NATIVE);                                 // native counters replace the web audio lines
+  assert.ok(/audio native  buf 50 ms  frames 990/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  assert.ok(/under\/over 1\/2  dropped 3/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  assert.ok(!/web audio rx/.test(byId.mlstats.textContent), byId.mlstats.textContent);
+  listener([{ key: 'event', value: 'mlaroute' }, { key: 'route', value: 'bogus' }]);   // unknown: ignored
+  listener(NATIVE);
+  assert.ok(/audio native/.test(byId.mlstats.textContent));   // the bogus route changed nothing: native stats still render
+  delete win.mlAudioStop; delete win.mlAudioStats;
+  // leave the overlay on: the next test toggles it off (as it did before this test existed)
 });
 
 test('a second toggle hides the overlay', async function () {

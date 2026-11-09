@@ -31,11 +31,10 @@ done
 
 # libmlengine.so: engine objects + the static deps (moonlight-common-c core,
 # libgamestream, mbedcrypto) + the TV's shared libs, resolved into the .so.
-# --hash-style=both: the .NET host loads the engine from memory (so downloaded
-# engine updates apply without rewriting the app folder) and its fallback ELF
-# loader resolves symbols via a SYSV DT_HASH. The engine is also built TLS-free
-# (that loader can't do R_ARM_TLS_*); verified: no _Thread_local in the
-# engine/moonlight-common-c.
+# --hash-style=both and a TLS-free engine (no _Thread_local in the engine or
+# moonlight-common-c): the .NET host loads the engine with dlopen (from a memfd,
+# then the packaged file) and has no ELF loader of its own; keep both until a TV
+# test shows they are not needed.
 "$GCC" --sysroot=$DEPS/sysroot $ARCH $LOPT -shared -Wl,-soname,libmlengine.so \
   -Wl,--hash-style=both -Wl,--wrap=PltEncryptMessage \
   -o "$OUT/libmlengine.so" \
@@ -62,7 +61,7 @@ for s in ml_engine_start ml_engine_running ml_engine_wait ml_engine_stop \
          ml_engine_set_log_cb ml_engine_get_stats ml_engine_start_session_v2 ml_engine_last_error \
          ml_engine_gamepad_arrival ml_engine_gamepad_state \
          ml_engine_set_audio_cb ml_engine_set_audio_drops ml_engine_set_audio_host_stats \
-         ml_engine_set_gamemode; do
+         ml_engine_set_gamemode ml_engine_tv_game_mode ml_engine_get_audio_route ml_engine_get_audio_stats; do
   "$OBJD" -T "$OUT/libmlengine.so" | grep -q " $s\$" || miss="$miss $s"
 done
 [ -z "$miss" ] && echo "ABI exported: ml_engine_* OK" || { echo "MISSING ABI:$miss"; exit 1; }

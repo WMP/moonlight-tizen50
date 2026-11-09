@@ -20,7 +20,6 @@
 #include "mltrace.h"
 
 extern esplusplayer_handle esplus_create_open(void);
-extern esplusplayer_handle esplus_handle(void);
 extern int esplus_set_window(int w, int h);
 extern void esplus_prepare(void);
 extern int esplus_add_video_info(const esplusplayer_video_stream_info *vi);
@@ -60,7 +59,7 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
   else if (videoFormat & VIDEO_FORMAT_MASK_H265) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_HEVC;
   else { VLOG("unsupported videoFormat 0x%x\n", videoFormat); MLT("video setup -> -1 (format)"); return -1; }
 
-  if (!esplus_create_open()) { MLT("video setup -> -1 (player)"); return -1; }   /* audio init may have created it */
+  if (!esplus_create_open()) { MLT("video setup -> -1 (player)"); return -1; }
   int wrc = esplus_set_window(width, height);
   mldiag_player("win", wrc);
   if (wrc != 0) { MLT("video setup -> -1 (window)"); return -1; }
@@ -81,6 +80,7 @@ static void VidDecCleanup(void) { MLT("video cleanup"); esplus_close(); free(s_s
 
 static int VidDecSetup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
   int rc = VidDecSetup_(videoFormat, width, height, redrawRate, context, drFlags);
+  if (rc != 0) esplus_close();   /* common-c skips cleanup when setup fails: do not leave the player open */
   mldiag_video_setup(videoFormat, width, height, redrawRate, rc);
   return rc;
 }

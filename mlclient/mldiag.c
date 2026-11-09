@@ -14,7 +14,7 @@
 
 static pthread_mutex_t s_mu = PTHREAD_MUTEX_INITIALIZER;
 static mldiag_cfg s_cfg;
-static char s_appver[64], s_gfever[64], s_rtsp[12] = "-";
+static char s_appver[64], s_gfever[64], s_rtsp[12] = "-", s_host[256];   /* s_host: only to mask the cc lines */
 static long long s_t0;
 static char s_first[FIRST_N][LINE_MAX_CC + 1], s_last[LAST_N][LINE_MAX_CC + 1];
 static int s_nlines;                      /* total cc lines seen */
@@ -22,6 +22,7 @@ static char s_out[OUT_MAX]; static int s_code;
 static int s_vfmt, s_vw, s_vh, s_vfps, s_vrc, s_vset;
 static int s_rb_open = -99, s_rb_addv = -99, s_rb_disp = -99, s_rb_prep = -99;   /* player rebuild steps */
 static int s_open = -99, s_win = -99, s_prep = -99, s_pdone = -99, s_start = -99, s_state = -99;   /* -99 = not reached */
+static int s_cu_n, s_cu_depth = -1, s_cu_rc = -99;   /* catch-up seek: count, depth before, result; -1/-99 = not reached */
 static int s_first_pkt_ms = -1, s_sub_last_bad, s_vfail_last, s_afail_last;
 /* absolute now_ms() of the player events, -1 = not reached; printed relative to s_t_prep. Under s_mu (the hot path
    reads s_t_v1/s_t_a1 atomically and locks only for the first success). */
@@ -36,7 +37,10 @@ static unsigned long long s_abytes;       /* PCM bytes handed to the audio callb
 static int s_adrops, s_asent, s_asendfail;   /* the host's audio counters (last report): dropped, sent to the UI, failed sends */
 static int s_aout_off = -1, s_aout_end;   /* where the aout section sits in s_out (-1 = none); mldiag_last re-renders it */
 static int s_adec_err;                    /* last libopus error */
-static int s_aout;                        /* audio output: 0 not reached, 1 callback present, 2 none (no callback) */
+static int s_aout;                        /* audio output: 0 not reached, 1 callback present, 2 none (no callback), 3 native, 4 native -> callback fallback */
+static char s_aio_reason[48] = "-";       /* why the native output is not used (audio_opus.c token) */
+static unsigned s_an_frames, s_an_under, s_an_over, s_an_drops;   /* native audio-io counters (last report kept) */
+static int s_an_bufms;                    /* ring-buffer fill in ms at the last report */
 static int s_pad_rc;                      /* last failed pad call rc */
 static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
 /* the noted /launch or /resume (survives mldiag_reset until one reset consumes it) */
@@ -87,6 +91,23 @@ void mldiag_pad(int arrival, int rc) {
 }
 
 void mldiag_aout(int has_cb) { __atomic_store_n(&s_aout, has_cb ? 1 : 2, __ATOMIC_RELAXED); }
+void mldiag_aout_native(int active) { __atomic_store_n(&s_aout, active ? 3 : 4, __ATOMIC_RELAXED); }
+/* Why the native output is not used; shown in the "aout webaudio fallback=native" variant.
+   The audio_opus.c token (no-library, no-symbols, channels-N, create-N, prepare-N, write-N, oom, no-thread). */
+void mldiag_aout_reason(const char *reason) {
+  pthread_mutex_lock(&s_mu);
+  snprintf(s_aio_reason, sizeof s_aio_reason, "%s", reason && *reason ? reason : "-");
+  for (char *p = s_aio_reason; *p; p++) if (*p == '\n' || *p == '\r' || *p == '|') *p = ' ';   /* one line, no section breaks */
+  pthread_mutex_unlock(&s_mu);
+}
+/* Native counters: written by the audio worker once per event (cheap stores). */
+void mldiag_anative(unsigned frames, unsigned underruns, unsigned overruns, unsigned drops, int buf_ms) {
+  __atomic_store_n(&s_an_frames, frames, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_under, underruns, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_over, overruns, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_drops, drops, __ATOMIC_RELAXED);
+  __atomic_store_n(&s_an_bufms, buf_ms, __ATOMIC_RELAXED);
+}
 void mldiag_aframe(int bytes) { INC(C_AFRAMES); __atomic_fetch_add(&s_abytes, (unsigned long long)bytes, __ATOMIC_RELAXED); }
 void mldiag_adrops(int dropped) { __atomic_store_n(&s_adrops, dropped, __ATOMIC_RELAXED); }
 void mldiag_ahost(int sent, int dropped, int send_failures) {
@@ -95,6 +116,9 @@ void mldiag_ahost(int sent, int dropped, int send_failures) {
 }
 void mldiag_idr_retry(void) { INC(C_IDRRETRY); }
 void mldiag_rebuild(void) { INC(C_REBUILD); }
+void mldiag_catchup(int depth_ms, int seek_ok) {
+  pthread_mutex_lock(&s_mu); s_cu_n++; s_cu_depth = depth_ms; s_cu_rc = seek_ok; pthread_mutex_unlock(&s_mu);
+}
 
 
 void mldiag_adec(int ok, int err) {
@@ -105,8 +129,10 @@ void mldiag_adec(int ok, int err) {
 void mldiag_reset(const mldiag_cfg *cfg) {
   pthread_mutex_lock(&s_mu);
   memset(s_c, 0, sizeof s_c); s_ctl_iv = -1; s_pad_rc = 0; s_adec_err = 0;
-  s_aout = 0; s_abytes = 0; s_adrops = s_asent = s_asendfail = 0; s_aout_off = -1;
+  s_aout = 0; s_abytes = 0; s_adrops = s_asent = s_asendfail = 0; s_aout_off = -1; s_aio_reason[0] = '-'; s_aio_reason[1] = 0;
+  s_an_frames = s_an_under = s_an_over = s_an_drops = 0; s_an_bufms = 0;
   s_rb_open = s_rb_addv = s_rb_disp = s_rb_prep = -99;
+  s_cu_n = 0; s_cu_depth = -1; s_cu_rc = -99;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
   s_vset = 0; s_open = s_win = s_prep = s_pdone = s_start = s_state = -99; s_first_pkt_ms = -1; s_sub_last_bad = s_vfail_last = s_afail_last = 0;
@@ -117,6 +143,8 @@ void mldiag_reset(const mldiag_cfg *cfg) {
     snprintf(s_appver, sizeof s_appver, "%s", cfg->app_version ? cfg->app_version : "");
     snprintf(s_gfever, sizeof s_gfever, "%s", cfg->gfe_version ? cfg->gfe_version : "");
   } else s_appver[0] = s_gfever[0] = 0;
+  snprintf(s_host, sizeof s_host, "%s", cfg && cfg->host ? cfg->host : "");
+  s_cfg.host = NULL;   /* never kept or printed */
   s_cfg.app_version = s_appver; s_cfg.gfe_version = s_gfever;
   snprintf(s_rtsp, sizeof s_rtsp, "%s", cfg && cfg->rtsp_scheme ? cfg->rtsp_scheme : "-");
   snprintf(s_launch, sizeof s_launch, "-"); snprintf(s_rikey, sizeof s_rikey, "-"); snprintf(s_rikeyid, sizeof s_rikeyid, "-");
@@ -133,7 +161,17 @@ void mldiag_reset(const mldiag_cfg *cfg) {
 
 void mldiag_cc_line(const char *line) {
   if (!line) return;
-  char b[LINE_MAX_CC + 1];
+  char b[LINE_MAX_CC + 1], m[2048];
+  pthread_mutex_lock(&s_mu);
+  size_t hl = strlen(s_host), mn = 0;
+  if (hl) {   /* mask the whole line before the cut, so a cut-off address cannot slip through */
+    for (const char *p = line; *p && mn < sizeof m - 6; ) {
+      if (!strncmp(p, s_host, hl)) { memcpy(m + mn, "<host>", 6); mn += 6; p += hl; }
+      else m[mn++] = *p++;
+    }
+    m[mn] = 0; line = m;
+  }
+  pthread_mutex_unlock(&s_mu);
   size_t n = strlen(line);
   while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
   if (n > LINE_MAX_CC) n = LINE_MAX_CC;
@@ -204,10 +242,17 @@ void mldiag_player(const char *what, int rc) {
 /* The aout section. The host reports its final audio counters after the failure and before it reads the line, so
    mldiag_last renders this section again. */
 static void aout_text(char *d, size_t n) {
-  if (GET_A(s_aout) == 1)
+  int a = GET_A(s_aout);
+  if (a == 3)
+    snprintf(d, n, " | aout native frames=%u underruns=%u overruns=%u drops=%u buf_ms=%d",
+             GET_A(s_an_frames), GET_A(s_an_under), GET_A(s_an_over), GET_A(s_an_drops), GET_A(s_an_bufms));
+  else if (a == 4)   /* native output failed: this session fell back to the callback path */
+    snprintf(d, n, " | aout webaudio fallback=native reason=%s frames=%u bytes=%llu sent=%d drops=%d sendfail=%d",
+             s_aio_reason, GET(C_AFRAMES), GET_A(s_abytes), GET_A(s_asent), GET_A(s_adrops), GET_A(s_asendfail));
+  else if (a == 1)
     snprintf(d, n, " | aout webaudio frames=%u bytes=%llu sent=%d drops=%d sendfail=%d", GET(C_AFRAMES), GET_A(s_abytes), GET_A(s_asent), GET_A(s_adrops), GET_A(s_asendfail));
   else
-    snprintf(d, n, " | aout none reason=%s", GET_A(s_aout) == 2 ? "no-callback" : "-");
+    snprintf(d, n, " | aout none reason=%s", a == 2 ? "no-callback" : "-");
 }
 
 static const char *code_name(int c) {
@@ -252,6 +297,7 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d state=%d rebuilds=%u rb=%d/%d/%d/%d vsub=%u asub=%u subfail=%u/%d vfail=%u/%d afail=%u/%d adec=%u adec_fail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start, s_state, GET(C_REBUILD), s_rb_open, s_rb_addv, s_rb_disp, s_rb_prep,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, GET(C_VSUBFAIL), s_vfail_last, GET(C_ASUBFAIL), s_afail_last,
       GET(C_ADEC), GET(C_ADECFAIL), __atomic_load_n(&s_adec_err, __ATOMIC_RELAXED), player_errors, player_last_error);
+  if (s_cu_n) ADD(" catchup=%d/%d/%d", s_cu_n, s_cu_depth, s_cu_rc); else ADD(" catchup=0/-/-");
   char tS[4][24], pS[2][24];   /* ms after prepare_async, "-" = not reached */
   const long long ev[4] = { s_t_pdone, s_t_err, s_t_v1, s_t_a1 }, pv[2] = { s_vpts1, s_apts1 };
   for (int i = 0; i < 4; i++) { if (ev[i] < 0 || s_t_prep < 0) snprintf(tS[i], sizeof tS[i], "-"); else snprintf(tS[i], sizeof tS[i], "%lld", ev[i] - s_t_prep); }

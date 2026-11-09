@@ -78,10 +78,11 @@ static void load_cfg(void) {
   esplus_cfg.start_timeout_ms = mlc_env_int("MLENGINE_START_TIMEOUT_MS", 5000);   /* 0 = off */
   esplus_cfg.fatal_stall_ms = mlc_env_int("MLENGINE_FATAL_STALL_MS", 10000);   /* 0 = off */
   esplus_cfg.rebuild_max = mlc_env_int("MLENGINE_PLAYER_REBUILD_MAX", 1);   /* 0 = off */
-  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d",
+  esplus_cfg.catchup_ms = mlc_env_int("MLENGINE_CATCHUP_MS", 150);   /* 0 = off */
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
-      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max);
+      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms);
 }
 
 static uint64_t s_last_video_pts_ms;   /* under s_lock */
@@ -141,6 +142,7 @@ static int s_stall_armed, s_recover_count, s_have_recover, s_off_logged;
 static unsigned s_vtries, s_stall_vtries;   /* video packets passed to submit_packet (any result); at the last time change */
 static uint64_t s_start_t0;  /* tick time of the first tick after a video submit while not started; 0 = none */
 static int s_fatal_set;
+static int s_catchup_done, s_catchup_hits;   /* one-time catch-up seek; consecutive ticks above catchup_ms */
 
 /* IDR request retry at start: the first request can be lost before the host's pipeline is up. */
 static uint64_t s_idr_t0, s_idr_last;
@@ -234,6 +236,7 @@ static void rebuild_begin(struct rb_job *j, const char *why) {
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_error_pending = 0;
   s_stall_play = s_stall_t = 0; s_stall_sub = 0; s_stall_armed = 0; s_stall_vtries = s_vtries; s_start_t0 = 0;
   s_fps_t0 = 0; s_tick_prev_ms = 0; s_corr_us = 0; s_corr_ms = 0;
+  s_catchup_done = s_catchup_hits = 0;   /* the new player builds a new backlog */
 }
 
 /* no lock held on entry */
@@ -306,6 +309,21 @@ void esplus_sample_tick(uint64_t now_ms) {
         s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted;
       }
       if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
+      /* backlog from the frames submitted during prepare_async never drains: one flushing seek to the newest frame, once.
+         Two ticks in a row, so a single spike does not trigger it. */
+      if (esplus_cfg.catchup_ms && !s_catchup_done && !s_conflicted && play > 0) {
+        s_catchup_hits = esplus_stats.depth_ms > esplus_cfg.catchup_ms ? s_catchup_hits + 1 : 0;
+        if (s_catchup_hits >= 2) {
+          s_catchup_done = 1;   /* even if the seek fails: never retry in a loop */
+          int ok = esplusplayer_seek(s_pl, s_last_video_pts_ms);
+          mldiag_catchup(esplus_stats.depth_ms, ok);
+          PLOG("catchup: depth %d ms, seek %llu ms -> %d\n", esplus_stats.depth_ms, (unsigned long long)s_last_video_pts_ms, ok);
+          MLT("catchup: depth %d ms, seek %llu ms -> %d", esplus_stats.depth_ms, (unsigned long long)s_last_video_pts_ms, ok);
+          s_corr_us = 0; s_corr_ms = 0;
+          s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted; s_stall_vtries = s_vtries;
+          s_need_idr = 1;
+        }
+      }
       s_tick_prev_ms = now_ms;
       MLT("stats depth=%dms fps=%u submitted=%u", esplus_stats.depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
       /* stall: playing time stopped while we keep submitting. Armed after the first non-zero time. */
@@ -438,6 +456,7 @@ esplusplayer_handle esplus_create_open(void) {
     s_stall_play = s_stall_t = s_last_recover_ms = 0; s_stall_sub = 0;
     s_stall_armed = s_recover_count = s_have_recover = s_off_logged = 0;
     s_prepare_called = 0; s_start_tried = 0; s_rebuilds = 0; s_have_vinfo = 0; s_idr_t0 = s_idr_last = 0; s_idr_n = 0; s_vtries = s_stall_vtries = 0; s_start_t0 = 0; s_fatal_set = 0;
+    s_catchup_done = s_catchup_hits = 0;
     s_pl = esplusplayer_create();
     MLT("esplusplayer_create -> %p", (void *)s_pl);
     if (s_pl) {
@@ -454,8 +473,6 @@ esplusplayer_handle esplus_create_open(void) {
   pthread_mutex_unlock(&s_lock);
   return s_pl;
 }
-
-esplusplayer_handle esplus_handle(void) { return s_pl; }
 
 /* Adds the video stream and keeps a copy for a player rebuild. A codec_data pointer is not kept (it may not outlive
    the call): the copy has NULL/0. Our H.264/HEVC path passes none. */
@@ -615,6 +632,7 @@ void esplus_close(void) {
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_called = 0;
   s_last_video_pts_ms = 0; s_fps_t0 = 0;
   s_corr_us = 0; s_corr_ms = 0; s_tick_prev_ms = 0;
+  s_catchup_done = s_catchup_hits = 0;
   pthread_mutex_unlock(&s_lock);
   /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would
      shut down the host app's own ecore loop. */

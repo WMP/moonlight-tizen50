@@ -112,7 +112,8 @@ static int start_connection(void) {
                     g_sc.supportedVideoFormats, g_sc.colorSpace, g_sc.colorRange, g_sc.audioConfiguration,
                     g_si.serverCodecModeSupport, g_sc.encryptionFlags,
                     g_si.serverInfoAppVersion, g_si.serverInfoGfeVersion,
-                    (const unsigned char *)g_sc.remoteInputAesKey, 0, rtspscheme };
+                    (const unsigned char *)g_sc.remoteInputAesKey, 0, rtspscheme,
+                    (const char *)g_si.address };
   { unsigned id; memcpy(&id, g_sc.remoteInputAesIv, 4); dc.rikeyid = (int)ntohl(id); }   /* rikeyid is the IV's first 4 bytes, big-endian */
   mldiag_reset(&dc);
   int err = LiStartConnection(&g_si, &g_sc, &cl, &dr, &ar, NULL, 0, NULL, 0);
@@ -173,6 +174,8 @@ int ml_engine_start(const char *host, int appId, const char *pin,
   return 0;
 }
 
+/* The audio route/stats exports live in audio_opus.c (it owns the audio state). */
+
 int ml_engine_get_stats(ml_engine_stats *out) {
   if (!out || out->struct_size < (int32_t)sizeof *out) return GS_INVALID;
   const esplus_stats_t *s = &esplus_stats;
@@ -232,6 +235,15 @@ static int hexval(char c) {
   return -1;
 }
 
+/* A bad start setting is a failed command: one ML-ERROR line (stage "settings"). */
+static int invalid_settings(int width, int height, int fps, int bitrate_kbps, const char *why) {
+  mldiag_cfg c = { width, height, fps, bitrate_kbps, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, 0, NULL, NULL };
+  mldiag_reset(&c);
+  mldiag_fail(GS_INVALID, 0, "settings", 0, 0, 0, 0, 0, 0, 0, 0);
+  MLT("ml_engine_start_session -> GS_INVALID (%s)", why); (void)why;
+  return GS_INVALID;
+}
+
 static int start_session_impl(const char *host, int width, int height, int fps, int bitrate_kbps,
                               const char *rikey_hex, int rikeyid, const char *app_version,
                               const char *gfe_version, const char *rtsp_url,
@@ -242,15 +254,14 @@ static int start_session_impl(const char *host, int width, int height, int fps, 
       rikeyid, app_version ? app_version : "(null)", gfe_version ? gfe_version : "(null)",
       rtsp_url ? "(set)" : "(null)", server_codec_mode_support, video_codec ? video_codec : "(null)",
       hdr, audio_config ? audio_config : "(null)", full_range);
-  g_gamemode = 0;   /* unless the caller opts in for this session */
   if (g_running) { MLT("ml_engine_start_session -> 0 (already streaming)"); return 0; }
   if (g_started) ml_engine_stop();
   mldiag_reset(NULL);   /* an early failure must not report the previous session */
-  if (!host || !rikey_hex || strlen(rikey_hex) != 32) { MLT("ml_engine_start_session -> GS_INVALID"); return GS_INVALID; }
+  if (!host || !rikey_hex || strlen(rikey_hex) != 32) return invalid_settings(width, height, fps, bitrate_kbps, "host or rikey length");
   unsigned char key[16];
   for (int i = 0; i < 16; i++) {
     int hi = hexval(rikey_hex[i * 2]), lo = hexval(rikey_hex[i * 2 + 1]);
-    if (hi < 0 || lo < 0) { MLT("ml_engine_start_session -> GS_INVALID (rikey hex)"); return GS_INVALID; }
+    if (hi < 0 || lo < 0) return invalid_settings(width, height, fps, bitrate_kbps, "rikey hex");
     key[i] = (unsigned char)(hi << 4 | lo);
   }
   if (!width)  width = 1920;
@@ -260,8 +271,7 @@ static int start_session_impl(const char *host, int width, int height, int fps, 
   /* validate at the ABI boundary: bad values return an error the host can report */
   if (width < 320 || width > 7680 || height < 240 || height > 4320 || fps < 10 || fps > 240 ||
       bitrate_kbps < 500 || bitrate_kbps > 500000 || !*host) {
-    MLT("ml_engine_start_session -> GS_INVALID (bad stream settings)");
-    return GS_INVALID;
+    return invalid_settings(width, height, fps, bitrate_kbps, "bad stream settings");
   }
   snprintf(g_sess_host, sizeof g_sess_host, "%s", host);
   snprintf(g_sess_appver, sizeof g_sess_appver, "%s", app_version ? app_version : "");
