@@ -81,10 +81,11 @@ static void load_cfg(void) {
   esplus_cfg.fatal_stall_ms = mlc_env_int("MLENGINE_FATAL_STALL_MS", 10000);   /* 0 = off */
   esplus_cfg.rebuild_max = mlc_env_int("MLENGINE_PLAYER_REBUILD_MAX", 1);   /* 0 = off */
   esplus_cfg.catchup_ms = mlc_env_int("MLENGINE_CATCHUP_MS", 150);   /* 0 = off */
-  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d",
+  esplus_cfg.sps_patch = mlc_env_int("MLENGINE_SPS_PATCH", 1);   /* 0 = off */
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d sps_patch=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
-      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms);
+      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms, esplus_cfg.sps_patch);
 }
 
 static uint64_t s_last_video_pts_ms;   /* under s_lock */

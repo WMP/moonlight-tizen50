@@ -50,6 +50,7 @@ The point of this repo is to improve the client itself:
   It also runs `tests/audio_opus_test.c` (Opus decode to PCM, the host audio callback); run it after touching `mlclient/audio_opus.c`.
   It also runs `tests/engine_api_test.c` (start settings, Game Mode, rikey IV, host masking); run it after touching `mlclient/engine_api.c`.
   It also runs `tests/ctlcrypto_test.c` (control-stream encrypt check); run it after touching `mlclient/ctlcrypto.c`.
+  It also runs `tests/h264_sps_test.c` (SPS patch, checked with the h264bitstream reader); run it after touching `mlclient/h264_sps.c`.
 - CI runs all of these on every pull request (`.github/workflows/tests.yml`).
 - UI bridge self-test (needs only node): `node tests/mlbridge_test.js`. Run it after touching
   `pkg/ui/mlbridge.js`.

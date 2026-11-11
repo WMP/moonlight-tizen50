@@ -16,6 +16,7 @@
 #include "Limelight.h"
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
+#include "h264_sps.h"
 #include "mldiag.h"
 #include "mltrace.h"
 
@@ -30,6 +31,7 @@ extern void esplus_close(void);
 #define VLOG(...) fprintf(stderr, "[video] " __VA_ARGS__)
 
 static int s_fps;
+static int s_h264;   /* the stream is H.264: SPS entries may get a bitstream_restriction */
 static uint8_t *s_scratch;
 static size_t s_scratch_cap;
 static uint64_t s_base_pts_ms;
@@ -54,6 +56,7 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
   (void)context; (void)drFlags;
   MLT("video setup fmt=0x%x %dx%d@%d", videoFormat, width, height, redrawRate);
   s_fps = redrawRate > 0 ? redrawRate : 60;
+  s_h264 = (videoFormat & VIDEO_FORMAT_MASK_H264) != 0;
   uint32_t mime;
   if (videoFormat & VIDEO_FORMAT_MASK_H264) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_H264;
   else if (videoFormat & VIDEO_FORMAT_MASK_H265) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_HEVC;
@@ -101,11 +104,24 @@ static int VidDecSubmit(PDECODE_UNIT du) {
     __atomic_fetch_add(&esplus_stats.dropped_late, 1, __ATOMIC_RELAXED);
     return DR_NEED_IDR;   /* later frames reference this one: common-c drops them and asks for an IDR */
   }
-  if (ensure_scratch((size_t)du->fullLength)) return DR_NEED_IDR;
-  size_t off = 0;
+  if (ensure_scratch((size_t)du->fullLength + H264_SPS_EXTRA)) return DR_NEED_IDR;
+  size_t off = 0, grown = 0;   /* grown: bytes the patched SPS entries added so far (never above H264_SPS_EXTRA) */
   for (PLENTRY e = du->bufferList; e; e = e->next) {
-    memcpy(s_scratch + off, e->data, (size_t)e->length);
-    off += (size_t)e->length;
+    const uint8_t *src = (const uint8_t *)e->data;
+    size_t len = (size_t)e->length;
+    if (s_h264 && e->bufferType == BUFFER_TYPE_SPS) {
+      uint8_t tmp[H264_SPS_MAX_IN + H264_SPS_EXTRA];
+      size_t n = 0; h264_sps_info si;
+      int pr = h264_sps_patch((const uint8_t *)e->data, len, tmp, sizeof tmp, &n, &si);
+      int st = pr == H264_SPS_ADDED && !esplus_cfg.sps_patch ? MLDIAG_SPS_OFF : pr;
+      mldiag_sps(st, si.profile, si.level, si.ref_frames, si.poc_type, si.vui, si.restr, si.reorder, si.dec_buf);
+      if (pr == H264_SPS_ADDED && esplus_cfg.sps_patch && n <= len + (H264_SPS_EXTRA - grown)) { src = tmp; if (n > len) grown += n - len; len = n; }
+      MLT("sps: %s profile=%d level=%d refs=%d poc=%d vui=%d restr=%d reorder=%d dec_buf=%d len=%d->%d",
+          st == MLDIAG_SPS_ADDED ? "added" : st == MLDIAG_SPS_KEPT ? "kept" : st == MLDIAG_SPS_OFF ? "off" : "err",
+          si.profile, si.level, si.ref_frames, si.poc_type, si.vui, si.restr, si.reorder, si.dec_buf, e->length, (int)len);
+    }
+    memcpy(s_scratch + off, src, len);
+    off += len;
   }
   if (!s_have_base) { s_base_pts_ms = du->presentationTimeMs; s_have_base = 1; }
   int64_t pts_ms;

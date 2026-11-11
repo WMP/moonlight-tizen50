@@ -160,21 +160,39 @@ int main(void) {
   /* audio output, IDR retries */
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=0 | player "));
+  assert(strstr(buf, " idr_retry=0 sps=- | player "));
   assert(strstr(buf, " | aout none reason=- | ctl "));
   mldiag_aout(0);
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " | aout none reason=no-callback | ctl "));
   mldiag_aout(1); mldiag_aframe(960); mldiag_aframe(960); mldiag_adrops(3); mldiag_idr_retry(); mldiag_idr_retry();
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=2 | player "));
+  assert(strstr(buf, " idr_retry=2 sps=- | player "));
   assert(strstr(buf, " | aout webaudio frames=2 bytes=1920 sent=0 drops=3 sendfail=0 | ctl "));
   mldiag_adrops(0);
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " | aout webaudio frames=2 bytes=1920 sent=0 drops=0 sendfail=0 | ctl "));
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=0 | player ") && strstr(buf, " | aout none reason=- | ctl "));
+  assert(strstr(buf, " idr_retry=0 sps=- | player ") && strstr(buf, " | aout none reason=- | ctl "));
+
+  /* the last H.264 SPS: -, added without restriction, kept with the host's values, off, err; reset clears it */
+  mldiag_reset(&CFG);
+  mldiag_sps(MLDIAG_SPS_ADDED, 100, 32, 1, 2, 1, 0, 0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=added/p100/l32/ref1/poc2/vui1/br- | player "));
+  mldiag_sps(MLDIAG_SPS_KEPT, 100, 31, 1, 0, 1, 1, 0, 1);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=kept/p100/l31/ref1/poc0/vui1/br0:1 | player "));
+  mldiag_sps(MLDIAG_SPS_OFF, 66, 30, 2, 0, 0, 0, 0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=off/p66/l30/ref2/poc0/vui0/br- | player "));
+  mldiag_sps(MLDIAG_SPS_ERR, 0, 0, 0, 0, 0, 0, 0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=err | player ") && strlen(buf) < 2048);
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=- | player "));
 
   /* native audio-io output (audio_opus.c): counters, and the fallback variant */
   mldiag_reset(&CFG);

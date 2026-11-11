@@ -41,7 +41,7 @@ for D in "" "-DMLT_TRACE"; do
     -o "$OUT-nosym" "$HERE/esplus_ecore_test.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-nosym" nosym 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" -I"$LC" \
-    -o "$OUT-video" "$HERE/video_esplus_test.c" "$R/mlclient/video_esplus.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
+    -o "$OUT-video" "$HERE/video_esplus_test.c" "$R/mlclient/video_esplus.c" "$R/mlclient/h264_sps.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-video" 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D -I"$R/mlclient" -I"$LC" \
     -o "$OUT-pad" "$HERE/engine_pad_test.c" "$R/mlclient/engine_pad.c" "$R/mlclient/mldiag.c" -lpthread -ldl
@@ -58,6 +58,24 @@ for D in "" "-DMLT_TRACE"; do
     -lpthread -ldl -lm
   "$OUT-audio" 2>/dev/null
 done
+# SPS patch test: the h264bitstream reader/writer (third-party, -w) is the oracle
+H264=third_party/moonlight-tizen/h264bitstream
+HBD="$OUT-h264bs"; rm -rf "$HBD"; mkdir -p "$HBD"
+for f in h264_stream h264_nal h264_sei; do gcc -w -O1 -c "$H264/$f.c" -o "$HBD/$f.o"; done
+gcc -std=gnu11 -Wall -Wextra -Werror -I"$R/mlclient" -I"$H264" -c "$HERE/h264_sps_test.c" -o "$HBD/test.o"
+gcc -std=gnu11 -Wall -Wextra -Werror -I"$R/mlclient" -c "$R/mlclient/h264_sps.c" -o "$HBD/sps.o"
+gcc -o "$OUT-sps" "$HBD/test.o" "$HBD/sps.o" "$HBD"/h264_*.o
+"$OUT-sps"
+# the same under ASan + UBSan, when the compiler has them
+if echo 'int main(void){return 0;}' | gcc -fsanitize=address,undefined -x c - -o "$HBD/probe" >/dev/null 2>&1; then
+  SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+  gcc -std=gnu11 -Wall -Wextra -Werror $SAN -I"$R/mlclient" -I"$H264" -c "$HERE/h264_sps_test.c" -o "$HBD/test_san.o"
+  gcc -std=gnu11 -Wall -Wextra -Werror $SAN -I"$R/mlclient" -c "$R/mlclient/h264_sps.c" -o "$HBD/sps_san.o"
+  gcc $SAN -o "$OUT-sps-san" "$HBD/test_san.o" "$HBD/sps_san.o" "$HBD"/h264_*.o
+  "$OUT-sps-san"
+else
+  echo "h264_sps_test sanitizer run SKIPPED: no ASan/UBSan"
+fi
 # mldiag self-test
 gcc -std=gnu11 -Wall -Wextra -Werror -I"$R/mlclient" -o "$OUT-diag" "$HERE/mldiag_test.c" "$R/mlclient/mldiag.c" -lpthread
 "$OUT-diag"

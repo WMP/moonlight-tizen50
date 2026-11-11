@@ -288,7 +288,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 20; i++) esplus_sample_tick(2400 + i * 600);
     assert(idr_calls == 10);                                                      /* at most 10 */
     mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, " idr_retry=10 |"));
+    assert(strstr(line, " idr_retry=10 sps=- |"));
     esplus_close();
     esplus_create_open(); esplus_prepare(); idr_calls = 0;
     esplus_sample_tick(1000); vsub(0); esplus_sample_tick(2000); esplus_sample_tick(9000); assert(idr_calls == 0);   /* video submitted: none */
