@@ -70,8 +70,7 @@ static void cl_connTerminated(int errorCode) {
   fprintf(stderr, "[ml] connection terminated err=%d\n", errorCode);
   MLT("connectionTerminated err=%d", errorCode);
   if (errorCode != 0) report_failure(errorCode, -1);   /* before g_running = 0: the host reads it after */
-  g_running = 0;
-  if (g_gamemode) ml_avoc_set_game_mode(0);   /* leave the TV's picture mode as it was */
+  g_running = 0;   /* game mode goes off in ml_engine_stop(), after the player is closed */
 }
 /* moonlight-common-c is built with LC_LOG (build-deps-lib.sh): Limelog formats the line
    itself and passes it as the only argument, so it is plain text here; a '%' in it must
@@ -216,12 +215,14 @@ void ml_engine_wait(void) {
 void ml_engine_stop(void) {
   MLT("ml_engine_stop started=%d", g_started);
   g_running = 0;
-  if (g_gamemode) ml_avoc_set_game_mode(0);   /* also on a user stop: restore the picture mode */
   if (!g_started) { MLT("ml_engine_stop -> nothing to stop"); return; }
   g_started = 0;
   fprintf(stderr, "[ml] stopping, releasing overlay\n");
   input_shutdown();
   LiStopConnection();   /* tears down stages -> video sink cleanup -> esplus_close */
+  /* After the player is closed: seen on a TV, an "off" sent before LiStopConnection
+     returns 0 but the TV stays in game mode; the same call later works. */
+  if (g_gamemode) ml_avoc_set_game_mode(0);
   MLT("ml_engine_stop -> done");
 }
 

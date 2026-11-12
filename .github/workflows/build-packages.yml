@@ -89,4 +89,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: out/*
+          # never overwrite a hand-written release body: only supply the
+          # fallback when the release was just created and has no notes yet
+          append_body: true
           body: "Pair: Moonlight-${{ env.VER }}.wgt (web UI) + org.moonlight.host-${{ env.VER }}.tpk (host). Install both with Apps2Samsung. The UI starts the host by itself. Debug (trace) builds: the -debug files."
