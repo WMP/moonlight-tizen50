@@ -4,8 +4,8 @@
  * The TV's avoc daemon (org.tizen.tv.avoc on the system bus) owns the game
  * picture mode. Its client library exposes a plain C call:
  *   int avoc_set_game_mode(int save_type, int mode)
- * save_type 1 keeps the setting per source (restored when off), mode 1 = on,
- * 0 = off. We dlopen the library at first use so the engine still loads on
+ * mode 1 = on, 0 = off. Observed on a TV: save_type 0 is the stored setting (off stays
+ * off after the app exits); save_type 1 is temporary (the TV returns to game mode on exit). We dlopen the library at first use so the engine still loads on
  * TVs without it; a failed call is logged and ignored - it must never break
  * streaming. Not part of the public ABI (used by engine_api.c internally).
  */
@@ -44,8 +44,9 @@ int ml_avoc_set_game_mode(int on) {
   avoc_set_game_mode_fn set = avoc_fn();
   if (!set) return -1;
   if (g_on == on) { MLT("avoc: game mode already %d", on); return 0; }
-  int rc = set(1, on ? 1 : 0);
-  MLT("avoc: set_game_mode(1,%d) -> %d", on ? 1 : 0, rc);
+  int save_type = on ? 1 : 0;   /* off must be stored (0), see the header */
+  int rc = set(save_type, on ? 1 : 0);
+  MLT("avoc: set_game_mode(%d,%d) -> %d", save_type, on ? 1 : 0, rc);
   fprintf(stderr, "[ml] avoc game mode %d -> %d\n", on, rc);
   g_on = rc == 0 ? on : -1;   /* on failure retry the next call */
   return rc;
@@ -58,6 +59,6 @@ int ml_engine_tv_game_mode(int on, int save_type) {
   int rc = set(save_type, on ? 1 : 0);
   MLT("avoc: tv_game_mode(%d,%d) -> %d", save_type, on ? 1 : 0, rc);
   fprintf(stderr, "[ml] avoc tv game mode (%d,%d) -> %d\n", save_type, on ? 1 : 0, rc);
-  if (save_type == 1 && rc == 0) g_on = on ? 1 : 0;   /* keep the session logic consistent */
+  if (rc == 0 && (save_type == 1 || (save_type == 0 && !on))) g_on = on ? 1 : 0;   /* keep the session logic consistent */
   return rc;
 }

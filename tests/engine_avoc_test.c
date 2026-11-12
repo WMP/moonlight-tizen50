@@ -26,11 +26,11 @@ int main(int argc, char **argv) {
   }
   /* fresh process: off reaches the TV (g_on starts at "never") */
   assert(ml_avoc_set_game_mode(0) == 0);
-  assert(g_calls == 1 && g_type == 1 && g_mode == 0);
+  assert(g_calls == 1 && g_type == 0 && g_mode == 0);   /* off: stored setting */
 
   /* on twice: one TV call */
   assert(ml_avoc_set_game_mode(1) == 0 && ml_avoc_set_game_mode(1) == 0);
-  assert(g_calls == 2 && g_mode == 1);
+  assert(g_calls == 2 && g_type == 1 && g_mode == 1);   /* on: temporary */
 
   /* immediate call: always reaches the TV, save_type passes through */
   assert(ml_engine_tv_game_mode(1, 1) == 0);

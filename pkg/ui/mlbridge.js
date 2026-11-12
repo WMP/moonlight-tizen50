@@ -260,6 +260,7 @@
   }
 
   // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
+  var streamGen = 0, gameModeOnStream = false;   // stream counter; did the last session ask for TV game mode
   var wantStats = false;   // startRequest a[29]: turn the overlay on at Connection Established
   var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
   var audioRoute = 'none';   // last mlaroute: 'native' | 'webaudio' | 'none' (see PROTOCOL.md)
@@ -494,7 +495,7 @@
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
-      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); }
+      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); tvGameModeOffLater(); }
       else if (m.event === 'Connection Established') {
         startPads();
         if (wantStats && !statsOn) toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); });
@@ -508,6 +509,21 @@
     if (p.timer) clearTimeout(p.timer);
     if (m.error) p.reject(m.error);
     else p.resolve(m);
+  }
+
+  // The engine's game mode "off" right after the stop returns 0 but the TV keeps game mode; the same call a moment later works.
+  // Off must use save type 0 (stored setting); with save type 1 the TV returns to game mode after the app exits.
+  // shortcut: fixed 2 s delay, found by hand on one TV; make it longer or retry if a TV still keeps game mode.
+  function tvGameModeOffLater() {
+    if (!gameModeOnStream) return;
+    gameModeOnStream = false;   // once per stream end
+    var gen = streamGen;
+    setTimeout(function () {
+      if (gen !== streamGen) return;   // a new stream started meanwhile
+      bridgeCall('tvGameMode', { on: 'false', saveType: '0' }, DEFAULT_TIMEOUT).then(
+        function (r) { console.log('[mlbridge] TV game mode off after stream -> rc ' + r.rc); },
+        function (e) { console.warn('[mlbridge] TV game mode off after stream failed:', e); });
+    }, 2000);
   }
 
   // Send {cmd,id,...fields} and resolve with the reply map. timeoutMs 0 = no timeout.
@@ -545,6 +561,7 @@
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange,
       // a[27] gameMode (the TV's game picture/low-latency mode), a[29] performanceStats (overlay at stream start)
       wantStats = !!a[29];
+      streamGen++; gameModeOnStream = !!a[27];
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
         appVer: a[8], gfeVer: a[9], rtspUrl: a[10], codecMode: a[11],
