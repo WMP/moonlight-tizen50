@@ -65,11 +65,15 @@ static int mlc_env_int(const char *name, int def) {
   return *end || n < 0 ? def : (int)n;   /* every knob is a non-negative amount */
 }
 
+static int s_env_unset;               /* MLENGINE_LATENCY_MODE was unset at load_cfg; "off" is the explicit off switch */
+static volatile int s_auto;           /* env mode unset AND the current stream is 60 fps: nudge is the default */
+
 static void load_cfg(void) {
   const char *m = getenv("MLENGINE_LATENCY_MODE");
+  s_env_unset = !m;
   esplus_cfg.latency_mode = !m ? ESPLUS_LAT_OFF : !strcmp(m, "nudge") ? ESPLUS_LAT_NUDGE
                           : !strcmp(m, "arrival") ? ESPLUS_LAT_ARRIVAL : ESPLUS_LAT_OFF;
-  esplus_cfg.target_depth_ms = mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 50);
+  esplus_cfg.target_depth_ms = mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 100);
   esplus_cfg.nudge_max_ms_per_s = mlc_env_int("MLENGINE_NUDGE_MAX_MS_PER_S", 10);
   esplus_cfg.drop_after_ms = mlc_env_int("MLENGINE_DROP_AFTER_MS", 0);
   esplus_cfg.depth_poll_ms = mlc_env_int("MLENGINE_DEPTH_POLL_MS", 250);
@@ -81,13 +85,15 @@ static void load_cfg(void) {
   esplus_cfg.fatal_stall_ms = mlc_env_int("MLENGINE_FATAL_STALL_MS", 10000);   /* 0 = off */
   esplus_cfg.rebuild_max = mlc_env_int("MLENGINE_PLAYER_REBUILD_MAX", 1);   /* 0 = off */
   esplus_cfg.catchup_ms = mlc_env_int("MLENGINE_CATCHUP_MS", 150);   /* 0 = off */
-  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d",
+  esplus_cfg.sps_patch = mlc_env_int("MLENGINE_SPS_PATCH", 1);   /* 0 = off */
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d sps_patch=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
-      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms);
+      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms, esplus_cfg.sps_patch);
 }
 
 static uint64_t s_last_video_pts_ms;   /* under s_lock */
+static uint64_t s_last_video_t;        /* esplus_mono_ms() of the last accepted video packet; 0 = none; under s_lock */
 static uint64_t s_fps_t0;     /* start of the current fps second; 0 = not started */
 static uint32_t s_fps_sub0;
 
@@ -116,20 +122,64 @@ int32_t esplus_correction_ms(void) { return s_corr_ms; }
 uint32_t esplus_sample_seq(void) { return s_tick_seq; }
 
 
-static void nudge(int32_t depth, uint64_t now_ms) {
-  if (esplus_cfg.latency_mode != ESPLUS_LAT_NUDGE) return;
-  if (s_tick_prev_ms) {
-    int64_t err = (int64_t)depth - esplus_cfg.target_depth_ms, hyst = esplus_cfg.target_depth_ms / 2;
-    if (hyst < 10) hyst = 10;
-    int64_t step = (int64_t)esplus_cfg.nudge_max_ms_per_s * (int64_t)(now_ms - s_tick_prev_ms);   /* us */
-    if (err > hyst) s_corr_us += err * 1000 < step ? err * 1000 : step;
-    else if (err < -hyst) s_corr_us -= -err * 1000 < step ? -err * 1000 : step;
-    /* guard against a broken clock reading */
-    if (s_corr_us > 1000000) s_corr_us = 1000000;
-    if (s_corr_us < -1000000) s_corr_us = -1000000;
-    s_corr_ms = (int32_t)((s_corr_us + (s_corr_us < 0 ? -500 : 500)) / 1000);
-  }
+/* Runtime target depth (ml_engine_set_target_depth_ms): engine lifetime, never reset per session; -1 = not set.
+   esplus_cfg stays read-only after load_cfg; this override wins over it. */
+static volatile int s_target_set = -1;
+#define TARGET_MIN_MS 20
+#define TARGET_MAX_MS 500
+
+/* A set target also turns on nudge pacing when the env mode is off; otherwise it would do nothing on a TV.
+   Nudge is the default (env unset) only at 60 fps: that is the only frame rate measured on a TV. */
+int esplus_lat_mode(void) {
+  if (esplus_cfg.latency_mode == ESPLUS_LAT_OFF &&
+      (__atomic_load_n(&s_target_set, __ATOMIC_RELAXED) >= 0 || __atomic_load_n(&s_auto, __ATOMIC_RELAXED))) return ESPLUS_LAT_NUDGE;
+  return esplus_cfg.latency_mode;
 }
+static int eff_target_ms(void) {
+  int t = __atomic_load_n(&s_target_set, __ATOMIC_RELAXED);
+  return t >= 0 ? t : esplus_cfg.target_depth_ms;
+}
+
+#define NUDGE_FRESH_MS 100     /* a video frame this young: the lead is a real measurement */
+#define NUDGE_HYST_MS 10       /* fixed: a band of target/2 never reached a target near the floor */
+#define NUDGE_BASE_TICKS 4     /* ticks without correction that measure the baseline lead */
+#define NUDGE_BACKOFF 4        /* a too small lead is corrected this many times faster */
+static int s_base_n;                 /* baseline ticks seen since the last reset; under s_lock */
+static volatile int32_t s_lead0;     /* baseline: the smallest lead of those ticks (no correction applied); 0 = not measured */
+static int32_t s_base_min;
+
+static void nudge_reset(void) { s_corr_us = 0; s_corr_ms = 0; s_base_n = 0; s_lead0 = 0; }
+
+/* lead: the newest frame's lead at its submit (depth plus the frame's age). Not called while the mode is off,
+   so a target set at run time starts a fresh baseline. */
+static void nudge(int32_t lead, uint64_t now_ms) {
+  if (esplus_lat_mode() != ESPLUS_LAT_NUDGE) return;
+  int target = eff_target_ms();
+  if (s_base_n < NUDGE_BASE_TICKS) {   /* measure first: the smallest of the first leads (a stale value after a seek is larger, never smaller) */
+    if (!s_base_n || lead < s_base_min) s_base_min = lead;
+    if (++s_base_n < NUDGE_BASE_TICKS) return;
+    s_lead0 = s_base_min > 0 ? s_base_min : 1;
+    MLT("nudge: baseline lead %d ms, target %d ms", s_lead0, target);
+  }
+  if (!s_tick_prev_ms) return;
+  int64_t err = (int64_t)lead - target;
+  int64_t step = (int64_t)esplus_cfg.nudge_max_ms_per_s * (int64_t)(now_ms - s_tick_prev_ms);   /* us */
+  if (err > NUDGE_HYST_MS) s_corr_us += err * 1000 < step ? err * 1000 : step;
+  else if (err < -NUDGE_HYST_MS) s_corr_us -= -err * 1000 < step * NUDGE_BACKOFF ? -err * 1000 : step * NUDGE_BACKOFF;
+  /* Never more than the baseline allows: when the frames are late the measured lead stops following the correction, and
+     without this limit the correction would grow without end.
+     shortcut: the baseline is measured once per reset, so clock drift between host and TV above it is not followed; re-measure if long sessions show the lead growing. */
+  int64_t cap = ((int64_t)s_lead0 - target) * 1000;
+  if (cap < 0) cap = 0;
+  if (s_corr_us > cap) s_corr_us = cap;
+  /* guard against a broken clock reading */
+  if (s_corr_us > 1000000) s_corr_us = 1000000;
+  if (s_corr_us < -1000000) s_corr_us = -1000000;
+  s_corr_ms = (int32_t)((s_corr_us + (s_corr_us < 0 ? -500 : 500)) / 1000);
+}
+
+/* Lock-free: mldiag calls it under its own mutex, and the sampler takes that mutex under s_lock. */
+void esplus_nudge_state(int *corr_ms, int *lead0_ms) { *corr_ms = s_corr_ms; *lead0_ms = s_lead0; }
 
 static pthread_t s_smp_th;
 static pthread_mutex_t s_smp_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -193,7 +243,7 @@ static int recover(const char *why, uint64_t now_ms) {
   int ok = esplusplayer_seek(s_pl, target);
   PLOG("recover (%s) seek %llu ms -> %d\n", why, (unsigned long long)target, ok);
   MLT("recover (%s) seek %llu ms -> %d", why, (unsigned long long)target, ok);
-  s_corr_us = 0; s_corr_ms = 0;
+  nudge_reset();
   s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted;
   s_need_idr = 1;
   int one = 1;   /* on_conflict may store 2 meanwhile, without s_lock: keep it */
@@ -237,7 +287,7 @@ static void rebuild_begin(struct rb_job *j, const char *why) {
   j->old = s_pl; s_pl = NULL; j->gen = s_gen; j->vinfo = s_vinfo;
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_error_pending = 0;
   s_stall_play = s_stall_t = 0; s_stall_sub = 0; s_stall_armed = 0; s_stall_vtries = s_vtries; s_start_t0 = 0;
-  s_fps_t0 = 0; s_tick_prev_ms = 0; s_corr_us = 0; s_corr_ms = 0;
+  s_fps_t0 = 0; s_tick_prev_ms = 0; nudge_reset();
   s_catchup_done = s_catchup_hits = 0;   /* the new player builds a new backlog */
 }
 
@@ -310,7 +360,10 @@ void esplus_sample_tick(uint64_t now_ms) {
         esplus_stats.fps_submitted = esplus_stats.submitted - s_fps_sub0;
         s_fps_t0 = now_ms; s_fps_sub0 = esplus_stats.submitted;
       }
-      if (play > 0) nudge(esplus_stats.depth_ms, now_ms);
+      uint64_t age = s_last_video_t ? esplus_mono_ms() - s_last_video_t : UINT64_MAX;   /* real clock on both sides, not the tick's now_ms (the test passes a fake one) */
+      int fresh = age <= NUDGE_FRESH_MS;                      /* a frame arrived lately: the lead is a real measurement */
+      int32_t lead = esplus_stats.depth_ms + (fresh ? (int32_t)age : 0);   /* the newest frame's lead at its submit */
+      if (play > 0 && fresh) nudge(lead, now_ms);
       /* backlog from the frames submitted during prepare_async never drains: one flushing seek to the newest frame, once.
          Two ticks in a row, so a single spike does not trigger it. */
       if (esplus_cfg.catchup_ms && !s_catchup_done && !s_conflicted && play > 0) {
@@ -321,13 +374,13 @@ void esplus_sample_tick(uint64_t now_ms) {
           mldiag_catchup(esplus_stats.depth_ms, ok);
           PLOG("catchup: depth %d ms, seek %llu ms -> %d\n", esplus_stats.depth_ms, (unsigned long long)s_last_video_pts_ms, ok);
           MLT("catchup: depth %d ms, seek %llu ms -> %d", esplus_stats.depth_ms, (unsigned long long)s_last_video_pts_ms, ok);
-          s_corr_us = 0; s_corr_ms = 0;
+          nudge_reset();
           s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted; s_stall_vtries = s_vtries;
           s_need_idr = 1;
         }
       }
       s_tick_prev_ms = now_ms;
-      MLT("stats depth=%dms fps=%u submitted=%u", esplus_stats.depth_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
+      MLT("stats depth=%dms lead=%dms corr=%dms fps=%u submitted=%u", esplus_stats.depth_ms, lead, s_corr_ms, esplus_stats.fps_submitted, esplus_stats.submitted);
       /* stall: playing time stopped while we keep submitting. Armed after the first non-zero time. */
       if (!s_stall_t || play != s_stall_play) {
         s_stall_play = play; s_stall_t = now_ms; s_stall_sub = esplus_stats.submitted; s_stall_vtries = s_vtries;
@@ -483,6 +536,9 @@ int esplus_add_video_info(const esplusplayer_video_stream_info *vi) {
   s_vinfo = *vi;
   if (vi->codec_data) { MLT("esplus_add_video_info: codec_data is not cached"); s_vinfo.codec_data = NULL; s_vinfo.codec_data_length = 0; }
   s_have_vinfo = 1;
+  int fps60 = vi->framerate_den != 0 && vi->framerate_num == 60ull * vi->framerate_den;
+  __atomic_store_n(&s_auto, s_env_unset && fps60, __ATOMIC_RELAXED);
+  MLT("nudge default: %d (fps %u/%u, env mode %s)", s_env_unset && fps60, vi->framerate_num, vi->framerate_den, s_env_unset ? "unset" : "set");
   int ok = s_pl ? esplusplayer_add_video_stream_info(s_pl, vi) : 0;
   pthread_mutex_unlock(&s_lock);
   return ok;
@@ -606,6 +662,20 @@ int ml_engine_set_stats_osd(int on) {
 }
 int ml_engine_get_stats_osd(void) { return s_osd_win; }
 
+/* Host API: lock-free (s_lock is held by the sampler across player I/O); the sampler reads it at its next tick. */
+int ml_engine_set_target_depth_ms(int ms) {
+  if (ms < 0) return -1;
+  if (ms < TARGET_MIN_MS) ms = TARGET_MIN_MS;
+  if (ms > TARGET_MAX_MS) ms = TARGET_MAX_MS;
+  __atomic_store_n(&s_target_set, ms, __ATOMIC_RELAXED);
+  MLT("ml_engine_set_target_depth_ms(%d)", ms);
+  return ms;
+}
+int ml_engine_get_target_depth_ms(void) {
+  int t = __atomic_load_n(&s_target_set, __ATOMIC_RELAXED);
+  return t >= 0 ? t : mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 100);
+}
+
 /* called from video start; prepares on the first call, later calls do nothing. */
 void esplus_prepare(void) {
   pthread_mutex_lock(&s_lock);
@@ -643,7 +713,7 @@ int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch) {
   if (r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS) {
     uint64_t ms = pkt->pts / 1000000;
     if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) {
-      s_last_video_pts_ms = ms; __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
+      s_last_video_pts_ms = ms; s_last_video_t = esplus_mono_ms(); __atomic_fetch_add(&esplus_stats.submitted, 1, __ATOMIC_RELAXED);
     }
   }
   /* shortcut: sample per-frame trace (first 30, then every 300th, plus each change of the
@@ -671,8 +741,9 @@ void esplus_close(void) {
   }
   s_gen++; s_rebuilds = 0; s_have_vinfo = 0;   /* a queued rebuild display step is now stale */
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_called = 0;
-  s_last_video_pts_ms = 0; s_fps_t0 = 0;
-  s_corr_us = 0; s_corr_ms = 0; s_tick_prev_ms = 0;
+  s_last_video_pts_ms = 0; s_last_video_t = 0; s_fps_t0 = 0;
+  nudge_reset(); s_tick_prev_ms = 0;
+  __atomic_store_n(&s_auto, 0, __ATOMIC_RELAXED);
   s_catchup_done = s_catchup_hits = 0;
   pthread_mutex_unlock(&s_lock);
   /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would

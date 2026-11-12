@@ -12,6 +12,8 @@
 #include "Limelight.h"
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
+#include "h264_sps.h"
+#include "mldiag.h"
 int ecore_cnt, wl2_cnt, disp_ok = 1, win_ok = 1, calls_off_main;
 int ecore_init(void) { return ++ecore_cnt; }
 int ecore_shutdown(void) { return --ecore_cnt; }
@@ -58,9 +60,11 @@ int esplusplayer_get_playing_time(esplusplayer_handle h, uint64_t *t) { (void)h;
 /* submit stub: record packets; return script[0..n_script) in order, then SUCCESS */
 #define MAXP 64
 static int sub_calls, script[16], n_script; static uint64_t rec_ms[MAXP];
+static uint8_t last_pkt[1024]; static size_t last_len;   /* bytes of the last submitted packet */
 int esplusplayer_submit_packet(esplusplayer_handle h, const esplusplayer_es_packet *p) {
   (void)h; int r = sub_calls < n_script ? script[sub_calls] : ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS;
   assert(p->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO && sub_calls < MAXP);
+  assert(p->buffer_size <= sizeof last_pkt); memcpy(last_pkt, p->buffer, p->buffer_size); last_len = p->buffer_size;
   rec_ms[sub_calls++] = p->pts / 1000000; return r;
 }
 static int idr_calls;
@@ -69,16 +73,17 @@ void LiInitializeVideoCallbacks(PDECODER_RENDERER_CALLBACKS c) { memset(c, 0, si
 extern void VidEsplus_FillCallbacks(PDECODER_RENDERER_CALLBACKS cb);
 
 static DECODER_RENDERER_CALLBACKS cb;
+static int vfmt = VIDEO_FORMAT_H264;
 static void script_set(int n, int st) { n_script = n; for (int i = 0; i < n; i++) script[i] = st; }
-/* fresh session: mode may be NULL (off); depth thread off; player prepared */
+/* fresh session: mode NULL = explicit "off", "unset" = env not set (the default); depth thread off; player prepared */
 static void begin(const char *mode, const char *drop) {
   sub_calls = 0; n_script = 0; idr_calls = 0; play_ms = 1;
   setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 in the nudge test: no catch-up seek */
   setenv("MLENGINE_DEPTH_POLL_MS", "0", 1);
-  if (mode) setenv("MLENGINE_LATENCY_MODE", mode, 1); else unsetenv("MLENGINE_LATENCY_MODE");
+  if (mode && !strcmp(mode, "unset")) unsetenv("MLENGINE_LATENCY_MODE"); else setenv("MLENGINE_LATENCY_MODE", mode ? mode : "off", 1);
   if (drop) setenv("MLENGINE_DROP_AFTER_MS", drop, 1); else unsetenv("MLENGINE_DROP_AFTER_MS");
   VidEsplus_FillCallbacks(&cb);
-  assert(cb.setup(VIDEO_FORMAT_H264, 1280, 720, 60, NULL, 0) == 0);
+  assert(cb.setup(vfmt, 1280, 720, 60, NULL, 0) == 0);
   cb.start(); cb_prepared(1);
 }
 static void end(void) { cb.cleanup(); }
@@ -88,6 +93,23 @@ static int frame(unsigned host_ms, int type) {
   du.presentationTimeMs = host_ms; du.frameType = type; du.fullLength = sizeof data; du.bufferList = &e;
   return cb.submitDecodeUnit(&du);
 }
+/* an IDR decode unit of three entries: SPS, PPS, picture data */
+static const uint8_t SPS_NR[] = { 0, 0, 0, 1, 0x67, 0x42, 0xC0, 0x1F, 0xDA, 0x01, 0x40, 0x16, 0xE4 };   /* baseline, no VUI */
+static const uint8_t PPS_B[] = { 0, 0, 0, 1, 0x68, 0xCE, 0x3C, 0x80 };
+static const uint8_t PIC_B[] = { 0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x33, 0xFF };
+static int idr3(const uint8_t *sps, size_t sn) {
+  LENTRY pic = {NULL, (char *)PIC_B, sizeof PIC_B, BUFFER_TYPE_PICDATA}, pps = {&pic, (char *)PPS_B, sizeof PPS_B, BUFFER_TYPE_PPS},
+         e = {&pps, (char *)sps, (int)sn, BUFFER_TYPE_SPS};
+  DECODE_UNIT du; memset(&du, 0, sizeof du);
+  du.frameType = FRAME_TYPE_IDR; du.fullLength = (int)(sn + sizeof PPS_B + sizeof PIC_B); du.bufferList = &e;
+  return cb.submitDecodeUnit(&du);
+}
+/* last_pkt must be: sps_out, then the PPS and the picture data byte for byte */
+static void check_pkt(const uint8_t *sps_out, size_t sn) {
+  assert(last_len == sn + sizeof PPS_B + sizeof PIC_B);
+  assert(!memcmp(last_pkt, sps_out, sn));
+  assert(!memcmp(last_pkt + sn, PPS_B, sizeof PPS_B) && !memcmp(last_pkt + sn + sizeof PPS_B, PIC_B, sizeof PIC_B));
+}
 #define P FRAME_TYPE_PFRAME
 int main(void) {
   /* 1: mode off. First frame is 0; a repeated or backwards host PTS gets prev+1. */
@@ -95,22 +117,30 @@ int main(void) {
   assert(frame(1000, P) == DR_OK && frame(1016, P) == DR_OK && frame(1016, P) == DR_OK && frame(1005, P) == DR_OK);
   assert(rec_ms[0] == 0 && rec_ms[1] == 16 && rec_ms[2] == 17 && rec_ms[3] == 18 && sub_calls == 4);
   end();
-  /* 2: nudge. 10 ms/s: ticks at 1, 2, 3 s give a correction of 0, 10, 20 ms. */
+  /* 2: nudge. 10 ms/s: the first 4 ticks measure the baseline lead; ticks at 4, 5 s give a correction of 10, 20 ms. */
   begin("nudge", NULL);
   frame(0, P); frame(1000, P); play_ms = 100;      /* depth 900 */
-  esplus_sample_tick(1000); esplus_sample_tick(2000); esplus_sample_tick(3000);
+  for (int i = 1; i <= 3; i++) { esplus_sample_tick(i * 1000); assert(esplus_correction_ms() == 0); }
+  esplus_sample_tick(4000); esplus_sample_tick(5000);
   assert(esplus_correction_ms() == 20);
   frame(1100, P); assert(rec_ms[2] == 1100 - 20);
   end();
   /* a correction larger than the relative PTS clamps at 0, then the PTS still rises */
   setenv("MLENGINE_NUDGE_MAX_MS_PER_S", "1000", 1);
   begin("nudge", NULL);
-  frame(0, P); frame(500, P); play_ms = 1;         /* depth 499, target 50 */
-  for (int i = 1; i <= 4; i++) esplus_sample_tick(i * 1000);
+  frame(0, P); frame(2000, P); play_ms = 1;        /* depth 1999, target 100: the cap is above 1 s, the guard holds 1 s */
+  for (int i = 1; i <= 5; i++) esplus_sample_tick(i * 1000);
   assert(esplus_correction_ms() > 510);
   frame(510, P); frame(511, P);
-  assert(rec_ms[2] == 501 && rec_ms[3] == 502);
+  assert(rec_ms[2] == 2001 && rec_ms[3] == 2002);
   end(); unsetenv("MLENGINE_NUDGE_MAX_MS_PER_S");
+  /* 2b: env unset + 60 fps: nudge is the default; the sink submits the corrected PTS */
+  begin("unset", NULL);
+  frame(0, P); frame(1000, P); play_ms = 100;      /* depth 900 */
+  for (int i = 1; i <= 5; i++) esplus_sample_tick(i * 1000);
+  assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE && esplus_correction_ms() == 20);
+  frame(1100, P); assert(rec_ms[2] == 1100 - 20);
+  end();
   /* 3: arrival. PTS follows the arrival clock: starts at 0, never goes back. */
   begin("arrival", NULL);
   for (int i = 0; i < 4; i++) { frame(5000, P); usleep(3000); }   /* host PTS is ignored */
@@ -160,5 +190,31 @@ int main(void) {
   addv_ok = 1;
   assert(cb.setup(VIDEO_FORMAT_H264, 1280, 720, 60, NULL, 0) == 0 && create_calls == 2 && stop_calls == 1);
   end();
+  /* 9: the SPS patch. Direct call = the expected bytes. */
+  uint8_t exp[H264_SPS_MAX_IN + H264_SPS_EXTRA]; size_t en; h264_sps_info si;
+  assert(h264_sps_patch(SPS_NR, sizeof SPS_NR, exp, sizeof exp, &en, &si) == H264_SPS_ADDED && en > sizeof SPS_NR);
+  begin(NULL, NULL);
+  assert(idr3(SPS_NR, sizeof SPS_NR) == DR_OK && sub_calls == 1);
+  check_pkt(exp, en);                              /* patched SPS, PPS and picture untouched */
+  { char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+    assert(strstr(line, " sps=added/p66/l31/ref") && strstr(line, "/br- | player ")); }
+  end();
+  setenv("MLENGINE_SPS_PATCH", "0", 1); begin(NULL, NULL);   /* off: plain concatenation */
+  assert(idr3(SPS_NR, sizeof SPS_NR) == DR_OK);
+  check_pkt(SPS_NR, sizeof SPS_NR);
+  { char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+    assert(strstr(line, " sps=off/p66/l31/ref")); }
+  end(); unsetenv("MLENGINE_SPS_PATCH");
+  vfmt = VIDEO_FORMAT_H265; begin(NULL, NULL);     /* HEVC: never touched */
+  assert(idr3(SPS_NR, sizeof SPS_NR) == DR_OK);
+  check_pkt(SPS_NR, sizeof SPS_NR);
+  end(); vfmt = VIDEO_FORMAT_H264;
+  { static const uint8_t bad[] = { 0, 0, 0, 1, 0x67, 0x42 };   /* truncated SPS */
+    begin(NULL, NULL);
+    assert(idr3(bad, sizeof bad) == DR_OK);
+    check_pkt(bad, sizeof bad);
+    char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+    assert(strstr(line, " sps=err | player "));
+    end(); }
   puts("video esplus ok"); return 0;
 }
