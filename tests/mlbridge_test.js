@@ -372,7 +372,7 @@ test('TV game mode is switched off 2 s after the stream ends', async function ()
   advance(1);
   var c = gmCalls();
   assert.strictEqual(c.length, 1);
-  assert.strictEqual(c[0].on, 'false'); assert.ok(!('saveType' in c[0]));
+  assert.strictEqual(c[0].on, 'false'); assert.strictEqual(String(c[0].saveType), '0');
   reply(c[0].id, { rc: '0' }); await tick();
   assert.ok(logs.indexOf('[mlbridge] TV game mode off after stream -> rc 0') >= 0);
   await start(false);

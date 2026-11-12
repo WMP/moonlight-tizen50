@@ -512,6 +512,7 @@
   }
 
   // The engine's game mode "off" right after the stop returns 0 but the TV keeps game mode; the same call a moment later works.
+  // Off must use save type 0 (stored setting); with save type 1 the TV returns to game mode after the app exits.
   // shortcut: fixed 2 s delay, found by hand on one TV; make it longer or retry if a TV still keeps game mode.
   function tvGameModeOffLater() {
     if (!gameModeOnStream) return;
@@ -519,7 +520,7 @@
     var gen = streamGen;
     setTimeout(function () {
       if (gen !== streamGen) return;   // a new stream started meanwhile
-      bridgeCall('tvGameMode', { on: 'false' }, DEFAULT_TIMEOUT).then(
+      bridgeCall('tvGameMode', { on: 'false', saveType: '0' }, DEFAULT_TIMEOUT).then(
         function (r) { console.log('[mlbridge] TV game mode off after stream -> rc ' + r.rc); },
         function (e) { console.warn('[mlbridge] TV game mode off after stream failed:', e); });
     }, 2000);
