@@ -65,11 +65,15 @@ static int mlc_env_int(const char *name, int def) {
   return *end || n < 0 ? def : (int)n;   /* every knob is a non-negative amount */
 }
 
+static int s_env_unset;               /* MLENGINE_LATENCY_MODE was unset at load_cfg; "off" is the explicit off switch */
+static volatile int s_auto;           /* env mode unset AND the current stream is 60 fps: nudge is the default */
+
 static void load_cfg(void) {
   const char *m = getenv("MLENGINE_LATENCY_MODE");
+  s_env_unset = !m;
   esplus_cfg.latency_mode = !m ? ESPLUS_LAT_OFF : !strcmp(m, "nudge") ? ESPLUS_LAT_NUDGE
                           : !strcmp(m, "arrival") ? ESPLUS_LAT_ARRIVAL : ESPLUS_LAT_OFF;
-  esplus_cfg.target_depth_ms = mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 120);
+  esplus_cfg.target_depth_ms = mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 100);
   esplus_cfg.nudge_max_ms_per_s = mlc_env_int("MLENGINE_NUDGE_MAX_MS_PER_S", 10);
   esplus_cfg.drop_after_ms = mlc_env_int("MLENGINE_DROP_AFTER_MS", 0);
   esplus_cfg.depth_poll_ms = mlc_env_int("MLENGINE_DEPTH_POLL_MS", 250);
@@ -124,9 +128,11 @@ static volatile int s_target_set = -1;
 #define TARGET_MIN_MS 20
 #define TARGET_MAX_MS 500
 
-/* A set target also turns on nudge pacing when the env mode is off; otherwise it would do nothing on a TV. */
+/* A set target also turns on nudge pacing when the env mode is off; otherwise it would do nothing on a TV.
+   Nudge is the default (env unset) only at 60 fps: that is the only frame rate measured on a TV. */
 int esplus_lat_mode(void) {
-  if (esplus_cfg.latency_mode == ESPLUS_LAT_OFF && __atomic_load_n(&s_target_set, __ATOMIC_RELAXED) >= 0) return ESPLUS_LAT_NUDGE;
+  if (esplus_cfg.latency_mode == ESPLUS_LAT_OFF &&
+      (__atomic_load_n(&s_target_set, __ATOMIC_RELAXED) >= 0 || __atomic_load_n(&s_auto, __ATOMIC_RELAXED))) return ESPLUS_LAT_NUDGE;
   return esplus_cfg.latency_mode;
 }
 static int eff_target_ms(void) {
@@ -530,6 +536,9 @@ int esplus_add_video_info(const esplusplayer_video_stream_info *vi) {
   s_vinfo = *vi;
   if (vi->codec_data) { MLT("esplus_add_video_info: codec_data is not cached"); s_vinfo.codec_data = NULL; s_vinfo.codec_data_length = 0; }
   s_have_vinfo = 1;
+  int fps60 = vi->framerate_den != 0 && vi->framerate_num == 60ull * vi->framerate_den;
+  __atomic_store_n(&s_auto, s_env_unset && fps60, __ATOMIC_RELAXED);
+  MLT("nudge default: %d (fps %u/%u, env mode %s)", s_env_unset && fps60, vi->framerate_num, vi->framerate_den, s_env_unset ? "unset" : "set");
   int ok = s_pl ? esplusplayer_add_video_stream_info(s_pl, vi) : 0;
   pthread_mutex_unlock(&s_lock);
   return ok;
@@ -664,7 +673,7 @@ int ml_engine_set_target_depth_ms(int ms) {
 }
 int ml_engine_get_target_depth_ms(void) {
   int t = __atomic_load_n(&s_target_set, __ATOMIC_RELAXED);
-  return t >= 0 ? t : mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 120);
+  return t >= 0 ? t : mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 100);
 }
 
 /* called from video start; prepares on the first call, later calls do nothing. */
@@ -734,6 +743,7 @@ void esplus_close(void) {
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_called = 0;
   s_last_video_pts_ms = 0; s_last_video_t = 0; s_fps_t0 = 0;
   nudge_reset(); s_tick_prev_ms = 0;
+  __atomic_store_n(&s_auto, 0, __ATOMIC_RELAXED);
   s_catchup_done = s_catchup_hits = 0;
   pthread_mutex_unlock(&s_lock);
   /* Release only what esplus_set_window took: an unbalanced ecore_shutdown() would

@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
   ecore_cnt = 1;
   /* target depth default comes from the env while nothing is set (the setter is engine lifetime: this runs first) */
   setenv("MLENGINE_TARGET_DEPTH_MS", "70", 1); assert(ml_engine_get_target_depth_ms() == 70);
-  unsetenv("MLENGINE_TARGET_DEPTH_MS"); assert(ml_engine_get_target_depth_ms() == 120);
+  unsetenv("MLENGINE_TARGET_DEPTH_MS"); assert(ml_engine_get_target_depth_ms() == 100);
   /* 1: close without any window (setup failed before set_window) must not shut down ecore */
   esplus_create_open(); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 2: success, then close */
@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
   play_ok = 0; play_ms = 9999; esplus_sample_tick(3000); assert(esplus_stats.playing_ms == 500);   /* failed read: unchanged */
   esplus_close();
   /* b: nudge. Correction grows by at most nudge_max*dt; inside the hysteresis it holds. */
-  setenv("MLENGINE_LATENCY_MODE", "nudge", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 here: no catch-up seek */
+  setenv("MLENGINE_LATENCY_MODE", "nudge", 1); setenv("MLENGINE_TARGET_DEPTH_MS", "120", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 here: no catch-up seek */
   begin(); vsub(1000); play_ms = 100;               /* depth 900, target 120 */
   esplus_sample_tick(1000); esplus_sample_tick(2000); esplus_sample_tick(3000);   /* the first 4 ticks measure the baseline */
   assert(esplus_correction_ms() == 0);
@@ -496,13 +496,43 @@ int main(int argc, char **argv) {
     ml_engine_set_stats_osd(0);
   }
 #endif
+  /* n: nudge is the default (env mode unset) only for a 60 fps stream. The sampler sees the mode only through esplus_lat_mode(). */
+  { esplusplayer_video_stream_info vi = {NULL, 0, 1, 1280, 720, 1280, 720, 60, 1};
+    setenv("MLENGINE_DEPTH_POLL_MS", "0", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1); unsetenv("MLENGINE_LATENCY_MODE");
+#define BEGIN_VI() do { esplus_create_open(); esplus_add_video_info(&vi); cb_prepared(1); esplus_prepare(); play_ms = 0; play_ok = 1; vsub(0); } while (0)
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE && lead0() == 0);   /* 60/1 */
+    for (int i = 1; i <= 3; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 0);
+    ntick(4000, 140); assert(esplus_correction_ms() == 10 && lead0() >= 140 && lead0() <= 141);   /* baseline, then towards target 100 */
+    ntick(5000, 140); assert(esplus_correction_ms() == 20);
+    esplus_close(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF && esplus_correction_ms() == 0 && lead0() == 0);   /* no stale default */
+    vi.framerate_num = 30;                                                       /* 30 fps: off, no baseline */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF);
+    for (int i = 1; i <= 6; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 0 && lead0() == 0);
+    esplus_close();
+    vi.framerate_num = 60000; vi.framerate_den = 1000;                           /* a fraction: 60 fps */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE); esplus_close();
+    vi.framerate_den = 1001;                                                     /* 59.94 fps is not 60 */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF); esplus_close();
+    vi.framerate_num = 60; vi.framerate_den = 0;                                 /* no division by zero */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF); esplus_close();
+    vi.framerate_num = 60; vi.framerate_den = 1;
+    setenv("MLENGINE_LATENCY_MODE", "off", 1);                                   /* explicit off wins at 60 fps */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF);
+    for (int i = 1; i <= 6; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 0 && lead0() == 0);
+    esplus_close();
+    unsetenv("MLENGINE_LATENCY_MODE");
+#undef BEGIN_VI
+  }
   /* t: runtime target depth. Last block: a set target cannot be unset and turns on nudge pacing for later sessions. */
   { char line[4096];
     setenv("MLENGINE_DEPTH_POLL_MS", "0", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1); unsetenv("MLENGINE_LATENCY_MODE");
     begin(); vsub(1000); play_ms = 100;                         /* depth 900, env mode off */
     esplus_sample_tick(1000); esplus_sample_tick(2000);
     assert(esplus_lat_mode() == ESPLUS_LAT_OFF && esplus_correction_ms() == 0);
-    assert(ml_engine_set_target_depth_ms(-1) == -1 && ml_engine_get_target_depth_ms() == 120);   /* refused, unchanged */
+    assert(ml_engine_set_target_depth_ms(-1) == -1 && ml_engine_get_target_depth_ms() == 100);   /* refused, unchanged */
     assert(ml_engine_set_target_depth_ms(5) == 20 && ml_engine_set_target_depth_ms(0) == 20);
     assert(ml_engine_set_target_depth_ms(9999) == 500 && ml_engine_get_target_depth_ms() == 500);
     assert(ml_engine_set_target_depth_ms(-1) == -1 && ml_engine_get_target_depth_ms() == 500);
@@ -523,6 +553,9 @@ int main(int argc, char **argv) {
     ml_engine_set_target_depth_ms(135); ntick(6000, 140);
     assert(esplus_correction_ms() >= 5 && esplus_correction_ms() <= 6);
     esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+    /* env unset + 30 fps + a runtime target: nudge (the target works at every frame rate) */
+    { esplusplayer_video_stream_info vi = {NULL, 0, 1, 1280, 720, 1280, 720, 30, 1};
+      esplus_create_open(); esplus_add_video_info(&vi); assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE); esplus_close(); }
     unsetenv("MLENGINE_CATCHUP_MS");
   }
   puts("ecore balance ok"); return 0;

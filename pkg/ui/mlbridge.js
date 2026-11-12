@@ -673,7 +673,7 @@
   };
 
   // mlTargetDepth(ms): the latency target of the nudge pacing, 20..500 ms (clamped by the engine), kept for
-  // the life of the app; it also turns on nudge pacing. rc is the applied value, -1 = refused (negative).
+  // the life of the app; it also turns on nudge pacing at any frame rate (nudge is the default only at 60 fps). rc is the applied value, -1 = refused (negative).
   window.mlTargetDepth = function (ms) {
     bridgeCall('targetDepth', { ms: String(ms) }, DEFAULT_TIMEOUT).then(function (r) {
       var msg = '[mlbridge] target depth ' + ms + ' -> rc ' + r.rc + (r.ms !== undefined ? ' ms ' + r.ms : '');
