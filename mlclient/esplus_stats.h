@@ -32,14 +32,17 @@ typedef struct {
 enum { ESPLUS_LAT_OFF, ESPLUS_LAT_NUDGE, ESPLUS_LAT_ARRIVAL };
 typedef struct { int latency_mode, target_depth_ms, nudge_max_ms_per_s, drop_after_ms,
                  depth_poll_ms, stall_ms, recover_max, recover_back_ms,
-                 start_timeout_ms, fatal_stall_ms, rebuild_max, catchup_ms; } esplus_cfg_t;   /* the last four: 0 = off */
+                 start_timeout_ms, fatal_stall_ms, rebuild_max, catchup_ms,
+                 sps_patch; } esplus_cfg_t;   /* catchup_ms, sps_patch: 0 = off; sps_patch is the last field */
 
 /* engine-local fatal codes (moonlight-common-c uses -100..-104) */
 #define ML_ERR_PLAYER_NOT_STARTED -110   /* no start() success, video submitted for start_timeout_ms */
 #define ML_ERR_PLAYER_STALLED     -111   /* playing time frozen for fatal_stall_ms while submitting */
 
 extern esplus_stats_t esplus_stats;   /* counters: update with __atomic_fetch_add(..., __ATOMIC_RELAXED) */
-extern esplus_cfg_t esplus_cfg;       /* read once per session in esplus_create_open, read-only afterwards */
+extern esplus_cfg_t esplus_cfg;       /* read once per session in esplus_create_open, read-only afterwards; the runtime target override lives in esplus_player.c */
+/* Effective latency mode: esplus_cfg.latency_mode, but nudge when a runtime target is set and the env mode is off. */
+int esplus_lat_mode(void);
 
 /* One sampler step (playing time, depth, fps). The sampler thread calls it every
  * depth_poll_ms; the host test calls it with a fake clock. */
@@ -47,6 +50,8 @@ void esplus_sample_tick(uint64_t now_ms);
 
 /* Latency nudge (mode nudge): ms the video sink subtracts from each PTS. Lock-free. */
 int32_t esplus_correction_ms(void);
+/* Nudge state for the error line: correction ms and baseline lead ms (0 = none). Lock-free. */
+void esplus_nudge_state(int *corr_ms, int *lead0_ms);
 /* Counts sampler ticks; video uses it to skip at most one late frame per tick. */
 uint32_t esplus_sample_seq(void);
 /* 1 once after a recovery seek (then 0): the video sink must return DR_NEED_IDR. */

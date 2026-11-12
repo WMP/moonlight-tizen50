@@ -49,6 +49,10 @@ void mldiag_ahost(int sent, int dropped, int send_failures);
 void mldiag_rebuild(void);            /* one player rebuild (esplus_player.c) */
 void mldiag_catchup(int depth_ms, int seek_ok);   /* the one-time catch-up seek (esplus_player.c): depth before, seek result */
 void mldiag_osd(int want, int win);   /* stats overlay (esplus_player.c): want persists across sessions; win 0 none, 1 lowered, 2 raised, -1 no symbols */
+/* The last H.264 SPS of the session (video_esplus.c). state: 0 kept (host restriction), 1 added, 2 off (patch disabled), -1 parse error.
+   reorder/dec_buf are the host's own values, only valid when restr != 0. */
+enum { MLDIAG_SPS_ERR = -1, MLDIAG_SPS_KEPT = 0, MLDIAG_SPS_ADDED = 1, MLDIAG_SPS_OFF = 2 };
+void mldiag_sps(int state, int profile, int level, int ref_frames, int poc_type, int vui, int restr, int reorder, int dec_buf);
 void mldiag_idr_retry(void);          /* one IDR request retry at the start (no video packet yet) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */
