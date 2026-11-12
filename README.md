@@ -266,8 +266,8 @@ engine-side A/V sync.
 
 | Mode | Video PTS |
 |---|---|
-| `off` (default) | host PTS minus the first frame's PTS |
-| `nudge` | the same minus a slow correction that moves `depth_ms` towards `MLENGINE_TARGET_DEPTH_MS` (at most `MLENGINE_NUDGE_MAX_MS_PER_S` ms per second; no change inside a hysteresis of max(10 ms, target/2); the correction is capped at ±1 s) |
+| `off` | host PTS minus the first frame's PTS. The default for streams that are not 60 fps; also what `MLENGINE_LATENCY_MODE=off` sets |
+| `nudge` (default for 60 fps streams, target 100 ms) | the same minus a slow correction that moves the lead of the newest frame (`depth_ms` plus the frame's age) towards `MLENGINE_TARGET_DEPTH_MS`. The first 4 ticks measure a baseline lead (the smallest) with no correction. Then the correction grows at most `MLENGINE_NUDGE_MAX_MS_PER_S` ms per second; no change inside a fixed band of 10 ms; a lead that is too small is corrected 4 times faster; the correction never exceeds baseline minus target (and ±1 s) |
 | `arrival` (experimental) | the TV's monotonic clock at submit, from the first frame |
 
 In all modes video PTS are strictly increasing (the player's PTS unit is 1 ms).
@@ -284,6 +284,14 @@ host for an IDR.
 later. When `depth_ms` stays above `MLENGINE_CATCHUP_MS` on two ticks in a row, the engine makes one flushing seek to the last
 submitted PTS and asks for an IDR frame. Once per session (and once per rebuilt player); a failed seek is not retried. The
 `ML-ERROR` line shows it as `catchup=`.
+
+**Decoder delay.** A TV test at 720p60 H.264 showed about 5 frames (84 ms) between a submit and the screen; PTS pacing
+cannot go below it (a `nudge` target under it makes every frame late, and the player then shows about one frame per second).
+The likely cause, not confirmed on a TV yet: an H.264 SPS with no VUI `bitstream_restriction` lets the decoder wait for the
+largest reorder delay of the level. When the host SPS has none, the engine adds one (`max_num_reorder_frames = 0`,
+`max_dec_frame_buffering = max_num_ref_frames`) before the frame goes to the player. It only adds a missing restriction and
+never changes an existing one; on any doubt (for example scaling lists) the SPS goes through unchanged. HEVC is not touched.
+`MLENGINE_SPS_PATCH=0` turns it off. The `ML-ERROR` line shows it as `sps=`.
 
 **Recovery.** When playing time stops for `MLENGINE_STALL_MS` while frames are
 still submitted, or after a player error, the engine does a flushing
@@ -318,8 +326,8 @@ is created (for example on the CLI harness command line; the .NET host sets none
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MLENGINE_LATENCY_MODE` | `off` | `off` \| `nudge` \| `arrival` |
-| `MLENGINE_TARGET_DEPTH_MS` | `50` | `nudge` target queue depth |
+| `MLENGINE_LATENCY_MODE` | unset = `nudge` at 60 fps, else `off` | `off` \| `nudge` \| `arrival`; `off` turns the pacing off |
+| `MLENGINE_TARGET_DEPTH_MS` | `100` | `nudge` target lead |
 | `MLENGINE_NUDGE_MAX_MS_PER_S` | `10` | max `nudge` correction rate |
 | `MLENGINE_DROP_AFTER_MS` | `0` (off) | late-frame skip threshold |
 | `MLENGINE_DEPTH_POLL_MS` | `250` | sampler period; below 50 the sampler does not run |
@@ -328,12 +336,19 @@ is created (for example on the CLI harness command line; the .NET host sets none
 | `MLENGINE_RECOVER_BACK_MS` | `250` | seek target behind the last video PTS |
 | `MLENGINE_START_TIMEOUT_MS` | `5000` (0 = off) | fatal `-110`: no successful `start()` this long after the first video submit |
 | `MLENGINE_CATCHUP_MS` | `150` (0 = off) | queue depth above which the one-time catch-up seek runs (two ticks in a row) |
+| `MLENGINE_SPS_PATCH` | `1` (0 = off) | add a missing `bitstream_restriction` (no frame reordering) to the H.264 SPS |
 | `MLENGINE_PLAYER_REBUILD_MAX` | `1` (0 = off) | player rebuilds per session after a failed `start()` or an unreadable playing time |
 | `MLENGINE_FATAL_STALL_MS` | `10000` (0 = off) | fatal `-111`: playing time frozen this long while submitting |
+
+`mlTargetDepth(ms)` in the UI console sets the `nudge` target at run time (20..500 ms, clamped). The engine keeps it for the life of the app and it also turns on `nudge` pacing at any frame rate, so it works on a TV where no env variable can be set. The control input is the lead of the newest frame (`depth_ms` plus the frame's age). The engine measures a baseline for 4 ticks and never corrects by more than baseline minus target. Measured on a TV at 60 fps: baseline about 135-145 ms, the old loop stopped following at 84-100 ms (5-6 frames). Below the floor every frame is late and the player shows about one frame per second. TV result at 60 fps: the picture is stable at target 90 ms and stutters at 80 ms. The default is 100 ms (lowest stable value + 10 ms). Other frame rates are not measured, so the default `nudge` applies only to 60 fps streams (with `MLENGINE_LATENCY_MODE` unset); a `mlTargetDepth` call works at every frame rate. When the picture stutters, set a higher target, for example `mlTargetDepth(150)`: in practice this turns the correction off for the life of the app. A lower target gives lower latency but a higher risk of underruns (`uo` in the overlay). The `ML-ERROR` line shows `nudge=<correction ms>/<baseline ms>`. `MLENGINE_TARGET_DEPTH_MS` (default 100) stays the target until the first call.
 
 **Overlay.** `toggleStats` in the UI turns on a live overlay (`mlstats` events from
 `ml_engine_get_stats`, every 500 ms); see `pkg/ui/PROTOCOL.md`. The UI's performance statistics setting turns it on at stream start.
 It also shows the host audio counters.
+While the overlay is on, the engine lowers its video window under the UI window, so the overlay
+shows over the picture (the UI is transparent during a stream). The state is remembered for later
+sessions. The console helper `mlStatsOsd(true|false)` sets it by hand. If the TV lacks the
+window stacking calls, the overlay shows only after the stream.
 
 ## Build (headless, Docker)
 

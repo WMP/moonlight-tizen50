@@ -354,6 +354,58 @@ test('mlGameMode sends tvGameMode and logs the rc', async function () {
   assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode failed') === 0; }));
 });
 
+test('mlStatsOsd sends statsOsd and logs the rc and the window', async function () {
+  sent.length = 0;
+  assert.ok(/on/.test(win.mlStatsOsd(true)));
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'statsOsd'); assert.strictEqual(f.on, 'true');
+  reply(f.id, { rc: '0', win: '1' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] stats over video on -> rc 0 window 1') >= 0);
+  win.mlStatsOsd(false);
+  f = fields(sent[1]);
+  assert.strictEqual(f.on, 'false');
+  reply(f.id, { rc: '-1', win: '-1' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] stats over video off -> rc -1 window -1') === 0; }));
+  win.mlStatsOsd(true);
+  reply(fields(sent[2]).id, { error: 'not supported' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] stats over video failed') === 0; }));
+});
+
+test('mlTargetDepth sends targetDepth and logs rc and ms', async function () {
+  sent.length = 0;
+  assert.ok(/30/.test(win.mlTargetDepth(30)));
+  var f = fields(sent[0]);
+  assert.strictEqual(f.cmd, 'targetDepth'); assert.strictEqual(f.ms, '30');
+  reply(f.id, { rc: '30', ms: '30' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] target depth 30 -> rc 30 ms 30') >= 0);
+  win.mlTargetDepth(-1);
+  reply(fields(sent[1]).id, { rc: '-1', ms: '30' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] target depth -1 -> rc -1 ms 30') === 0; }));
+  win.mlTargetDepth(40);
+  reply(fields(sent[2]).id, { rc: '40' }); await tick();   // an old host: no ms field
+  assert.ok(logs.indexOf('[mlbridge] target depth 40 -> rc 40') >= 0);
+  win.mlTargetDepth(50);
+  reply(fields(sent[3]).id, { error: 'not supported' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] target depth failed') === 0; }));
+});
+
+test('toggleStats logs the osd field of the reply', async function () {
+  async function press(rep) {
+    var n = sent.length, p = win.SyncFunctions.toggleStats();
+    advance(250);
+    reply(fields(sent[n]).id, rep); await p;
+  }
+  var l = logs.length, w = warns.length;
+  await press({ osd: '0', osdWin: '1' });   // on
+  assert.ok(logs.slice(l).indexOf('[mlbridge] stats over video: osd 0 window 1') >= 0);
+  await press({ osd: '-1', osdWin: '0' });  // off
+  assert.ok(warns.slice(w).some(function (x) { return /osd -1 window 0.*only after the stream/.test(x); }));
+  l = logs.length; w = warns.length;
+  await press({});                          // an old host: no osd field, no line
+  assert.strictEqual(logs.slice(l).concat(warns.slice(w)).filter(function (x) { return /stats over video/.test(x); }).length, 0);
+  await press({});                          // leave it off
+});
+
 test('page gone: pagehide then unload send one stopStream, only during a stream', async function () {
   function gone(ev) { (winListeners[ev] || []).forEach(function (f) { f({}); }); }
   function stops() { return sent.map(fields).filter(function (f) { return f.cmd === 'stopStream'; }).length; }

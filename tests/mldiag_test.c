@@ -7,6 +7,11 @@
 
 static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1, 0, "7.1.431.-1", "3.23.0.74", NULL, 0, NULL, NULL };
 
+static int g_target = 50;
+int ml_engine_get_target_depth_ms(void) { return g_target; }
+static int g_corr = 0, g_lead0 = 0;
+void esplus_nudge_state(int *corr_ms, int *lead0_ms) { *corr_ms = g_corr; *lead0_ms = g_lead0; }
+
 static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0, 0, 0, 0); }
 
 int main(void) {
@@ -160,21 +165,39 @@ int main(void) {
   /* audio output, IDR retries */
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=0 | player "));
+  assert(strstr(buf, " idr_retry=0 sps=- | player "));
   assert(strstr(buf, " | aout none reason=- | ctl "));
   mldiag_aout(0);
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " | aout none reason=no-callback | ctl "));
   mldiag_aout(1); mldiag_aframe(960); mldiag_aframe(960); mldiag_adrops(3); mldiag_idr_retry(); mldiag_idr_retry();
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=2 | player "));
+  assert(strstr(buf, " idr_retry=2 sps=- | player "));
   assert(strstr(buf, " | aout webaudio frames=2 bytes=1920 sent=0 drops=3 sendfail=0 | ctl "));
   mldiag_adrops(0);
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " | aout webaudio frames=2 bytes=1920 sent=0 drops=0 sendfail=0 | ctl "));
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " idr_retry=0 | player ") && strstr(buf, " | aout none reason=- | ctl "));
+  assert(strstr(buf, " idr_retry=0 sps=- | player ") && strstr(buf, " | aout none reason=- | ctl "));
+
+  /* the last H.264 SPS: -, added without restriction, kept with the host's values, off, err; reset clears it */
+  mldiag_reset(&CFG);
+  mldiag_sps(MLDIAG_SPS_ADDED, 100, 32, 1, 2, 1, 0, 0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=added/p100/l32/ref1/poc2/vui1/br- | player "));
+  mldiag_sps(MLDIAG_SPS_KEPT, 100, 31, 1, 0, 1, 1, 0, 1);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=kept/p100/l31/ref1/poc0/vui1/br0:1 | player "));
+  mldiag_sps(MLDIAG_SPS_OFF, 66, 30, 2, 0, 0, 0, 0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=off/p66/l30/ref2/poc0/vui0/br- | player "));
+  mldiag_sps(MLDIAG_SPS_ERR, 0, 0, 0, 0, 0, 0, 0, 0);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=err | player ") && strlen(buf) < 2048);
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " idr_retry=0 sps=- | player "));
 
   /* native audio-io output (audio_opus.c): counters, and the fallback variant */
   mldiag_reset(&CFG);
@@ -220,6 +243,22 @@ int main(void) {
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
   assert(strstr(buf, " catchup=0/-/-"));
+
+  /* stats overlay: want survives mldiag_reset, the window result does not */
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf);
+  assert(strstr(buf, " catchup=0/-/- osd=0/- target=50 nudge=0/0 |"));
+  g_corr = 21; g_lead0 = 138; fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " target=50 nudge=21/138 |"));
+  g_corr = 0; g_lead0 = 0;
+  mldiag_osd(1, 1); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=1/lowered"));
+  mldiag_osd(0, 2); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=0/raised"));
+  mldiag_osd(1, -1); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=1/nosym"));
+  mldiag_reset(&CFG);
+  fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=1/-"));
+  mldiag_osd(0, 0);
+  g_target = 30; fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=0/- target=30 nudge=0/0 |"));
+  mldiag_reset(&CFG); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " target=30 nudge=0/0 |") && strlen(buf) < 2047);
+  g_target = 50;
 
   /* the host reports its audio counters after the failure: mldiag_last shows the values at read time, the rest is unchanged */
   mldiag_reset(&CFG); mldiag_aout(1); mldiag_aframe(960);

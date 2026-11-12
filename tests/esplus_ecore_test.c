@@ -28,7 +28,13 @@ void ecore_wl2_display_flush(void *x) { (void)x; }
 int scr_w, scr_h, syncs;   /* screen size the stubbed API reports (0x0 = no output) */
 void ecore_wl2_display_screen_size_get(void *x, int *ww, int *hh) { (void)x; *ww = scr_w; *hh = scr_h; }
 void ecore_wl2_display_sync(void *x) { (void)x; syncs++; }
-void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *), void *data) { return cb(data); }
+static int in_main;   /* 1 while the call_sync stub runs a callback (the real main loop) */
+void *ecore_main_loop_thread_safe_call_sync(void *(*cb)(void *), void *data) { in_main = 1; void *r = cb(data); in_main = 0; return r; }
+#ifndef NO_OSD_SYMS
+static int lower_calls, raise_calls;
+void ecore_wl2_window_lower(void *x) { assert(in_main && x); lower_calls++; }
+void ecore_wl2_window_raise(void *x) { assert(in_main && x); raise_calls++; }
+#endif
 /* async: queued, the test runs it with run_async() (inside the stub it would deadlock on s_lock; the real main loop runs it later) */
 static void (*async_cb[4])(void *); static void *async_data[4]; static int async_n;
 void ecore_main_loop_thread_safe_call_async(void (*cb)(void *), void *data) { assert(async_n < 4); async_cb[async_n] = cb; async_data[async_n++] = data; }
@@ -76,6 +82,10 @@ extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch);
 extern void esplus_prepare(void);
 extern int esplus_add_video_info(const esplusplayer_video_stream_info *vi);
+extern int ml_engine_set_stats_osd(int on);
+extern int ml_engine_get_stats_osd(void);
+extern int ml_engine_set_target_depth_ms(int ms);
+extern int ml_engine_get_target_depth_ms(void);
 static int hook_ran, hook_ret, hook_sp;
 static void vsub(uint64_t pts_ms);
 void rebuild_hook_submit(void) {
@@ -85,9 +95,26 @@ void rebuild_hook_submit(void) {
 static void vsub(uint64_t pts_ms) { esplusplayer_es_packet p = {ESPLUSPLAYER_STREAM_TYPE_VIDEO, NULL, 1, pts_ms * 1000000ull, 0}; esplus_submit(&p); }
 /* start a session on a stubbed, prepared and started player */
 static void begin(void) { esplus_create_open(); cb_prepared(1); esplus_prepare(); play_ms = 0; play_ok = 1; vsub(0); }
-int main(void) {
+/* a fresh frame with this lead (the player clock is `now`), then one sampler tick */
+static void ntick(uint64_t now, int lead) { play_ms = now; vsub(now + lead); esplus_sample_tick(now); }
+static int lead0(void) { int c, l; esplus_nudge_state(&c, &l); return l; }
+int main(int argc, char **argv) {
+  (void)argv;
+  if (argc > 1) {   /* nosym: built with -DNO_OSD_SYMS, the TV's libecore_wl2 lacks the stacking calls */
+    char line[4096]; ecore_cnt = 1;
+    assert(ml_engine_set_stats_osd(1) == -1);
+    esplus_create_open(); assert(esplus_set_window(1280, 720) == 0); assert(ml_engine_get_stats_osd() == -1);
+    assert(ml_engine_set_stats_osd(0) == -1 && ml_engine_get_stats_osd() == -1);   /* mid-stream toggle: recorded, nothing ends */
+    assert(ml_engine_set_stats_osd(1) == -1 && ml_engine_get_stats_osd() == -1);
+    mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line); assert(strstr(line, " osd=1/nosym"));
+    esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+    puts("osd nosym ok"); return 0;
+  }
   /* the host app already holds one ecore reference */
   ecore_cnt = 1;
+  /* target depth default comes from the env while nothing is set (the setter is engine lifetime: this runs first) */
+  setenv("MLENGINE_TARGET_DEPTH_MS", "70", 1); assert(ml_engine_get_target_depth_ms() == 70);
+  unsetenv("MLENGINE_TARGET_DEPTH_MS"); assert(ml_engine_get_target_depth_ms() == 100);
   /* 1: close without any window (setup failed before set_window) must not shut down ecore */
   esplus_create_open(); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 2: success, then close */
@@ -130,17 +157,80 @@ int main(void) {
   play_ok = 0; play_ms = 9999; esplus_sample_tick(3000); assert(esplus_stats.playing_ms == 500);   /* failed read: unchanged */
   esplus_close();
   /* b: nudge. Correction grows by at most nudge_max*dt; inside the hysteresis it holds. */
-  setenv("MLENGINE_LATENCY_MODE", "nudge", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 here: no catch-up seek */
-  begin(); vsub(1000); play_ms = 100;               /* depth 900, target 50 */
-  esplus_sample_tick(1000); assert(esplus_correction_ms() == 0);     /* first tick: no change */
-  esplus_sample_tick(2000); assert(esplus_correction_ms() == 10);    /* 10 ms/s * 1 s */
-  esplus_sample_tick(2500); assert(esplus_correction_ms() == 15);    /* 5 ms more for 0.5 s */
-  esplus_sample_tick(3500); assert(esplus_correction_ms() == 25);
-  play_ms = 940;                                    /* depth 60: err 10 within hysteresis 25 */
-  esplus_sample_tick(4500); assert(esplus_correction_ms() == 25);
-  play_ms = 1200;                                   /* depth -200: pulls back */
-  esplus_sample_tick(5500); assert(esplus_correction_ms() == 15);
+  setenv("MLENGINE_LATENCY_MODE", "nudge", 1); setenv("MLENGINE_TARGET_DEPTH_MS", "120", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1);   /* depth 900 here: no catch-up seek */
+  begin(); vsub(1000); play_ms = 100;               /* depth 900, target 120 */
+  esplus_sample_tick(1000); esplus_sample_tick(2000); esplus_sample_tick(3000);   /* the first 4 ticks measure the baseline */
+  assert(esplus_correction_ms() == 0);
+  esplus_sample_tick(4000); assert(esplus_correction_ms() == 10);    /* 10 ms/s * 1 s, on the 4th tick */
+  esplus_sample_tick(4500); assert(esplus_correction_ms() == 15);    /* 5 ms more for 0.5 s */
+  esplus_sample_tick(5500); assert(esplus_correction_ms() == 25);
+  play_ms = 875;                                    /* depth 125: err 5 within the 10 ms band */
+  esplus_sample_tick(6500); assert(esplus_correction_ms() == 25);
+  play_ms = 1200;                                   /* depth -200: pulls back 4 times faster */
+  esplus_sample_tick(7500); assert(esplus_correction_ms() == -15);
   esplus_close(); assert(esplus_correction_ms() == 0);
+  /* b3: the lead control. Fed with ntick(): a fresh frame whose lead is `depth`, one tick per `now` ms (play = now). */
+  setenv("MLENGINE_TARGET_DEPTH_MS", "115", 1);
+  /* 1: baseline = the smallest lead of the first 4 ticks; no correction before the 4th */
+  begin(); assert(lead0() == 0);
+  ntick(1000, 818); ntick(2000, 123); ntick(3000, 132); assert(lead0() == 0 && esplus_correction_ms() == 0);
+  ntick(4000, 122); assert(lead0() >= 122 && lead0() <= 123 && esplus_correction_ms() == 0);   /* err 7: inside the band */
+  esplus_close();
+  /* 2: approach at 10 ms/s, stop at the cap (baseline - target = 25 ms) although the lead does not follow (the TV runaway) */
+  begin();
+  ntick(1000, 140); ntick(2000, 140); ntick(3000, 140); assert(esplus_correction_ms() == 0);
+  ntick(4000, 140); assert(esplus_correction_ms() == 10);
+  ntick(5000, 140); assert(esplus_correction_ms() == 20);
+  ntick(6000, 140); { int c = esplus_correction_ms(); assert(c >= 25 && c <= 26);
+    for (int i = 7; i <= 16; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == c); }
+  /* 9: the error line holds the correction and the baseline */
+  { char line[4096]; mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+    assert(strstr(line, " nudge=25/140") || strstr(line, " nudge=26/141")); }
+  esplus_close(); assert(esplus_correction_ms() == 0 && lead0() == 0);
+  /* 3: the lead follows the correction: it stops when the lead is within 10 ms of the target */
+  begin();
+  for (int i = 1; i <= 12; i++) ntick(i * 1000, 140 - esplus_correction_ms());
+  assert(esplus_correction_ms() == 20);             /* lead 120: err 5 */
+  esplus_close();
+  /* 4: a lead 20 ms under the target: the correction falls 4 times faster than it rises (10 ms per 0.25 s) */
+  begin();
+  for (int i = 1; i <= 5; i++) ntick(i * 1000, 140);
+  assert(esplus_correction_ms() == 20);
+  ntick(5250, 95); assert(esplus_correction_ms() == 10);
+  ntick(5500, 95); assert(esplus_correction_ms() == 0);
+  esplus_close();
+  /* 8: no fresh frame for 100 ms of real time: the ticks change nothing; a new frame resumes */
+  begin();
+  for (int i = 1; i <= 5; i++) ntick(i * 1000, 140);
+  assert(esplus_correction_ms() == 20);
+  usleep(120000);
+  play_ms = 6000; esplus_sample_tick(6000); play_ms = 7000; esplus_sample_tick(7000);
+  assert(esplus_correction_ms() == 20);
+  ntick(8000, 140); assert(esplus_correction_ms() >= 25);
+  esplus_close();
+  /* 6: target above the baseline: the cap is 0; only the back-off lowers the correction below 0 */
+  setenv("MLENGINE_TARGET_DEPTH_MS", "200", 1);
+  begin();
+  ntick(1000, 140); ntick(2000, 140); ntick(3000, 140); assert(esplus_correction_ms() == 0);
+  ntick(4000, 140); assert(esplus_correction_ms() == -40);   /* err -60: 4 * 10 ms */
+  ntick(5000, 195); assert(esplus_correction_ms() == -40);   /* inside the band */
+  for (int i = 6; i <= 12; i++) ntick(i * 1000, 300);        /* too much lead: rises to the cap 0, not above */
+  assert(esplus_correction_ms() == 0);
+  esplus_close();
+  setenv("MLENGINE_TARGET_DEPTH_MS", "115", 1);
+  /* 7: the catch-up seek and esplus_close reset the correction and the baseline; a new baseline follows */
+  setenv("MLENGINE_CATCHUP_MS", "150", 1);
+  seek_calls = 0; begin();
+  ntick(1000, 900); ntick(1250, 900); assert(seek_calls == 1 && lead0() == 0 && esplus_correction_ms() == 0);
+  ntick(2250, 900); ntick(3250, 900); ntick(4250, 900); assert(lead0() == 0 && esplus_correction_ms() == 0);
+  ntick(5250, 900); assert(lead0() >= 900 && lead0() <= 901 && esplus_correction_ms() == 10);
+  esplus_close(); assert(lead0() == 0 && esplus_correction_ms() == 0);
+  setenv("MLENGINE_CATCHUP_MS", "0", 1);
+  begin(); for (int i = 1; i <= 4; i++) ntick(i * 1000, 140);
+  assert(lead0() >= 140 && lead0() <= 141);
+  esplus_close();
+  seek_calls = 0; unsetenv("MLENGINE_TARGET_DEPTH_MS");
   unsetenv("MLENGINE_LATENCY_MODE");
   esplus_close();
   /* c: watchdog. RECOVER_MAX=0 (default): a stall never seeks. */
@@ -269,7 +359,7 @@ int main(void) {
     for (int i = 0; i < 20; i++) esplus_sample_tick(2400 + i * 600);
     assert(idr_calls == 10);                                                      /* at most 10 */
     mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, " idr_retry=10 |"));
+    assert(strstr(line, " idr_retry=10 sps=- |"));
     esplus_close();
     esplus_create_open(); esplus_prepare(); idr_calls = 0;
     esplus_sample_tick(1000); vsub(0); esplus_sample_tick(2000); esplus_sample_tick(9000); assert(idr_calls == 0);   /* video submitted: none */
@@ -385,5 +475,88 @@ int main(void) {
   usleep(150000); assert(play_calls >= 1);
   esplus_close(); int n = play_calls; usleep(120000); assert(play_calls == n);
   unsetenv("MLENGINE_DEPTH_POLL_MS");
+#ifndef NO_OSD_SYMS
+  /* o: stats overlay (window stacking) */
+  { esplusplayer_video_stream_info vi = {NULL, 0, 1, 1280, 720, 1280, 720, 60, 1}; char line[4096];
+    assert(lower_calls == 0 && raise_calls == 0);   /* default: a new window is not touched */
+    esplus_create_open(); assert(esplus_set_window(1280, 720) == 0); assert(lower_calls == 0 && raise_calls == 0 && ml_engine_get_stats_osd() == 0);
+    esplus_close();
+    assert(ml_engine_set_stats_osd(1) == 0 && lower_calls == 0 && ml_engine_get_stats_osd() == 0);   /* no window: stored */
+    start_ret = 0; esplus_create_open(); assert(esplus_set_window(1280, 720) == 0);
+    assert(lower_calls == 1 && raise_calls == 0 && ml_engine_get_stats_osd() == 1);
+    assert(ml_engine_set_stats_osd(0) == 0 && raise_calls == 1 && lower_calls == 1 && ml_engine_get_stats_osd() == 2);
+    assert(ml_engine_set_stats_osd(1) == 0 && lower_calls == 2 && ml_engine_get_stats_osd() == 1);
+    { int c0 = create_calls; esplus_add_video_info(&vi); cb_prepared(1); esplus_prepare(); vsub(0); esplus_sample_tick(1000); run_async();   /* rebuild */
+      assert(create_calls == c0 + 1); }
+    assert(lower_calls == 2 && raise_calls == 1 && ml_engine_get_stats_osd() == 1);
+    mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line); assert(strstr(line, " osd=1/lowered"));
+    esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0 && ml_engine_get_stats_osd() == 0); start_ret = 1;
+    esplus_create_open(); assert(esplus_set_window(1280, 720) == 0); assert(lower_calls == 3 && ml_engine_get_stats_osd() == 1);   /* want remembered */
+    esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+    ml_engine_set_stats_osd(0);
+  }
+#endif
+  /* n: nudge is the default (env mode unset) only for a 60 fps stream. The sampler sees the mode only through esplus_lat_mode(). */
+  { esplusplayer_video_stream_info vi = {NULL, 0, 1, 1280, 720, 1280, 720, 60, 1};
+    setenv("MLENGINE_DEPTH_POLL_MS", "0", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1); unsetenv("MLENGINE_LATENCY_MODE");
+#define BEGIN_VI() do { esplus_create_open(); esplus_add_video_info(&vi); cb_prepared(1); esplus_prepare(); play_ms = 0; play_ok = 1; vsub(0); } while (0)
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE && lead0() == 0);   /* 60/1 */
+    for (int i = 1; i <= 3; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 0);
+    ntick(4000, 140); assert(esplus_correction_ms() == 10 && lead0() >= 140 && lead0() <= 141);   /* baseline, then towards target 100 */
+    ntick(5000, 140); assert(esplus_correction_ms() == 20);
+    esplus_close(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF && esplus_correction_ms() == 0 && lead0() == 0);   /* no stale default */
+    vi.framerate_num = 30;                                                       /* 30 fps: off, no baseline */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF);
+    for (int i = 1; i <= 6; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 0 && lead0() == 0);
+    esplus_close();
+    vi.framerate_num = 60000; vi.framerate_den = 1000;                           /* a fraction: 60 fps */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE); esplus_close();
+    vi.framerate_den = 1001;                                                     /* 59.94 fps is not 60 */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF); esplus_close();
+    vi.framerate_num = 60; vi.framerate_den = 0;                                 /* no division by zero */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF); esplus_close();
+    vi.framerate_num = 60; vi.framerate_den = 1;
+    setenv("MLENGINE_LATENCY_MODE", "off", 1);                                   /* explicit off wins at 60 fps */
+    BEGIN_VI(); assert(esplus_lat_mode() == ESPLUS_LAT_OFF);
+    for (int i = 1; i <= 6; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 0 && lead0() == 0);
+    esplus_close();
+    unsetenv("MLENGINE_LATENCY_MODE");
+#undef BEGIN_VI
+  }
+  /* t: runtime target depth. Last block: a set target cannot be unset and turns on nudge pacing for later sessions. */
+  { char line[4096];
+    setenv("MLENGINE_DEPTH_POLL_MS", "0", 1); setenv("MLENGINE_CATCHUP_MS", "0", 1); unsetenv("MLENGINE_LATENCY_MODE");
+    begin(); vsub(1000); play_ms = 100;                         /* depth 900, env mode off */
+    esplus_sample_tick(1000); esplus_sample_tick(2000);
+    assert(esplus_lat_mode() == ESPLUS_LAT_OFF && esplus_correction_ms() == 0);
+    assert(ml_engine_set_target_depth_ms(-1) == -1 && ml_engine_get_target_depth_ms() == 100);   /* refused, unchanged */
+    assert(ml_engine_set_target_depth_ms(5) == 20 && ml_engine_set_target_depth_ms(0) == 20);
+    assert(ml_engine_set_target_depth_ms(9999) == 500 && ml_engine_get_target_depth_ms() == 500);
+    assert(ml_engine_set_target_depth_ms(-1) == -1 && ml_engine_get_target_depth_ms() == 500);
+    assert(ml_engine_set_target_depth_ms(30) == 30 && ml_engine_get_target_depth_ms() == 30);   /* mid-stream */
+    assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE);
+    /* picked up at the next tick; the mode was off before, so the baseline starts now (ticks 3000..6000) */
+    esplus_sample_tick(3000); esplus_sample_tick(4000); esplus_sample_tick(5000); assert(esplus_correction_ms() == 0);
+    esplus_sample_tick(6000); assert(esplus_correction_ms() == 10);
+    esplus_sample_tick(7000); assert(esplus_correction_ms() == 20);
+    mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line); assert(strstr(line, " target=30"));
+    esplus_close(); assert(ml_engine_get_target_depth_ms() == 30);   /* survives the session end and start */
+    esplus_create_open(); assert(ml_engine_get_target_depth_ms() == 30 && esplus_lat_mode() == ESPLUS_LAT_NUDGE);
+    esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+    /* 5: a raised target lowers the cap at once: the correction is clamped at the next tick (baseline 140, cap 140 - 135) */
+    ml_engine_set_target_depth_ms(115); begin();
+    for (int i = 1; i <= 5; i++) ntick(i * 1000, 140);
+    assert(esplus_correction_ms() == 20);
+    ml_engine_set_target_depth_ms(135); ntick(6000, 140);
+    assert(esplus_correction_ms() >= 5 && esplus_correction_ms() <= 6);
+    esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
+    /* env unset + 30 fps + a runtime target: nudge (the target works at every frame rate) */
+    { esplusplayer_video_stream_info vi = {NULL, 0, 1, 1280, 720, 1280, 720, 30, 1};
+      esplus_create_open(); esplus_add_video_info(&vi); assert(esplus_lat_mode() == ESPLUS_LAT_NUDGE); esplus_close(); }
+    unsetenv("MLENGINE_CATCHUP_MS");
+  }
   puts("ecore balance ok"); return 0;
 }

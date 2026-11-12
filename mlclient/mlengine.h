@@ -145,6 +145,28 @@ typedef struct ml_engine_audio_stats {
 } ml_engine_audio_stats;
 int ml_engine_get_audio_stats(ml_engine_audio_stats *out);
 
+/* Stats overlay over the picture. The UI draws the overlay in HTML; the engine's video window
+ * normally stacks above the UI window and hides it. With on != 0 the engine lowers its video
+ * window under the UI window (the UI is transparent while streaming), with on == 0 it raises
+ * it again. The state persists across sessions and applies at the next window creation; if a
+ * stream window exists it applies at once. Works in release builds.
+ * set returns 0 = stored (and applied to the stream window when one exists), -1 = the TV's
+ * libecore_wl2 lacks ecore_wl2_window_lower/raise (stored; the window stays on top and the
+ * HTML overlay is visible only after the stream).
+ * get returns 0 = not applied to a window yet, 1 = window lowered under the UI, 2 = window
+ * raised (on top), -1 = the stacking symbols are missing. */
+int ml_engine_set_stats_osd(int on);
+int ml_engine_get_stats_osd(void);
+
+/* Runtime latency target: the queue depth (ms) that the nudge pacing steers to. The value lives as
+ * long as the engine (it is not reset per session); MLENGINE_TARGET_DEPTH_MS (default 50) is only
+ * the initial default. set clamps ms to [20, 500] and returns the applied value; a negative ms
+ * changes nothing and returns -1. A set target turns on nudge pacing when MLENGINE_LATENCY_MODE is
+ * unset or off. Callable before or during a stream (the sampler reads it at its next tick). Works
+ * in release builds. get returns the set value, else the env default. */
+int ml_engine_set_target_depth_ms(int ms);
+int ml_engine_get_target_depth_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

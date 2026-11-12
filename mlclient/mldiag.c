@@ -12,6 +12,10 @@
 #define LAST_N 8
 #define OUT_MAX 2048
 
+/* weak: some tests link mldiag.c without esplus_player.c; lock-free, so it is safe under s_mu */
+int ml_engine_get_target_depth_ms(void) __attribute__((weak));
+void esplus_nudge_state(int *corr_ms, int *lead0_ms) __attribute__((weak));
+
 static pthread_mutex_t s_mu = PTHREAD_MUTEX_INITIALIZER;
 static mldiag_cfg s_cfg;
 static char s_appver[64], s_gfever[64], s_rtsp[12] = "-", s_host[256];   /* s_host: only to mask the cc lines */
@@ -23,6 +27,7 @@ static int s_vfmt, s_vw, s_vh, s_vfps, s_vrc, s_vset;
 static int s_rb_open = -99, s_rb_addv = -99, s_rb_disp = -99, s_rb_prep = -99;   /* player rebuild steps */
 static int s_open = -99, s_win = -99, s_prep = -99, s_pdone = -99, s_start = -99, s_state = -99;   /* -99 = not reached */
 static int s_cu_n, s_cu_depth = -1, s_cu_rc = -99;   /* catch-up seek: count, depth before, result; -1/-99 = not reached */
+static int s_osd_want, s_osd_win;   /* stats overlay: want survives mldiag_reset (engine lifetime), win result is per session */
 static int s_first_pkt_ms = -1, s_sub_last_bad, s_vfail_last, s_afail_last;
 /* absolute now_ms() of the player events, -1 = not reached; printed relative to s_t_prep. Under s_mu (the hot path
    reads s_t_v1/s_t_a1 atomically and locks only for the first success). */
@@ -42,6 +47,7 @@ static char s_aio_reason[48] = "-";       /* why the native output is not used (
 static unsigned s_an_frames, s_an_under, s_an_over, s_an_drops;   /* native audio-io counters (last report kept) */
 static int s_an_bufms;                    /* ring-buffer fill in ms at the last report */
 static int s_pad_rc;                      /* last failed pad call rc */
+static int s_sps_set, s_sps[9];           /* last H.264 SPS: state, profile, level, refs, poc, vui, restr, reorder, dec_buf; under s_mu */
 static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
 /* the noted /launch or /resume (survives mldiag_reset until one reset consumes it) */
 static int s_ln_mode;                     /* 0 none, 1 launch, 2 resume */
@@ -114,12 +120,21 @@ void mldiag_ahost(int sent, int dropped, int send_failures) {
   __atomic_store_n(&s_asent, sent, __ATOMIC_RELAXED); __atomic_store_n(&s_adrops, dropped, __ATOMIC_RELAXED);
   __atomic_store_n(&s_asendfail, send_failures, __ATOMIC_RELAXED);
 }
+void mldiag_sps(int state, int profile, int level, int ref_frames, int poc_type, int vui, int restr, int reorder, int dec_buf) {
+  pthread_mutex_lock(&s_mu);
+  const int v[9] = { state, profile, level, ref_frames, poc_type, vui, restr, reorder, dec_buf };
+  memcpy(s_sps, v, sizeof v); s_sps_set = 1;
+  pthread_mutex_unlock(&s_mu);
+}
 void mldiag_idr_retry(void) { INC(C_IDRRETRY); }
 void mldiag_rebuild(void) { INC(C_REBUILD); }
 void mldiag_catchup(int depth_ms, int seek_ok) {
   pthread_mutex_lock(&s_mu); s_cu_n++; s_cu_depth = depth_ms; s_cu_rc = seek_ok; pthread_mutex_unlock(&s_mu);
 }
 
+void mldiag_osd(int want, int win) {
+  pthread_mutex_lock(&s_mu); s_osd_want = want; s_osd_win = win; pthread_mutex_unlock(&s_mu);
+}
 
 void mldiag_adec(int ok, int err) {
   if (ok) { INC(C_ADEC); return; }
@@ -132,7 +147,8 @@ void mldiag_reset(const mldiag_cfg *cfg) {
   s_aout = 0; s_abytes = 0; s_adrops = s_asent = s_asendfail = 0; s_aout_off = -1; s_aio_reason[0] = '-'; s_aio_reason[1] = 0;
   s_an_frames = s_an_under = s_an_over = s_an_drops = 0; s_an_bufms = 0;
   s_rb_open = s_rb_addv = s_rb_disp = s_rb_prep = -99;
-  s_cu_n = 0; s_cu_depth = -1; s_cu_rc = -99;
+  s_sps_set = 0;
+  s_cu_n = 0; s_cu_depth = -1; s_cu_rc = -99; s_osd_win = 0;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
   s_vset = 0; s_open = s_win = s_prep = s_pdone = s_start = s_state = -99; s_first_pkt_ms = -1; s_sub_last_bad = s_vfail_last = s_afail_last = 0;
@@ -294,10 +310,21 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   if (s_vset) ADD(" | video setup=0x%x %dx%d@%d rc=%d", s_vfmt, s_vw, s_vh, s_vfps, s_vrc);
   else ADD(" | video setup=none");
   ADD(" du=%u idr=%u first_du_ms=%s first_pkt_ms=%s idr_retry=%u", GET(C_DU), GET(C_IDR), fduS, fpS, GET(C_IDRRETRY));
+  if (!s_sps_set) ADD(" sps=-");
+  else if (s_sps[0] == MLDIAG_SPS_ERR) ADD(" sps=err");
+  else {
+    char brS[24];
+    if (s_sps[6]) snprintf(brS, sizeof brS, "br%d:%d", s_sps[7], s_sps[8]); else snprintf(brS, sizeof brS, "br-");
+    ADD(" sps=%s/p%d/l%d/ref%d/poc%d/vui%d/%s", s_sps[0] == MLDIAG_SPS_ADDED ? "added" : s_sps[0] == MLDIAG_SPS_KEPT ? "kept" : "off",
+        s_sps[1], s_sps[2], s_sps[3], s_sps[4], s_sps[5] ? 1 : 0, brS);
+  }
   ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d state=%d rebuilds=%u rb=%d/%d/%d/%d vsub=%u asub=%u subfail=%u/%d vfail=%u/%d afail=%u/%d adec=%u adec_fail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start, s_state, GET(C_REBUILD), s_rb_open, s_rb_addv, s_rb_disp, s_rb_prep,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, GET(C_VSUBFAIL), s_vfail_last, GET(C_ASUBFAIL), s_afail_last,
       GET(C_ADEC), GET(C_ADECFAIL), __atomic_load_n(&s_adec_err, __ATOMIC_RELAXED), player_errors, player_last_error);
   if (s_cu_n) ADD(" catchup=%d/%d/%d", s_cu_n, s_cu_depth, s_cu_rc); else ADD(" catchup=0/-/-");
+  ADD(" osd=%d/%s", s_osd_want, s_osd_win == 1 ? "lowered" : s_osd_win == 2 ? "raised" : s_osd_win < 0 ? "nosym" : "-");
+  if (ml_engine_get_target_depth_ms) ADD(" target=%d", ml_engine_get_target_depth_ms()); else ADD(" target=-");
+  if (esplus_nudge_state) { int c, l0; esplus_nudge_state(&c, &l0); ADD(" nudge=%d/%d", c, l0); } else ADD(" nudge=-");
   char tS[4][24], pS[2][24];   /* ms after prepare_async, "-" = not reached */
   const long long ev[4] = { s_t_pdone, s_t_err, s_t_v1, s_t_a1 }, pv[2] = { s_vpts1, s_apts1 };
   for (int i = 0; i < 4; i++) { if (ev[i] < 0 || s_t_prep < 0) snprintf(tS[i], sizeof tS[i], "-"); else snprintf(tS[i], sizeof tS[i], "%lld", ev[i] - s_t_prep); }
