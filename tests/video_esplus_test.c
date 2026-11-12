@@ -117,21 +117,22 @@ int main(void) {
   assert(frame(1000, P) == DR_OK && frame(1016, P) == DR_OK && frame(1016, P) == DR_OK && frame(1005, P) == DR_OK);
   assert(rec_ms[0] == 0 && rec_ms[1] == 16 && rec_ms[2] == 17 && rec_ms[3] == 18 && sub_calls == 4);
   end();
-  /* 2: nudge. 10 ms/s: ticks at 1, 2, 3 s give a correction of 0, 10, 20 ms. */
+  /* 2: nudge. 10 ms/s: the first 4 ticks measure the baseline lead; ticks at 4, 5 s give a correction of 10, 20 ms. */
   begin("nudge", NULL);
   frame(0, P); frame(1000, P); play_ms = 100;      /* depth 900 */
-  esplus_sample_tick(1000); esplus_sample_tick(2000); esplus_sample_tick(3000);
+  for (int i = 1; i <= 3; i++) { esplus_sample_tick(i * 1000); assert(esplus_correction_ms() == 0); }
+  esplus_sample_tick(4000); esplus_sample_tick(5000);
   assert(esplus_correction_ms() == 20);
   frame(1100, P); assert(rec_ms[2] == 1100 - 20);
   end();
   /* a correction larger than the relative PTS clamps at 0, then the PTS still rises */
   setenv("MLENGINE_NUDGE_MAX_MS_PER_S", "1000", 1);
   begin("nudge", NULL);
-  frame(0, P); frame(500, P); play_ms = 1;         /* depth 499, target 50 */
-  for (int i = 1; i <= 4; i++) esplus_sample_tick(i * 1000);
+  frame(0, P); frame(2000, P); play_ms = 1;        /* depth 1999, target 120: the cap is above 1 s, the guard holds 1 s */
+  for (int i = 1; i <= 5; i++) esplus_sample_tick(i * 1000);
   assert(esplus_correction_ms() > 510);
   frame(510, P); frame(511, P);
-  assert(rec_ms[2] == 501 && rec_ms[3] == 502);
+  assert(rec_ms[2] == 2001 && rec_ms[3] == 2002);
   end(); unsetenv("MLENGINE_NUDGE_MAX_MS_PER_S");
   /* 3: arrival. PTS follows the arrival clock: starts at 0, never goes back. */
   begin("arrival", NULL);

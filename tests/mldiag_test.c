@@ -9,6 +9,8 @@ static const mldiag_cfg CFG = { 1920, 1080, 60, 20000, 1392, 1, 1, 0, 0x30002, 1
 
 static int g_target = 50;
 int ml_engine_get_target_depth_ms(void) { return g_target; }
+static int g_corr = 0, g_lead0 = 0;
+void esplus_nudge_state(int *corr_ms, int *lead0_ms) { *corr_ms = g_corr; *lead0_ms = g_lead0; }
 
 static void fail(int code) { mldiag_fail(code, -1, NULL, 0, 2, 1, 0, 0, 0, 0, 0); }
 
@@ -245,15 +247,17 @@ int main(void) {
   /* stats overlay: want survives mldiag_reset, the window result does not */
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " catchup=0/-/- osd=0/- target=50 |"));
+  assert(strstr(buf, " catchup=0/-/- osd=0/- target=50 nudge=0/0 |"));
+  g_corr = 21; g_lead0 = 138; fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " target=50 nudge=21/138 |"));
+  g_corr = 0; g_lead0 = 0;
   mldiag_osd(1, 1); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=1/lowered"));
   mldiag_osd(0, 2); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=0/raised"));
   mldiag_osd(1, -1); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=1/nosym"));
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=1/-"));
   mldiag_osd(0, 0);
-  g_target = 30; fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=0/- target=30 |"));
-  mldiag_reset(&CFG); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " target=30 |") && strlen(buf) < 2047);
+  g_target = 30; fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " osd=0/- target=30 nudge=0/0 |"));
+  mldiag_reset(&CFG); fail(-101); mldiag_last(buf, sizeof buf); assert(strstr(buf, " target=30 nudge=0/0 |") && strlen(buf) < 2047);
   g_target = 50;
 
   /* the host reports its audio counters after the failure: mldiag_last shows the values at read time, the rest is unchanged */

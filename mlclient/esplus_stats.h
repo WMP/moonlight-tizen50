@@ -50,6 +50,8 @@ void esplus_sample_tick(uint64_t now_ms);
 
 /* Latency nudge (mode nudge): ms the video sink subtracts from each PTS. Lock-free. */
 int32_t esplus_correction_ms(void);
+/* Nudge state for the error line: correction ms and baseline lead ms (0 = none). Lock-free. */
+void esplus_nudge_state(int *corr_ms, int *lead0_ms);
 /* Counts sampler ticks; video uses it to skip at most one late frame per tick. */
 uint32_t esplus_sample_seq(void);
 /* 1 once after a recovery seek (then 0): the video sink must return DR_NEED_IDR. */
