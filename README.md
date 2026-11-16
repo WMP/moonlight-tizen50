@@ -231,14 +231,20 @@ Full map and attribution in [PROVENANCE](docs/PROVENANCE.en.md); design in
 ## Architecture (two packages)
 
 ```
-┌──────────────────────── Tizen app ────────────────────────┐
-│  Web UI (.wgt)  — moonlight-tizen front-end                │
-│      │  tizen.messageport  (mlbridge.js)                    │
-│      ▼                                                      │
-│  .NET host (.tpk)  — loads libmlengine.so (the engine)     │
-│      makeCert / pair / startStream / input                 │
-│      → moonlight-common-c + libgamestream + esplusplayer   │
-└────────────────────────────────────────────────────────────┘
+┌─ Web UI app (.wgt) ──────────────────────────────────────────┐
+│  moonlight-tizen front-end: hosts, pairing, apps, settings   │
+│  mlbridge.js: the bridge to the host (pkg/ui)                │
+└───────────────────────────────┬──────────────────────────────┘
+                                │ tizen.messageport
+                                │ commands, replies, events
+┌───────────────────────────────┴──────────────────────────────┐
+│  .NET host app (.tpk): loads libmlengine.so (the engine)     │
+│  makeCert / pair / startStream / input / tvGameMode          │
+│    → moonlight-common-c + libgamestream (stream, pairing)    │
+│    → esplusplayer: hardware video on the TV video plane      │
+│    → audio-io: Opus decoded to PCM, played natively          │
+│    → avoc: the TV game mode                                  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 Two packages, installed side by side: the **web UI** (`.wgt`, the moonlight-tizen
