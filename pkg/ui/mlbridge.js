@@ -537,16 +537,52 @@
     var gen = streamGen;
     setTimeout(function () {
       if (gen !== streamGen) return;   // a new stream started meanwhile
-      var rc = [];
-      function off(type) {   // always resolves; a failed call is warned and shown as '?'
-        return bridgeCall('tvGameMode', { on: 'false', saveType: type }, DEFAULT_TIMEOUT).then(
-          function (r) { rc.push(r.rc); },
-          function (e) { rc.push('?'); console.warn('[mlbridge] TV game mode off after stream failed:', e); });
-      }
-      off('1').then(function () { return off('0'); }).then(function () {
-        console.log('[mlbridge] TV game mode off after stream -> rc ' + rc.join('/'));
+      tvGameModeOffNow('after stream').then(function (rc) {
+        console.log('[mlbridge] TV game mode off after stream -> rc ' + rc);
       });
     }, 2000);
+  }
+
+  // Full "off" (both calls, see above). Always resolves with the rc list, e.g. '0/0' or '?/0'.
+  function tvGameModeOffNow(what) {
+    var rc = [];
+    function off(type) {   // a failed call is warned and shown as '?'
+      return bridgeCall('tvGameMode', { on: 'false', saveType: type }, DEFAULT_TIMEOUT).then(
+        function (r) { rc.push(r.rc); },
+        function (e) { rc.push('?'); console.warn('[mlbridge] TV game mode off ' + what + ' failed:', e); });
+    }
+    return off('1').then(function () { return off('0'); }).then(function () { return rc.join('/'); });
+  }
+
+  // Settings button for a TV left in game mode (e.g. the app died during a stream). Built here, not in index.html.
+  var gameModeOffBusy = false;
+  function addGameModeOffButton() {
+    try {
+      var menu = document.getElementById('gameModeMenu');
+      var row = menu && menu.parentNode;
+      if (!row || !row.parentNode || document.getElementById('gameModeOffBtn')) return;
+      var div = document.createElement('div');
+      div.className = 'setting-option';
+      div.innerHTML = '<label>Switch the TV game mode off</label>' +
+        '<span class="mdl-list__item-text-body">- Use it when the TV stays in game mode, e.g. after Moonlight closed during a stream.</span>' +
+        '<div id="gameModeOffMenu"><button type="button" id="gameModeOffBtn" class="mdl-button mdl-js-button mdl-js-ripple-effect" ' +
+        'aria-label="Switch the TV game mode off"><span>Switch game mode off now</span></button></div>';
+      row.parentNode.insertBefore(div, row.nextSibling);
+      var btn = document.getElementById('gameModeOffBtn');
+      if (!btn) return;
+      if (window.componentHandler) { try { window.componentHandler.upgradeElement(btn); } catch (e) {} }
+      btn.addEventListener('click', function () {
+        if (gameModeOffBusy) return;
+        gameModeOffBusy = true;
+        tvGameModeOffNow('(settings)').then(function (rc) {
+          gameModeOffBusy = false;
+          console.log('[mlbridge] TV game mode off (settings) -> rc ' + rc);
+          if (typeof window.snackbarLog === 'function') {
+            window.snackbarLog(rc === '0/0' ? 'TV game mode off: rc ' + rc : 'TV game mode off failed: rc ' + rc);
+          }
+        });
+      });
+    } catch (e) { console.warn('[mlbridge] game mode off button not added: ' + errText(e)); }
   }
 
   // Send {cmd,id,...fields} and resolve with the reply map. timeoutMs 0 = no timeout.
@@ -870,6 +906,7 @@
   // before common.js, so this DOMContentLoaded listener runs first and replaces
   // common.domContentLoaded to skip the WASM load and fire moduleDidLoad() ourselves.
   document.addEventListener('DOMContentLoaded', function () {
+    addGameModeOffButton();
     disableUpdateCheck();   // index.js is loaded now; runs before attachListeners binds the button
     showBuild();
     trace('DOMContentLoaded: common.domContentLoaded exists =',
