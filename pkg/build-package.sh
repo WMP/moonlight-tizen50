@@ -54,6 +54,9 @@ sed -i -e 's/} else if (checkForceGMVariant || parseFloat(platformVer) === 5.5) 
        -e 's/} else if (isForceGMVariant || parseFloat(platformVer) === 5.5) {/} else if (isForceGMVariant) {/' \
        "$OUT/ui/platform/index.js"
 grep -q "isForceGMVariant || parseFloat" "$OUT/ui/platform/index.js" && { echo "gameMode 5.5 unlock sed failed" >&2; exit 1; }
+# Remote navigation: add the game mode off button (made by mlbridge.js) after the game mode switch.
+sed -i "s/^      'gameModeBtn'\$/      'gameModeBtn',\n      'gameModeOffBtn'/" "$OUT/ui/platform/navigation.js"
+grep -q "'gameModeOffBtn'" "$OUT/ui/platform/navigation.js" || { echo "gameModeOffBtn navigation sed failed" >&2; exit 1; }
 echo "version: $(sed -n '/<widget/,/>/ s/.* version="\([^"]*\)".*/\1/p' "$OUT/ui/config.xml" | head -1) ($ML_BUILD)"
 if [ "$BUILD_VARIANT" = debug ]; then
   # trace build: console -> host -> dlog (see ui/mltrace.js); first script in <head>

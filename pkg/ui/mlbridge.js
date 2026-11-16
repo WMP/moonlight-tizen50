@@ -260,6 +260,8 @@
   }
 
   // Live stats overlay (event mlstats, see PROTOCOL.md); shown after an odd number of toggles.
+  var streamGen = 0, gameModeOnStream = false;   // stream counter; did the last session ask for TV game mode
+  var gameModeOnWanted = false, liveGen = 0;   // "on" retry still due; streamGen of the live session (0 = ended)
   var wantStats = false;   // startRequest a[29]: turn the overlay on at Connection Established
   var statsOn = false, statsEl = null, statsGen = 0;   // statsGen: bumped on streamTerminated
   var audioRoute = 'none';   // last mlaroute: 'native' | 'webaudio' | 'none' (see PROTOCOL.md)
@@ -494,9 +496,10 @@
     if (m.event) {              // async push (streamTerminated/Connection Established)
       trace('event', m.event);
       if (m.diag) console.error('[ML-ERROR] ' + m.diag);   // always, not only when tracing
-      if (String(m.event).indexOf('streamTerminated') === 0) { resetStats(); stopPads(); audioCall('mlAudioStop'); }
+      if (String(m.event).indexOf('streamTerminated') === 0) { liveGen = 0; resetStats(); stopPads(); audioCall('mlAudioStop'); tvGameModeOffLater(); }
       else if (m.event === 'Connection Established') {
         startPads();
+        tvGameModeOnLater();
         if (wantStats && !statsOn) toggleStats().catch(function (e) { console.warn('toggleStats: ' + e); });
       }
       if (typeof window.handleMessage === 'function') window.handleMessage(String(m.event));
@@ -508,6 +511,78 @@
     if (p.timer) clearTimeout(p.timer);
     if (m.error) p.reject(m.error);
     else p.resolve(m);
+  }
+
+  // The engine's own "on" call can return -2 during the start; the same call a moment later works. Once per session.
+  // shortcut: fixed 2 s delay, one retry; make it longer or retry more if a TV still misses game mode.
+  function tvGameModeOnLater() {
+    if (!gameModeOnWanted || liveGen !== streamGen) return;
+    gameModeOnWanted = false;
+    var gen = streamGen;
+    setTimeout(function () {
+      if (gen !== liveGen) return;   // the stream ended or a new one started meanwhile
+      bridgeCall('tvGameMode', { on: 'true', saveType: '1' }, DEFAULT_TIMEOUT).then(
+        function (r) { console.log('[mlbridge] TV game mode on after start -> rc ' + r.rc); },
+        function (e) { console.warn('[mlbridge] TV game mode on after start failed:', e); });
+    }, 2000);
+  }
+
+  // Second full "off" after the engine's own (a safety net; the engine sends the same two calls at the stop).
+  // A full off needs both calls: save type 1 clears the temporary override, save type 0 clears the stored setting
+  // (with only one of them the TV is in game mode again, now or after the app exits; observed on a TV).
+  // shortcut: fixed 2 s delay, found by hand on one TV; make it longer or retry if a TV still keeps game mode.
+  function tvGameModeOffLater() {
+    if (!gameModeOnStream) return;
+    gameModeOnStream = false;   // once per stream end
+    var gen = streamGen;
+    setTimeout(function () {
+      if (gen !== streamGen) return;   // a new stream started meanwhile
+      tvGameModeOffNow('after stream').then(function (rc) {
+        console.log('[mlbridge] TV game mode off after stream -> rc ' + rc);
+      });
+    }, 2000);
+  }
+
+  // Full "off" (both calls, see above). Always resolves with the rc list, e.g. '0/0' or '?/0'.
+  function tvGameModeOffNow(what) {
+    var rc = [];
+    function off(type) {   // a failed call is warned and shown as '?'
+      return bridgeCall('tvGameMode', { on: 'false', saveType: type }, DEFAULT_TIMEOUT).then(
+        function (r) { rc.push(r.rc); },
+        function (e) { rc.push('?'); console.warn('[mlbridge] TV game mode off ' + what + ' failed:', e); });
+    }
+    return off('1').then(function () { return off('0'); }).then(function () { return rc.join('/'); });
+  }
+
+  // Settings button for a TV left in game mode (e.g. the app died during a stream). Built here, not in index.html.
+  var gameModeOffBusy = false;
+  function addGameModeOffButton() {
+    try {
+      var menu = document.getElementById('gameModeMenu');
+      var row = menu && menu.parentNode;
+      if (!row || !row.parentNode || document.getElementById('gameModeOffBtn')) return;
+      var div = document.createElement('div');
+      div.className = 'setting-option';
+      div.innerHTML = '<label>Switch the TV game mode off</label>' +
+        '<span class="mdl-list__item-text-body">- Use it when the TV stays in game mode, e.g. after Moonlight closed during a stream.</span>' +
+        '<div id="gameModeOffMenu"><button type="button" id="gameModeOffBtn" class="mdl-button mdl-js-button mdl-js-ripple-effect" ' +
+        'aria-label="Switch the TV game mode off"><span>Switch game mode off now</span></button></div>';
+      row.parentNode.insertBefore(div, row.nextSibling);
+      var btn = document.getElementById('gameModeOffBtn');
+      if (!btn) return;
+      if (window.componentHandler) { try { window.componentHandler.upgradeElement(btn); } catch (e) {} }
+      btn.addEventListener('click', function () {
+        if (gameModeOffBusy) return;
+        gameModeOffBusy = true;
+        tvGameModeOffNow('(settings)').then(function (rc) {
+          gameModeOffBusy = false;
+          console.log('[mlbridge] TV game mode off (settings) -> rc ' + rc);
+          if (typeof window.snackbarLog === 'function') {
+            window.snackbarLog(rc === '0/0' ? 'TV game mode off: rc ' + rc : 'TV game mode off failed: rc ' + rc);
+          }
+        });
+      });
+    } catch (e) { console.warn('[mlbridge] game mode off button not added: ' + errText(e)); }
   }
 
   // Send {cmd,id,...fields} and resolve with the reply map. timeoutMs 0 = no timeout.
@@ -545,6 +620,7 @@
       // a[19] audioConfig (a[18] is audioBackend), a[24] videoCodec, a[25] hdrMode, a[26] fullRange,
       // a[27] gameMode (the TV's game picture/low-latency mode), a[29] performanceStats (overlay at stream start)
       wantStats = !!a[29];
+      streamGen++; gameModeOnStream = gameModeOnWanted = !!a[27]; liveGen = streamGen;
       return call('startStream', {
         host: a[0], w: a[2], h: a[3], fps: a[4], bitrate: a[5], rikey: a[6], rikeyid: a[7],
         appVer: a[8], gfeVer: a[9], rtspUrl: a[10], codecMode: a[11],
@@ -830,6 +906,7 @@
   // before common.js, so this DOMContentLoaded listener runs first and replaces
   // common.domContentLoaded to skip the WASM load and fire moduleDidLoad() ourselves.
   document.addEventListener('DOMContentLoaded', function () {
+    addGameModeOffButton();
     disableUpdateCheck();   // index.js is loaded now; runs before attachListeners binds the button
     showBuild();
     trace('DOMContentLoaded: common.domContentLoaded exists =',
