@@ -7,11 +7,11 @@ It streams games from a GameStream host (Sunshine, GeForce Experience,
 [Wolf](https://games-on-whales.github.io/wolf/)) and decodes video on the TV's
 hardware video plane through the vendor library `libesplusplayer.so`.
 
-> Status: **experimental / work in progress.** See the feature table below for
-> what is verified to work, what is implemented but not yet field-tested, and
-> what is still on the list.
+> Status: **1.0.** Tested on one TV model (Tizen 5.0, Muse.M). See the feature
+> table below for what is verified to work, what is not tested yet, and what is
+> still on the list.
 
-## v0.2 in action
+## Demo (v0.2)
 
 [![Moonlight Tizen 5.0 — v0.2 streaming demo](https://img.youtube.com/vi/dFGEaQFeYeA/maxresdefault.jpg)](https://youtu.be/dFGEaQFeYeA)
 
@@ -20,9 +20,9 @@ launching a game, hardware H.264 video, Web Audio sound, an Xbox controller
 over Bluetooth, live statistics overlay, and leaving the stream with the
 Remote's Back key.
 
-## Feature status (v0.2)
+## Feature status (v1.0)
 
-What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
+Tested on real hardware (Tizen 5.0, Muse.M, armv7l) with a Wolf host, unless noted:
 
 | Feature | State | Notes |
 |---|---|---|
@@ -30,20 +30,21 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | Pairing (PIN) | **works** | own certificate generated on the TV |
 | App / game list | **works** | |
 | Hardware H.264 decode (720p–1080p, up to 60 fps) | **works** | 720p60 and 1080p60 verified |
-| Opus → PCM audio, played natively by the engine (audio-io) | **works** | Web Audio fallback when audio-io is missing/fails; loss counters in the overlay |
+| Hardware HEVC decode | **works** | |
+| 4K resolutions | **works** | |
+| AV1 video | **not supported** | the TV's player on this firmware does not decode AV1 |
+| Opus → PCM audio, played natively by the engine (audio-io) | **works** | stereo 48 kHz; the TV logs show `audio route: native`. Web Audio fallback when audio-io is missing or fails (fallback not re-tested on the TV since #37); loss counters in the overlay |
 | Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers |
 | Statistics overlay (`toggleStats`) | **works** | queue depth, fps, audio counters |
 | Remote Back key leaves the stream | **works** | #20 |
 | Gamepad combo Back+Start+LB+RB leaves the stream | **works** | tested on the TV with an Xbox controller (2026-11) |
-| HEVC / AV1 video | untested | engine path exists; not verified on a TV |
 | HDR | untested | |
-| 4K resolutions | untested | the player takes them; the test TV is 1080p |
 | Keyboard / mouse input | untested | engine path exists |
 | TV Game Mode during a stream (#32, #41, #42) | **works** | tested on the TV (2026-11): on at stream start, off at stream stop, and still off after you leave Moonlight. The TV sometimes refuses the first call (`rc -2`); the UI repeats it 2 s later |
 | Settings button "Switch the TV game mode off" (#42) | untested | Video Settings, below Game mode; for a TV left in game mode, e.g. after the app closed mid-stream |
 | Rumble feedback | **todo** | |
-| Surround sound (5.1/7.1) | **todo** | the player carries video only |
-| A/V sync (shared audio clock) | **todo** | audio runs on the Web Audio clock |
+| Surround sound (5.1/7.1) | **todo** | audio-io takes mono/stereo only; a 5.1 stream falls back to Web Audio (not tested) |
+| A/V sync (shared audio clock) | **todo** | audio and video run on separate clocks (audio-io and the video player) |
 | Player stall recovery (`MLENGINE_RECOVER_MAX`) | **todo** | implemented, off by default until validated |
 
 The debug packages (`-debug` file suffix) log everything: see
@@ -185,9 +186,26 @@ grep -n -E '\bid=28\b' $F
 The base UI's lines carry CSS noise (`%c[index.js, …] color: green;`); to keep
 them but make them readable add `| sed 's/%c//; s/ color: [a-z]*;//'`.
 
-## v0.2 changelog
+## v1.0 changelog
 
-Highlights of this release; the [Releases](../../releases) page has the full list.
+Highlights since v0.2; the [Releases](../../releases) page has the full list.
+
+- **Native audio** (#37): the engine plays the decoded Opus through the TV's
+  audio-io, with no message-port hop; Web Audio stays as an automatic fallback.
+- **Lower video latency** (#40): `nudge` pacing is the default for 60 fps
+  streams (target 100 ms, `mlTargetDepth(ms)` in the console); a missing H.264
+  SPS `bitstream_restriction` is added; a one-time catch-up of the player queue
+  after the start (#34).
+- **TV Game Mode** (#32, #34, #41, #42): on at the stream start, off at the stop,
+  and still off after you leave Moonlight. The UI repeats a call the TV refused.
+  A settings button switches it off by hand (Video Settings).
+- **Stats overlay over the video** (#40), turned on by the UI's performance
+  statistics setting (#34).
+- **HEVC and 4K** verified on the TV.
+- Fixes (#34): the player is closed after a failed setup, more data in the
+  `ML-ERROR` line; the host self-tests run in CI on every pull request.
+
+## v0.2 changelog
 
 - **Audio works**: the engine decodes Opus to PCM and the UI plays it with Web
   Audio (#22). Video-only is no longer the only option.
