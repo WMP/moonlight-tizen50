@@ -139,7 +139,10 @@ jobs:
             fi
           done
 
-          if [ -z "$(git status --porcelain)" ]; then
+          # Re-sync the index: the add above staged the pre-patch tree, so the
+          # check would see stale staged changes even when the result == HEAD.
+          git add -A
+          if git diff --cached --quiet; then
             echo "tree unchanged after the rebuild; nothing to commit"
             echo "NOTHING_TO_COMMIT=1" >> "$GITHUB_ENV"
           fi
