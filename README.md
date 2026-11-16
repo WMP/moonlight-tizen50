@@ -41,7 +41,6 @@ Tested on real hardware (Tizen 5.0, Muse.M, armv7l) with a Wolf host, unless not
 | HDR | untested | |
 | Keyboard / mouse input | untested | engine path exists |
 | TV Game Mode during a stream (#32, #41, #42) | **works** | tested on the TV (2026-11): on at stream start, off at stream stop, and still off after you leave Moonlight. The TV sometimes refuses the first call (`rc -2`); the UI repeats it 2 s later |
-| Settings button "Switch the TV game mode off" (#42) | untested | Video Settings, below Game mode; for a TV left in game mode, e.g. after the app closed mid-stream |
 | Rumble feedback | **todo** | |
 | Surround sound (5.1/7.1) | **todo** | audio-io takes mono/stereo only; a 5.1 stream falls back to Web Audio (not tested) |
 | A/V sync (shared audio clock) | **todo** | audio and video run on separate clocks (audio-io and the video player) |
@@ -118,9 +117,8 @@ Android). It shows the web UI console, and on request the host and engine log to
    mlDiag('launch')   // start the host in each way the UI can: [mldiag] lines
    ```
 
-   **TV game mode** stayed on after the app was closed? Use the button in
-   *Settings → Video Settings → Switch the TV game mode off*, or the console. The
-   console prints the TV's `rc` (0 = done). The second argument is the save type
+   **TV game mode** stayed on after the app was closed? Switch it off in the
+   console. The console prints the TV's `rc` (0 = done). The second argument is the save type
    (default 1): save type 1 is a temporary setting, save type 0 is the stored one.
    A full off needs both calls, one after the other (tested on the TV):
 
@@ -198,7 +196,6 @@ Highlights since v0.2; the [Releases](../../releases) page has the full list.
   after the start (#34).
 - **TV Game Mode** (#32, #34, #41, #42): on at the stream start, off at the stop,
   and still off after you leave Moonlight. The UI repeats a call the TV refused.
-  A settings button switches it off by hand (Video Settings).
 - **Stats overlay over the video** (#40), turned on by the UI's performance
   statistics setting (#34).
 - **HEVC and 4K** verified on the TV.
