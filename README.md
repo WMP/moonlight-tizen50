@@ -34,11 +34,13 @@ What works, on real hardware (Tizen 5.0, Muse.M, armv7l) unless noted:
 | Gamepad (Xbox over Bluetooth) | **works** | buttons, sticks, analog triggers |
 | Statistics overlay (`toggleStats`) | **works** | queue depth, fps, audio counters |
 | Remote Back key leaves the stream | **works** | #20 |
+| Gamepad combo Back+Start+LB+RB leaves the stream | **works** | tested on the TV with an Xbox controller (2026-11) |
 | HEVC / AV1 video | untested | engine path exists; not verified on a TV |
 | HDR | untested | |
 | 4K resolutions | untested | the player takes them; the test TV is 1080p |
 | Keyboard / mouse input | untested | engine path exists |
-| TV Game Mode during a stream (#32) | **works** | on at stream start, off at stream stop (the TV menu shows the change after you leave Moonlight); stop when the app is closed mid-stream: untested |
+| TV Game Mode during a stream (#32, #41, #42) | **works** | tested on the TV (2026-11): on at stream start, off at stream stop, and still off after you leave Moonlight. The TV sometimes refuses the first call (`rc -2`); the UI repeats it 2 s later |
+| Settings button "Switch the TV game mode off" (#42) | untested | Video Settings, below Game mode; for a TV left in game mode, e.g. after the app closed mid-stream |
 | Rumble feedback | **todo** | |
 | Surround sound (5.1/7.1) | **todo** | the player carries video only |
 | A/V sync (shared audio clock) | **todo** | audio runs on the Web Audio clock |
@@ -115,12 +117,16 @@ Android). It shows the web UI console, and on request the host and engine log to
    mlDiag('launch')   // start the host in each way the UI can: [mldiag] lines
    ```
 
-   **TV game mode** stayed on after the app was closed? Switch it off now. The console
-   prints the TV's `rc` (0 = done). The optional second argument is the save type (default 1):
+   **TV game mode** stayed on after the app was closed? Use the button in
+   *Settings → Video Settings → Switch the TV game mode off*, or the console. The
+   console prints the TV's `rc` (0 = done). The second argument is the save type
+   (default 1): save type 1 is a temporary setting, save type 0 is the stored one.
+   A full off needs both calls, one after the other (tested on the TV):
 
    ```js
-   mlGameMode(false)  // game mode off
-   mlGameMode(true)   // game mode on
+   mlGameMode(false, 1)   // 1. temporary setting off
+   mlGameMode(false, 0)   // 2. stored setting off: stays off after you leave Moonlight
+   mlGameMode(true)       // game mode on (temporary)
    ```
 
    If no `[MLHOST]` line comes at all, the host did not start: run `mlDiag('launch')`.
@@ -189,8 +195,8 @@ Highlights of this release; the [Releases](../../releases) page has the full lis
   the fatal watchdogs (#22), IDR retry at start.
 - **Remote Back leaves the stream** and returns to the app list (#20).
 - **TV Game Mode while streaming** (#32): the TV's game picture mode comes on
-  with the stream and is restored when it ends — implemented, awaiting an
-  on-TV test (see the table above).
+  with the stream and goes off when it ends. Tested on the TV after the fixes
+  in #41 and #42 (see the table above).
 - Diagnostics: every stream failure produces one `ML-ERROR` line with the session
   config, counters and player state.
 
