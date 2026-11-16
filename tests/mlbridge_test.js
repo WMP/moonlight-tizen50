@@ -354,6 +354,138 @@ test('mlGameMode sends tvGameMode and logs the rc', async function () {
   assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode failed') === 0; }));
 });
 
+test('TV game mode is switched off 2 s after the stream ends', async function () {
+  function start(gm) {
+    var a = ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]; a[27] = gm;
+    sent.length = 0;
+    var p = win.sendMessage('startRequest', a);
+    reply(fields(sent[0]).id, {});
+    return p;
+  }
+  function gmCalls() { return sent.map(fields).filter(function (f) { return f.cmd === 'tvGameMode'; }); }
+  await start(true);
+  sent.length = 0;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);   // duplicate: still one call
+  advance(1999);
+  assert.strictEqual(gmCalls().length, 0);
+  advance(1);
+  var c = gmCalls();
+  assert.strictEqual(c.length, 1);
+  assert.strictEqual(c[0].on, 'false'); assert.strictEqual(String(c[0].saveType), '1');
+  await tick();
+  assert.strictEqual(gmCalls().length, 1, 'save type 0 waits for the first reply');
+  reply(c[0].id, { rc: '0' }); await tick();
+  c = gmCalls();
+  assert.strictEqual(c.length, 2);
+  assert.strictEqual(c[1].on, 'false'); assert.strictEqual(String(c[1].saveType), '0');
+  reply(c[1].id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode off after stream -> rc 0/0') >= 0);
+  await start(false);
+  sent.length = 0;
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  advance(5000);
+  assert.strictEqual(gmCalls().length, 0, 'game mode was not requested');
+  await start(true);
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  await start(true);   // new stream within 2 s
+  sent.length = 0;
+  advance(5000);
+  assert.strictEqual(gmCalls().length, 0, 'new stream started');
+  listener([{ key: 'event', value: 'streamTerminated: 0' }]);
+  advance(2000);
+  reply(gmCalls()[0].id, { error: 'x' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode off after stream failed') === 0; }));
+  assert.strictEqual(gmCalls().length, 2, 'save type 0 is sent after a failed first call');
+  reply(gmCalls()[1].id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode off after stream -> rc ?/0') >= 0);
+  handled.length = 0;
+});
+
+test('game mode off button: created only with #gameModeMenu; click sends the full off once', async function () {
+  var inserted = [], btnClick = null, snacks = [];
+  domReady();
+  assert.strictEqual(byId.gameModeOffBtn, undefined, 'no #gameModeMenu: no button');
+  var parent = { insertBefore: function (n) {
+    inserted.push(n);
+    if (/gameModeOffBtn/.test(n.innerHTML)) byId.gameModeOffBtn = { addEventListener: function (ev, f) { if (ev === 'click') btnClick = f; } };
+  } };
+  byId.gameModeMenu = { parentNode: { parentNode: parent, nextSibling: null } };
+  win.snackbarLog = function (m) { snacks.push(m); };
+  domReady(); domReady();
+  assert.strictEqual(inserted.length, 1, 'added once');
+  assert.strictEqual(inserted[0].className, 'setting-option');
+  function gmCalls() { return sent.map(fields).filter(function (f) { return f.cmd === 'tvGameMode'; }); }
+  sent.length = 0;
+  btnClick(); btnClick();   // the second click is ignored
+  var c = gmCalls();
+  assert.strictEqual(c.length, 1);
+  assert.strictEqual(c[0].on, 'false'); assert.strictEqual(String(c[0].saveType), '1');
+  reply(c[0].id, { rc: '0' }); await tick();
+  c = gmCalls();
+  assert.strictEqual(c.length, 2);
+  assert.strictEqual(String(c[1].saveType), '0');
+  btnClick();
+  assert.strictEqual(gmCalls().length, 2, 'still running');
+  reply(c[1].id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode off (settings) -> rc 0/0') >= 0);
+  assert.deepStrictEqual(snacks, ['TV game mode off: rc 0/0']);
+  btnClick();   // free again
+  assert.strictEqual(gmCalls().length, 3);
+  reply(gmCalls()[2].id, { error: 'x' }); await tick();
+  reply(gmCalls()[3].id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode off (settings) -> rc ?/0') >= 0);
+  assert.strictEqual(snacks[1], 'TV game mode off failed: rc ?/0');
+  delete byId.gameModeMenu; delete byId.gameModeOffBtn; delete win.snackbarLog;
+});
+
+test('TV game mode is switched on again 2 s after Connection Established', async function () {
+  function start(gm) {
+    var a = ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]; a[27] = gm;
+    sent.length = 0;
+    var p = win.sendMessage('startRequest', a);
+    reply(fields(sent[0]).id, {});
+    return p;
+  }
+  function gmCalls() { return sent.map(fields).filter(function (f) { return f.cmd === 'tvGameMode'; }); }
+  function ev(s) { listener([{ key: 'event', value: s }]); }
+  await start(true);
+  sent.length = 0;
+  ev('Connection Established');
+  ev('Connection Established');   // duplicate: still one call
+  advance(1999);
+  assert.strictEqual(gmCalls().length, 0);
+  advance(1);
+  var c = gmCalls();
+  assert.strictEqual(c.length, 1);
+  assert.strictEqual(c[0].on, 'true'); assert.strictEqual(String(c[0].saveType), '1');
+  reply(c[0].id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode on after start -> rc 0') >= 0);
+  ev('streamTerminated: 0'); advance(5000);   // clean up the off pair
+  await start(false);
+  sent.length = 0;
+  ev('Connection Established'); advance(5000);
+  assert.strictEqual(gmCalls().length, 0, 'game mode was not requested');
+  await start(true);
+  sent.length = 0;
+  ev('Connection Established');
+  ev('streamTerminated: 0');
+  advance(1999);
+  assert.strictEqual(gmCalls().length, 0);
+  advance(1);
+  c = gmCalls();
+  assert.strictEqual(c.length, 1, 'only the off pair, no on call');
+  assert.strictEqual(c[0].on, 'false');
+  await start(true);
+  sent.length = 0;
+  ev('Connection Established');
+  advance(2000);
+  reply(gmCalls()[0].id, { error: 'x' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode on after start failed') === 0; }));
+  ev('streamTerminated: 0'); advance(60000); await tick(); advance(60000); await tick();   // end the stream, let pending calls time out
+  sent.length = 0; handled.length = 0;
+});
+
 test('mlStatsOsd sends statsOsd and logs the rc and the window', async function () {
   sent.length = 0;
   assert.ok(/on/.test(win.mlStatsOsd(true)));
