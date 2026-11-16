@@ -402,6 +402,52 @@ test('TV game mode is switched off 2 s after the stream ends', async function ()
   handled.length = 0;
 });
 
+test('TV game mode is switched on again 2 s after Connection Established', async function () {
+  function start(gm) {
+    var a = ['host', 47989, 1920, 1080, 60, 20000, 'abcd', 7]; a[27] = gm;
+    sent.length = 0;
+    var p = win.sendMessage('startRequest', a);
+    reply(fields(sent[0]).id, {});
+    return p;
+  }
+  function gmCalls() { return sent.map(fields).filter(function (f) { return f.cmd === 'tvGameMode'; }); }
+  function ev(s) { listener([{ key: 'event', value: s }]); }
+  await start(true);
+  sent.length = 0;
+  ev('Connection Established');
+  ev('Connection Established');   // duplicate: still one call
+  advance(1999);
+  assert.strictEqual(gmCalls().length, 0);
+  advance(1);
+  var c = gmCalls();
+  assert.strictEqual(c.length, 1);
+  assert.strictEqual(c[0].on, 'true'); assert.strictEqual(String(c[0].saveType), '1');
+  reply(c[0].id, { rc: '0' }); await tick();
+  assert.ok(logs.indexOf('[mlbridge] TV game mode on after start -> rc 0') >= 0);
+  ev('streamTerminated: 0'); advance(5000);   // clean up the off pair
+  await start(false);
+  sent.length = 0;
+  ev('Connection Established'); advance(5000);
+  assert.strictEqual(gmCalls().length, 0, 'game mode was not requested');
+  await start(true);
+  sent.length = 0;
+  ev('Connection Established');
+  ev('streamTerminated: 0');
+  advance(1999);
+  assert.strictEqual(gmCalls().length, 0);
+  advance(1);
+  c = gmCalls();
+  assert.strictEqual(c.length, 1, 'only the off pair, no on call');
+  assert.strictEqual(c[0].on, 'false');
+  await start(true);
+  sent.length = 0;
+  ev('Connection Established');
+  advance(2000);
+  reply(gmCalls()[0].id, { error: 'x' }); await tick();
+  assert.ok(warns.some(function (w) { return w.indexOf('[mlbridge] TV game mode on after start failed') === 0; }));
+  handled.length = 0;
+});
+
 test('mlStatsOsd sends statsOsd and logs the rc and the window', async function () {
   sent.length = 0;
   assert.ok(/on/.test(win.mlStatsOsd(true)));
