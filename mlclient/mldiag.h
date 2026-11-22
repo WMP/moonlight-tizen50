@@ -58,6 +58,8 @@ void mldiag_sps(int state, int profile, int level, int ref_frames, int poc_type,
 void mldiag_hdr(int enabled, int meta_ok, int max_lum, int min_lum, int max_cll, int max_fall);
 /* The last HEVC IDR frame (video_esplus.c): prefix SEI NAL count and payload mask (bit0 = 137 mastering display, bit1 = 144 content light level). */
 void mldiag_hevc_sei(int sei_nals, int mask);
+/* video_esplus.c built and inserted an HDR SEI into an HEVC IDR frame; shown as ins= (count per session). */
+void mldiag_hdr_sei_inserted(void);
 void mldiag_idr_retry(void);          /* one IDR request retry at the start (no video packet yet) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */

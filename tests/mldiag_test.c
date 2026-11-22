@@ -202,16 +202,16 @@ int main(void) {
   /* HDR host mode + HEVC SEI: never set, set, reset clears */
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " | hdr host=-1 n=0 meta=- sei=- | player "));
-  mldiag_hdr(1, 1, 1000, 50, 800, 400); mldiag_hevc_sei(2, 3);
+  assert(strstr(buf, " | hdr host=-1 n=0 meta=- sei=- ins=0 | player "));
+  mldiag_hdr(1, 1, 1000, 50, 800, 400); mldiag_hevc_sei(2, 3); mldiag_hdr_sei_inserted(); mldiag_hdr_sei_inserted();
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " | hdr host=1 n=1 meta=lum1000/50.cll800/400 sei=2/0x3 | player "));
+  assert(strstr(buf, " | hdr host=1 n=1 meta=lum1000/50.cll800/400 sei=2/0x3 ins=2 | player "));
   mldiag_hdr(0, 0, 0, 0, 0, 0);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " | hdr host=0 n=2 meta=- sei=2/0x3 | player "));
+  assert(strstr(buf, " | hdr host=0 n=2 meta=- sei=2/0x3 ins=2 | player "));
   mldiag_reset(&CFG);
   fail(-101); mldiag_last(buf, sizeof buf);
-  assert(strstr(buf, " | hdr host=-1 n=0 meta=- sei=- | player "));
+  assert(strstr(buf, " | hdr host=-1 n=0 meta=- sei=- ins=0 | player "));
 
   /* native audio-io output (audio_opus.c): counters, and the fallback variant */
   mldiag_reset(&CFG);

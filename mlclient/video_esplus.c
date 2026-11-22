@@ -34,7 +34,7 @@ extern void esplus_close(void);
 static int s_fps;
 static int s_h264;   /* the stream is H.264: SPS entries may get a bitstream_restriction */
 static int s_hevc;   /* the stream is HEVC: log the SPS once and scan IDR frames for HDR SEI */
-static int s_hevc_sps_logged, s_hevc_idr_logged;   /* once per session */
+static int s_hevc_sps_logged, s_hevc_idr_logged, s_hdr_sei_logged;   /* once per session */
 static uint8_t *s_scratch;
 static size_t s_scratch_cap;
 static uint64_t s_base_pts_ms;
@@ -80,7 +80,7 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
 }
 
 static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0;
-  s_hevc_sps_logged = s_hevc_idr_logged = 0;
+  s_hevc_sps_logged = s_hevc_idr_logged = s_hdr_sei_logged = 0;
   s_arrival_base_ms = 0; s_have_arrival = 0; s_prev_pts_ms = 0; s_have_prev = 0; s_skip_seq = esplus_sample_seq() - 1;
   esplus_prepare(); }
 static void VidDecStop(void) {}
@@ -109,8 +109,8 @@ static int VidDecSubmit(PDECODE_UNIT du) {
     __atomic_fetch_add(&esplus_stats.dropped_late, 1, __ATOMIC_RELAXED);
     return DR_NEED_IDR;   /* later frames reference this one: common-c drops them and asks for an IDR */
   }
-  if (ensure_scratch((size_t)du->fullLength + H264_SPS_EXTRA)) return DR_NEED_IDR;
-  int idr = du->frameType == FRAME_TYPE_IDR, sei_n = 0, sei_mask = 0;   /* the HEVC SEI scan runs on IDR frames only */
+  if (ensure_scratch((size_t)du->fullLength + H264_SPS_EXTRA + HEVC_SEI_MAX)) return DR_NEED_IDR;
+  int idr = du->frameType == FRAME_TYPE_IDR, sei_n = 0, sei_mask = 0, pic_seen = 0;   /* the HEVC SEI scan runs on IDR frames only */
   size_t off = 0, grown = 0;   /* grown: bytes the patched SPS entries added so far (never above H264_SPS_EXTRA) */
   uint8_t tmp[H264_SPS_MAX_IN + H264_SPS_EXTRA];   /* function scope: src may point here until the memcpy below */
   for (PLENTRY e = du->bufferList; e; e = e->next) {
@@ -132,7 +132,23 @@ static int VidDecSubmit(PDECODE_UNIT du) {
       hx[2 * k] = 0; s_hevc_sps_logged = 1;
       VLOG("hevc sps: %s\n", hx);
     }
-    if (s_hevc && idr) sei_n += hevc_sei_scan(src, len, &sei_mask);
+    if (s_hevc && idr) {
+      sei_n += hevc_sei_scan(src, len, &sei_mask);
+      SS_HDR_METADATA m;
+      /* the TV decoder only reads HDR metadata from the stream: add it before the slices when the host sent none */
+      if (e->bufferType == BUFFER_TYPE_PICDATA && !pic_seen++ && !(sei_mask & 1) && esplus_cfg.hdr_sei
+          && LiGetCurrentHostDisplayHdrMode() && LiGetHdrMetadata(&m) && m.maxDisplayLuminance > 0) {
+        uint16_t p[6] = {m.displayPrimaries[0].x, m.displayPrimaries[0].y, m.displayPrimaries[1].x, m.displayPrimaries[1].y,
+                         m.displayPrimaries[2].x, m.displayPrimaries[2].y};
+        size_t k = hevc_sei_build(s_scratch + off, s_scratch_cap - off, p, m.whitePoint.x, m.whitePoint.y, m.maxDisplayLuminance,
+                                  m.minDisplayLuminance, m.maxContentLightLevel, m.maxFrameAverageLightLevel);
+        if (k) {
+          off += k; mldiag_hdr_sei_inserted();
+          if (!s_hdr_sei_logged) { s_hdr_sei_logged = 1;
+            VLOG("hevc hdr sei inserted bytes=%zu lum=%u/%u cll=%u/%u\n", k, m.maxDisplayLuminance, m.minDisplayLuminance, m.maxContentLightLevel, m.maxFrameAverageLightLevel); }
+        }
+      }
+    }
     memcpy(s_scratch + off, src, len);
     off += len;
   }

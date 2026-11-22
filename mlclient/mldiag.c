@@ -36,7 +36,7 @@ static long long s_first_du_ms = -1;
 
 /* hot counters: __atomic */
 enum { C_UNREC, C_DROP, C_WAITIDR, C_BADLEN, C_DECRYPT, C_CORRUPT, C_UNKFT, C_IDRREQ, C_FEC, C_QOVF,
-       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_PADARR, C_PADST, C_PADFAIL, C_VSUBFAIL, C_ASUBFAIL, C_ADEC, C_ADECFAIL, C_IDRRETRY, C_REBUILD, C_AFRAMES, C_N };
+       C_DROPLIM, C_DU, C_IDR, C_VSUB, C_ASUB, C_SUBFAIL, C_CTLENC, C_CTLFAIL, C_VOK, C_VFAIL, C_VNA, C_PADARR, C_PADST, C_PADFAIL, C_VSUBFAIL, C_ASUBFAIL, C_ADEC, C_ADECFAIL, C_IDRRETRY, C_REBUILD, C_AFRAMES, C_HDRSEI, C_N };
 static unsigned s_c[C_N];
 static unsigned long long s_abytes;       /* PCM bytes handed to the audio callback */
 static int s_adrops, s_asent, s_asendfail;   /* the host's audio counters (last report): dropped, sent to the UI, failed sends */
@@ -137,6 +137,7 @@ void mldiag_hdr(int enabled, int meta_ok, int max_lum, int min_lum, int max_cll,
 void mldiag_hevc_sei(int sei_nals, int mask) {
   pthread_mutex_lock(&s_mu); s_sei_n = sei_nals; s_sei_mask = mask; pthread_mutex_unlock(&s_mu);
 }
+void mldiag_hdr_sei_inserted(void) { INC(C_HDRSEI); }
 void mldiag_idr_retry(void) { INC(C_IDRRETRY); }
 void mldiag_rebuild(void) { INC(C_REBUILD); }
 void mldiag_catchup(int depth_ms, int seek_ok) {
@@ -333,7 +334,7 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   char hmS[48], seiS[24];
   if (s_hdr_meta) snprintf(hmS, sizeof hmS, "lum%d/%d.cll%d/%d", s_hdr[0], s_hdr[1], s_hdr[2], s_hdr[3]); else snprintf(hmS, sizeof hmS, "-");
   if (s_sei_n < 0) snprintf(seiS, sizeof seiS, "-"); else snprintf(seiS, sizeof seiS, "%d/0x%x", s_sei_n, s_sei_mask);
-  ADD(" | hdr host=%d n=%u meta=%s sei=%s", s_hdr_host, (unsigned)s_hdr_n, hmS, seiS);
+  ADD(" | hdr host=%d n=%u meta=%s sei=%s ins=%u", s_hdr_host, (unsigned)s_hdr_n, hmS, seiS, GET(C_HDRSEI));
   ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d state=%d rebuilds=%u rb=%d/%d/%d/%d vsub=%u asub=%u subfail=%u/%d vfail=%u/%d afail=%u/%d adec=%u adec_fail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start, s_state, GET(C_REBUILD), s_rb_open, s_rb_addv, s_rb_disp, s_rb_prep,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, GET(C_VSUBFAIL), s_vfail_last, GET(C_ASUBFAIL), s_afail_last,
       GET(C_ADEC), GET(C_ADECFAIL), __atomic_load_n(&s_adec_err, __ATOMIC_RELAXED), player_errors, player_last_error);

@@ -132,8 +132,93 @@ static void sei_test(void) {
   { const uint8_t bad[] = {0,0,1,0x4e,1,0xff,0xff,0xff}; mask = 0; assert(hevc_sei_scan(bad, sizeof bad, &mask) == 1 && mask == 0); }
 }
 
+static int hdr_on = 1, meta_ok = 1;
+bool LiGetCurrentHostDisplayHdrMode(void) { return hdr_on; }
+bool LiGetHdrMetadata(PSS_HDR_METADATA m) {
+  if (!meta_ok) return false;
+  memset(m, 0, sizeof *m);
+  m->displayPrimaries[0].x = 34000; m->displayPrimaries[0].y = 16000;   /* R */
+  m->displayPrimaries[1].x = 13250; m->displayPrimaries[1].y = 34500;   /* G */
+  m->displayPrimaries[2].x = 7500;  m->displayPrimaries[2].y = 3000;    /* B */
+  m->whitePoint.x = 15635; m->whitePoint.y = 16450;
+  m->maxDisplayLuminance = 1000; m->minDisplayLuminance = 50; m->maxContentLightLevel = 800; m->maxFrameAverageLightLevel = 400;
+  return true;
+}
+/* undo emulation prevention of a built NAL (after the start code) */
+static size_t unescape(const uint8_t *s, size_t n, uint8_t *o) {
+  size_t k = 0; int z = 0;
+  for (size_t i = 0; i < n; i++) { if (z >= 2 && s[i] == 3) { z = 0; continue; } o[k++] = s[i]; z = s[i] ? 0 : z + 1; }
+  return k;
+}
+static void sei_build_test(void) {
+  uint8_t o[HEVC_SEI_MAX], r[HEVC_SEI_MAX]; int mask = 0;
+  const uint16_t rgb[6] = {34000, 16000, 13250, 34500, 7500, 3000};
+  size_t n = hevc_sei_build(o, sizeof o, rgb, 15635, 16450, 1000, 50, 800, 400);
+  assert(n > 0 && n <= HEVC_SEI_MAX && !memcmp(o, "\0\0\0\1\x4e\x01", 6));
+  assert(hevc_sei_scan(o, n, &mask) == 1 && (mask & 1));
+  size_t k = unescape(o + 4, n - 4, r);
+  assert(k == 35 && r[2] == 137 && r[3] == 24 && r[28] == 144 && r[29] == 4 && r[34] == 0x80);
+  const uint8_t *p = r + 4;
+#define U16(q) (unsigned)((q)[0] << 8 | (q)[1])
+  assert(U16(p) == 13250 && U16(p + 2) == 34500 && U16(p + 4) == 7500 && U16(p + 6) == 3000 && U16(p + 8) == 34000 && U16(p + 10) == 16000);   /* G, B, R */
+  assert(U16(p + 12) == 15635 && U16(p + 14) == 16450);
+  assert(U16(p + 16) == 0x0098 && U16(p + 18) == 0x9680);   /* 1000 nits = 10,000,000 = 0x00989680 */
+  assert(U16(p + 20) == 0 && U16(p + 22) == 50 && U16(r + 30) == 800 && U16(r + 32) == 400);
+  { const uint16_t z[6] = {0};   /* zeros: emulation prevention must kick in */
+    n = hevc_sei_build(o, sizeof o, z, 0, 0, 1, 0, 0, 0);
+    assert(n > 39 && n <= HEVC_SEI_MAX);
+    for (size_t i = 4; i + 2 < n; i++) assert(!(o[i] == 0 && o[i + 1] == 0 && o[i + 2] <= 2));
+    assert(unescape(o + 4, n - 4, r) == 35);
+    mask = 0; assert(hevc_sei_scan(o, n, &mask) == 1 && (mask & 1)); }
+  n = hevc_sei_build(o, sizeof o, rgb, 1, 1, 1, 1, 1, 1);
+  for (size_t c = 0; c < n; c++) assert(hevc_sei_build(o, c, rgb, 1, 1, 1, 1, 1, 1) == 0);   /* cap too small */
+#undef U16
+}
+/* HEVC IDR: SPS, PPS, picture data; the SEI must land right before the picture data */
+static int idr_hevc(const uint8_t *pic, size_t pn) {
+  LENTRY pc = {NULL, (char *)pic, (int)pn, BUFFER_TYPE_PICDATA}, pps = {&pc, (char *)PPS_B, sizeof PPS_B, BUFFER_TYPE_PPS},
+         e = {&pps, (char *)SPS_NR, sizeof SPS_NR, BUFFER_TYPE_SPS};
+  DECODE_UNIT du; memset(&du, 0, sizeof du);
+  du.frameType = FRAME_TYPE_IDR; du.fullLength = (int)(sizeof SPS_NR + sizeof PPS_B + pn); du.bufferList = &e;
+  return cb.submitDecodeUnit(&du);
+}
+static unsigned ins_count(void) {
+  char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
+  const char *s = strstr(line, " ins="); assert(s); return (unsigned)atoi(s + 5);
+}
+static void sei_insert_test(void) {
+  static const uint8_t SLICE[] = {0, 0, 0, 1, 0x26, 0x01, 0xAF, 0x08};
+  uint8_t want[HEVC_SEI_MAX]; const uint16_t rgb[6] = {34000, 16000, 13250, 34500, 7500, 3000};
+  size_t sn = hevc_sei_build(want, sizeof want, rgb, 15635, 16450, 1000, 50, 800, 400), pre = sizeof SPS_NR + sizeof PPS_B;
+  vfmt = VIDEO_FORMAT_H265;
+  begin(NULL, NULL); mldiag_reset(NULL);   /* on: SEI right before the picture data, once per frame */
+  assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sn + sizeof SLICE);
+  assert(!memcmp(last_pkt + pre, want, sn) && !memcmp(last_pkt + pre + sn, SLICE, sizeof SLICE) && !memcmp(last_pkt + pre - sizeof PPS_B, PPS_B, sizeof PPS_B));
+  assert(ins_count() == 1);
+  assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && ins_count() == 2);
+  end();
+  hdr_on = 0; begin(NULL, NULL); mldiag_reset(NULL);   /* host not in HDR mode */
+  assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sizeof SLICE && ins_count() == 0);
+  end(); hdr_on = 1;
+  meta_ok = 0; begin(NULL, NULL); mldiag_reset(NULL);   /* no metadata */
+  assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sizeof SLICE && ins_count() == 0);
+  end(); meta_ok = 1;
+  { uint8_t has[sizeof SLICE + 40]; size_t n = 0;   /* the host already sent 137 */
+    const uint8_t s[] = {0, 0, 0, 1, 0x4e, 1, 137, 24}; memcpy(has, s, sizeof s); n = sizeof s; memset(has + n, 7, 24); n += 24; has[n++] = 0x80;
+    memcpy(has + n, SLICE, sizeof SLICE); n += sizeof SLICE;
+    begin(NULL, NULL); mldiag_reset(NULL);
+    assert(idr_hevc(has, n) == DR_OK && last_len == pre + n && !memcmp(last_pkt + pre, has, n) && ins_count() == 0);
+    end(); }
+  setenv("MLENGINE_HDR_SEI", "0", 1); begin(NULL, NULL); mldiag_reset(NULL);   /* switch off */
+  assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sizeof SLICE && ins_count() == 0);
+  end(); unsetenv("MLENGINE_HDR_SEI");
+  vfmt = VIDEO_FORMAT_H264;
+}
+
 int main(void) {
   sei_test();
+  sei_build_test();
+  sei_insert_test();
   /* 1: mode off. First frame is 0; a repeated or backwards host PTS gets prev+1. */
   begin(NULL, NULL);
   assert(frame(1000, P) == DR_OK && frame(1016, P) == DR_OK && frame(1016, P) == DR_OK && frame(1005, P) == DR_OK);
@@ -227,10 +312,10 @@ int main(void) {
   { char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
     assert(strstr(line, " sps=off/p66/l31/ref")); }
   end(); unsetenv("MLENGINE_SPS_PATCH");
-  vfmt = VIDEO_FORMAT_H265; begin(NULL, NULL);     /* HEVC: never touched */
+  vfmt = VIDEO_FORMAT_H265; hdr_on = 0; begin(NULL, NULL);     /* HEVC: the SPS is never patched (no HDR SEI either) */
   assert(idr3(SPS_NR, sizeof SPS_NR) == DR_OK);
   check_pkt(SPS_NR, sizeof SPS_NR);
-  end(); vfmt = VIDEO_FORMAT_H264;
+  end(); vfmt = VIDEO_FORMAT_H264; hdr_on = 1;
   { static const uint8_t bad[] = { 0, 0, 0, 1, 0x67, 0x42 };   /* truncated SPS */
     begin(NULL, NULL);
     assert(idr3(bad, sizeof bad) == DR_OK);
