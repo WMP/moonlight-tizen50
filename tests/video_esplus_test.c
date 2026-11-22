@@ -14,6 +14,7 @@
 #include "esplusplayer_tv50.h"
 #include "h264_sps.h"
 #include "mldiag.h"
+#include "hevc_sei.h"
 int ecore_cnt, wl2_cnt, disp_ok = 1, win_ok = 1, calls_off_main;
 int ecore_init(void) { return ++ecore_cnt; }
 int ecore_shutdown(void) { return --ecore_cnt; }
@@ -111,7 +112,28 @@ static void check_pkt(const uint8_t *sps_out, size_t sn) {
   assert(!memcmp(last_pkt + sn, PPS_B, sizeof PPS_B) && !memcmp(last_pkt + sn + sizeof PPS_B, PIC_B, sizeof PIC_B));
 }
 #define P FRAME_TYPE_PFRAME
+/* the HEVC SEI scanner: VPS/SPS/PPS + prefix SEI (137: 24 bytes, 144: 4 bytes) + IDR slice */
+static void sei_test(void) {
+  uint8_t b[128]; size_t n = 0; int mask;
+  const uint8_t ps[] = {0,0,0,1,0x40,1,0xaa, 0,0,0,1,0x42,1,0xbb, 0,0,0,1,0x44,1,0xcc};
+  memcpy(b, ps, sizeof ps); n = sizeof ps;
+  size_t sei0 = n;
+  const uint8_t h[] = {0,0,0,1,0x4e,1, 137,24}; memcpy(b + n, h, sizeof h); n += sizeof h; memset(b + n, 7, 24); n += 24;
+  const uint8_t c[] = {144,4}; memcpy(b + n, c, sizeof c); n += sizeof c; memset(b + n, 9, 4); n += 4;
+  b[n++] = 0x80;
+  size_t sei_end = n;
+  const uint8_t idr[] = {0,0,1,0x26,1,0xdd,0xee}; memcpy(b + n, idr, sizeof idr); n += sizeof idr;
+  mask = 0; assert(hevc_sei_scan(b, n, &mask) == 1 && mask == 3);
+  mask = 0; assert(hevc_sei_scan(b, sei0, &mask) == 0 && mask == 0);   /* no SEI */
+  /* truncated at every length (heap copy: ASan sees an over-read) */
+  for (size_t k = 0; k <= n; k++) { uint8_t *t = malloc(k ? k : 1); memcpy(t, b, k); mask = 0; assert(hevc_sei_scan(t, k, &mask) <= 1); free(t); }
+  { uint8_t *t = malloc(sei_end - 3); memcpy(t, b, sei_end - 3); mask = 0;   /* SEI cut inside the 144 payload */
+    assert(hevc_sei_scan(t, sei_end - 3, &mask) == 1 && mask == 3); free(t); }
+  { const uint8_t bad[] = {0,0,1,0x4e,1,0xff,0xff,0xff}; mask = 0; assert(hevc_sei_scan(bad, sizeof bad, &mask) == 1 && mask == 0); }
+}
+
 int main(void) {
+  sei_test();
   /* 1: mode off. First frame is 0; a repeated or backwards host PTS gets prev+1. */
   begin(NULL, NULL);
   assert(frame(1000, P) == DR_OK && frame(1016, P) == DR_OK && frame(1016, P) == DR_OK && frame(1005, P) == DR_OK);
@@ -197,7 +219,7 @@ int main(void) {
   assert(idr3(SPS_NR, sizeof SPS_NR) == DR_OK && sub_calls == 1);
   check_pkt(exp, en);                              /* patched SPS, PPS and picture untouched */
   { char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, " sps=added/p66/l31/ref") && strstr(line, "/br- | player ")); }
+    assert(strstr(line, " sps=added/p66/l31/ref") && strstr(line, "/br- | hdr ")); }
   end();
   setenv("MLENGINE_SPS_PATCH", "0", 1); begin(NULL, NULL);   /* off: plain concatenation */
   assert(idr3(SPS_NR, sizeof SPS_NR) == DR_OK);
@@ -214,7 +236,7 @@ int main(void) {
     assert(idr3(bad, sizeof bad) == DR_OK);
     check_pkt(bad, sizeof bad);
     char line[2048]; mldiag_fail(-101, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line);
-    assert(strstr(line, " sps=err | player "));
+    assert(strstr(line, " sps=err | hdr "));
     end(); }
   puts("video esplus ok"); return 0;
 }

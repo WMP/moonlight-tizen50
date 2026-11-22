@@ -17,6 +17,7 @@
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 #include "h264_sps.h"
+#include "hevc_sei.h"
 #include "mldiag.h"
 #include "mltrace.h"
 
@@ -32,6 +33,8 @@ extern void esplus_close(void);
 
 static int s_fps;
 static int s_h264;   /* the stream is H.264: SPS entries may get a bitstream_restriction */
+static int s_hevc;   /* the stream is HEVC: log the SPS once and scan IDR frames for HDR SEI */
+static int s_hevc_sps_logged, s_hevc_idr_logged;   /* once per session */
 static uint8_t *s_scratch;
 static size_t s_scratch_cap;
 static uint64_t s_base_pts_ms;
@@ -57,6 +60,7 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
   MLT("video setup fmt=0x%x %dx%d@%d", videoFormat, width, height, redrawRate);
   s_fps = redrawRate > 0 ? redrawRate : 60;
   s_h264 = (videoFormat & VIDEO_FORMAT_MASK_H264) != 0;
+  s_hevc = (videoFormat & VIDEO_FORMAT_MASK_H265) != 0;
   uint32_t mime;
   if (videoFormat & VIDEO_FORMAT_MASK_H264) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_H264;
   else if (videoFormat & VIDEO_FORMAT_MASK_H265) mime = ESPLUSPLAYER_VIDEO_MIME_TYPE_HEVC;
@@ -76,6 +80,7 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
 }
 
 static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0;
+  s_hevc_sps_logged = s_hevc_idr_logged = 0;
   s_arrival_base_ms = 0; s_have_arrival = 0; s_prev_pts_ms = 0; s_have_prev = 0; s_skip_seq = esplus_sample_seq() - 1;
   esplus_prepare(); }
 static void VidDecStop(void) {}
@@ -105,12 +110,13 @@ static int VidDecSubmit(PDECODE_UNIT du) {
     return DR_NEED_IDR;   /* later frames reference this one: common-c drops them and asks for an IDR */
   }
   if (ensure_scratch((size_t)du->fullLength + H264_SPS_EXTRA)) return DR_NEED_IDR;
+  int idr = du->frameType == FRAME_TYPE_IDR, sei_n = 0, sei_mask = 0;   /* the HEVC SEI scan runs on IDR frames only */
   size_t off = 0, grown = 0;   /* grown: bytes the patched SPS entries added so far (never above H264_SPS_EXTRA) */
+  uint8_t tmp[H264_SPS_MAX_IN + H264_SPS_EXTRA];   /* function scope: src may point here until the memcpy below */
   for (PLENTRY e = du->bufferList; e; e = e->next) {
     const uint8_t *src = (const uint8_t *)e->data;
     size_t len = (size_t)e->length;
     if (s_h264 && e->bufferType == BUFFER_TYPE_SPS) {
-      uint8_t tmp[H264_SPS_MAX_IN + H264_SPS_EXTRA];
       size_t n = 0; h264_sps_info si;
       int pr = h264_sps_patch((const uint8_t *)e->data, len, tmp, sizeof tmp, &n, &si);
       int st = pr == H264_SPS_ADDED && !esplus_cfg.sps_patch ? MLDIAG_SPS_OFF : pr;
@@ -120,8 +126,19 @@ static int VidDecSubmit(PDECODE_UNIT du) {
           st == MLDIAG_SPS_ADDED ? "added" : st == MLDIAG_SPS_KEPT ? "kept" : st == MLDIAG_SPS_OFF ? "off" : "err",
           si.profile, si.level, si.ref_frames, si.poc_type, si.vui, si.restr, si.reorder, si.dec_buf, e->length, (int)len);
     }
+    if (s_hevc && e->bufferType == BUFFER_TYPE_SPS && !s_hevc_sps_logged) {   /* the codec header, no secret */
+      char hx[321]; size_t k = len < 160 ? len : 160;
+      for (size_t j = 0; j < k; j++) snprintf(hx + 2 * j, 3, "%02x", src[j]);
+      hx[2 * k] = 0; s_hevc_sps_logged = 1;
+      VLOG("hevc sps: %s\n", hx);
+    }
+    if (s_hevc && idr) sei_n += hevc_sei_scan(src, len, &sei_mask);
     memcpy(s_scratch + off, src, len);
     off += len;
+  }
+  if (s_hevc && idr) {
+    mldiag_hevc_sei(sei_n, sei_mask);
+    if (!s_hevc_idr_logged) { s_hevc_idr_logged = 1; VLOG("hevc idr sei=%d mask=0x%x\n", sei_n, sei_mask); }
   }
   if (!s_have_base) { s_base_pts_ms = du->presentationTimeMs; s_have_base = 1; }
   int64_t pts_ms;
