@@ -128,6 +128,20 @@ Android). It shows the web UI console, and on request the host and engine log to
    mlGameMode(true)       // game mode on (temporary)
    ```
 
+   **HDR test mode.** Your host has no HDR? Test the TV side with fixed values.
+   The console prints the state: `[mlbridge] hdr test: force=1 sei=1 color=1`.
+
+   ```js
+   mlHdr({force: 1})           // use fixed HDR10 test metadata
+   mlHdr({sei: 0, color: 1})   // switch the SEI and the colour text one by one
+   mlHdr()                     // only show the state
+   ```
+
+   A key that you do not give keeps its value. The state lasts until the host restarts.
+   `force` uses fixed HDR10 test metadata (1000 nit). The picture is then not correct.
+   Use it only to see if the TV switches to HDR. With `force` on, keep the HDR switch in
+   the UI off. The codec must be HEVC. The `ML-ERROR` line shows the state as `test=<force><sei><color>`.
+
    If no `[MLHOST]` line comes at all, the host did not start: run `mlDiag('launch')`.
 4. Do what fails (add a host, pair, start a stream), then save the console to a
    file (desktop Chrome: right-click in the console → *Save as…*; Android: share).

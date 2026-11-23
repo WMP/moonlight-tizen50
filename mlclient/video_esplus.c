@@ -30,14 +30,15 @@ extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch);   /* NOT_PREPARED if the epoch is stale */
 extern void esplus_close(void);
 extern void esplus_set_color_info(const char *txt);   /* HDR colour text for the TV pipeline */
-extern int ml_engine_full_range(void);                /* engine_api.c: 1 when the session colour range is full */
+extern int esplus_hdr_force(void);                    /* esplus_player.c: HDR test mode force switch */
+extern int ml_engine_full_range(void);               /* engine_api.c: 1 when the session colour range is full */
 
 #define VLOG(...) fprintf(stderr, "[video] " __VA_ARGS__)
 
 static int s_fps;
 static int s_h264;   /* the stream is H.264: SPS entries may get a bitstream_restriction */
 static int s_hevc;   /* the stream is HEVC: log the SPS once and scan IDR frames for HDR SEI */
-static int s_hevc_sps_logged, s_hevc_idr_logged, s_hdr_sei_logged;   /* once per session */
+static int s_hevc_sps_logged, s_hevc_idr_logged, s_hdr_sei_logged, s_hdr_test_logged;   /* once per session */
 static uint8_t *s_scratch;
 static size_t s_scratch_cap;
 static uint64_t s_base_pts_ms;
@@ -56,6 +57,23 @@ static int ensure_scratch(size_t need) {
   if (!p) return -1;
   s_scratch = p; s_scratch_cap = cap;
   return 0;
+}
+
+/* 1 with the host's HDR metadata when the host is in HDR mode and it is valid; else, with the HDR test force on
+   (ml_engine_set_hdr_test), fixed HDR10 test metadata; else 0. */
+static int hdr_meta(SS_HDR_METADATA *m) {
+  if (LiGetCurrentHostDisplayHdrMode() && LiGetHdrMetadata(m) && m->maxDisplayLuminance > 0) return 1;
+  if (!esplus_hdr_force()) return 0;
+  memset(m, 0, sizeof *m);
+  m->displayPrimaries[0].x = 35400; m->displayPrimaries[0].y = 14600;   /* BT.2020 R, G, B (1/50000) */
+  m->displayPrimaries[1].x = 8500;  m->displayPrimaries[1].y = 39850;
+  m->displayPrimaries[2].x = 6550;  m->displayPrimaries[2].y = 2300;
+  m->whitePoint.x = 15635; m->whitePoint.y = 16450;   /* D65 */
+  m->maxDisplayLuminance = 1000; m->minDisplayLuminance = 50; m->maxContentLightLevel = 1000; m->maxFrameAverageLightLevel = 400;
+  if (!s_hdr_test_logged) { s_hdr_test_logged = 1;
+    VLOG("hdr test: forced, fixed HDR10 metadata lum=1000/50 cll=1000/400\n");
+    MLT("hdr test: forced, fixed HDR10 metadata lum=1000/50 cll=1000/400"); }
+  return 1;
 }
 
 static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
@@ -83,7 +101,7 @@ static int VidDecSetup_(int videoFormat, int width, int height, int redrawRate, 
 }
 
 static void VidDecStart(void) { MLT("video start"); s_base_pts_ms = 0; s_have_base = 0;
-  s_hevc_sps_logged = s_hevc_idr_logged = s_hdr_sei_logged = 0;
+  s_hevc_sps_logged = s_hevc_idr_logged = s_hdr_sei_logged = s_hdr_test_logged = 0;
   s_arrival_base_ms = 0; s_have_arrival = 0; s_prev_pts_ms = 0; s_have_prev = 0; s_skip_seq = esplus_sample_seq() - 1;
   esplus_prepare(); }
 static void VidDecStop(void) {}
@@ -139,7 +157,7 @@ static int VidDecSubmit(PDECODE_UNIT du) {
       sei_n += hevc_sei_scan(src, len, &sei_mask);
       SS_HDR_METADATA m;
       int first_pic = e->bufferType == BUFFER_TYPE_PICDATA && !pic_seen++;
-      if (first_pic && esplus_cfg.hdr_color && LiGetCurrentHostDisplayHdrMode() && LiGetHdrMetadata(&m) && m.maxDisplayLuminance > 0) {
+      if (first_pic && esplus_cfg.hdr_color && hdr_meta(&m)) {
         uint16_t p[6] = {m.displayPrimaries[0].x, m.displayPrimaries[0].y, m.displayPrimaries[1].x, m.displayPrimaries[1].y,
                          m.displayPrimaries[2].x, m.displayPrimaries[2].y};
         char txt[512];
@@ -147,8 +165,7 @@ static int VidDecSubmit(PDECODE_UNIT du) {
                            m.maxContentLightLevel, m.maxFrameAverageLightLevel, ml_engine_full_range())) esplus_set_color_info(txt);
       }
       /* the TV decoder only reads HDR metadata from the stream: add it before the slices when the host sent none */
-      if (first_pic && !(sei_mask & 1) && esplus_cfg.hdr_sei
-          && LiGetCurrentHostDisplayHdrMode() && LiGetHdrMetadata(&m) && m.maxDisplayLuminance > 0) {
+      if (first_pic && !(sei_mask & 1) && esplus_cfg.hdr_sei && hdr_meta(&m)) {
         uint16_t p[6] = {m.displayPrimaries[0].x, m.displayPrimaries[0].y, m.displayPrimaries[1].x, m.displayPrimaries[1].y,
                          m.displayPrimaries[2].x, m.displayPrimaries[2].y};
         size_t k = hevc_sei_build(s_scratch + off, s_scratch_cap - off, p, m.whitePoint.x, m.whitePoint.y, m.maxDisplayLuminance,

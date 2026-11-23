@@ -41,7 +41,7 @@ for D in "" "-DMLT_TRACE"; do
     -o "$OUT-nosym" "$HERE/esplus_ecore_test.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-nosym" nosym 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" -I"$LC" \
-    -o "$OUT-video" "$HERE/video_esplus_test.c" "$R/mlclient/video_esplus.c" "$R/mlclient/h264_sps.c" "$R/mlclient/esplus_hdr.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
+    -Wl,--wrap=esplus_set_color_info -o "$OUT-video" "$HERE/video_esplus_test.c" "$R/mlclient/video_esplus.c" "$R/mlclient/h264_sps.c" "$R/mlclient/esplus_hdr.c" "$R/mlclient/esplus_player.c" "$R/mlclient/mldiag.c" -lpthread -ldl
   "$OUT-video" 2>/dev/null
   gcc -std=gnu11 -Wall -Wextra -Werror $D -Ddlopen=fake_dlopen -Ddlsym=fake_dlsym -Ddlclose=fake_dlclose '-D_Static_assert(a,b)=' -I"$R" -I"$R/mlclient" \
     -o "$OUT-hdr" "$HERE/esplus_hdr_test.c" "$R/mlclient/esplus_hdr.c"

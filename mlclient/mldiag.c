@@ -136,6 +136,10 @@ void mldiag_hdr(int enabled, int meta_ok, int max_lum, int min_lum, int max_cll,
   s_hdr[0] = max_lum; s_hdr[1] = min_lum; s_hdr[2] = max_cll; s_hdr[3] = max_fall;
   pthread_mutex_unlock(&s_mu);
 }
+static int s_hdr_test[3] = {-1, -1, -1};   /* force, sei, color: engine lifetime, not cleared by mldiag_reset; -1 = never set */
+void mldiag_hdr_test(int force, int sei, int color) {
+  pthread_mutex_lock(&s_mu); s_hdr_test[0] = force; s_hdr_test[1] = sei; s_hdr_test[2] = color; pthread_mutex_unlock(&s_mu);
+}
 void mldiag_hevc_sei(int sei_nals, int mask) {
   pthread_mutex_lock(&s_mu); s_sei_n = sei_nals; s_sei_mask = mask; pthread_mutex_unlock(&s_mu);
 }
@@ -341,7 +345,9 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   char hmS[48], seiS[24];
   if (s_hdr_meta) snprintf(hmS, sizeof hmS, "lum%d/%d.cll%d/%d", s_hdr[0], s_hdr[1], s_hdr[2], s_hdr[3]); else snprintf(hmS, sizeof hmS, "-");
   if (s_sei_n < 0) snprintf(seiS, sizeof seiS, "-"); else snprintf(seiS, sizeof seiS, "%d/0x%x", s_sei_n, s_sei_mask);
-  ADD(" | hdr host=%d n=%u meta=%s sei=%s ins=%u col=%d/%u cs=%s", s_hdr_host, (unsigned)s_hdr_n, hmS, seiS, GET(C_HDRSEI), s_col_rc, (unsigned)s_col_n, s_col_cs);
+  char htS[8];
+  if (s_hdr_test[0] < 0) snprintf(htS, sizeof htS, "---"); else snprintf(htS, sizeof htS, "%d%d%d", s_hdr_test[0] != 0, s_hdr_test[1] != 0, s_hdr_test[2] != 0);
+  ADD(" | hdr host=%d n=%u meta=%s sei=%s ins=%u col=%d/%u cs=%s test=%s", s_hdr_host, (unsigned)s_hdr_n, hmS, seiS, GET(C_HDRSEI), s_col_rc, (unsigned)s_col_n, s_col_cs, htS);
   ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d state=%d rebuilds=%u rb=%d/%d/%d/%d vsub=%u asub=%u subfail=%u/%d vfail=%u/%d afail=%u/%d adec=%u adec_fail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start, s_state, GET(C_REBUILD), s_rb_open, s_rb_addv, s_rb_disp, s_rb_prep,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, GET(C_VSUBFAIL), s_vfail_last, GET(C_ASUBFAIL), s_afail_last,
       GET(C_ADEC), GET(C_ADECFAIL), __atomic_load_n(&s_adec_err, __ATOMIC_RELAXED), player_errors, player_last_error);

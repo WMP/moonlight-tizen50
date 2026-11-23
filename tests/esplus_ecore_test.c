@@ -92,6 +92,8 @@ extern int ml_engine_set_stats_osd(int on);
 extern int ml_engine_get_stats_osd(void);
 extern int ml_engine_set_target_depth_ms(int ms);
 extern int ml_engine_get_target_depth_ms(void);
+extern int ml_engine_set_hdr_test(int force, int sei, int color);
+extern int ml_engine_get_hdr_test(void);
 static int hook_ran, hook_ret, hook_sp;
 static void vsub(uint64_t pts_ms);
 void rebuild_hook_submit(void) {
@@ -121,6 +123,17 @@ int main(int argc, char **argv) {
   /* target depth default comes from the env while nothing is set (the setter is engine lifetime: this runs first) */
   setenv("MLENGINE_TARGET_DEPTH_MS", "70", 1); assert(ml_engine_get_target_depth_ms() == 70);
   unsetenv("MLENGINE_TARGET_DEPTH_MS"); assert(ml_engine_get_target_depth_ms() == 100);
+  /* HDR test mode: engine lifetime, negative keeps, esplus_cfg follows and survives a new player */
+  assert(ml_engine_get_hdr_test() == 6);                                   /* env defaults: sei and color on, force off */
+  assert(ml_engine_set_hdr_test(-1, -1, -1) == 6 && ml_engine_set_hdr_test(1, -1, -1) == 7);
+  assert(ml_engine_set_hdr_test(-1, 0, -1) == 5 && esplus_cfg.hdr_sei == 0);
+  assert(ml_engine_set_hdr_test(-1, 5, 0) == 3 && esplus_cfg.hdr_sei == 1 && esplus_cfg.hdr_color == 0 && ml_engine_get_hdr_test() == 3);
+  { char line[4096]; setenv("MLENGINE_HDR_SEI", "0", 1); setenv("MLENGINE_HDR_COLOR", "1", 1);
+    esplus_create_open();                                                  /* load_cfg keeps the overrides over the env */
+    assert(esplus_cfg.hdr_sei == 1 && esplus_cfg.hdr_color == 0);
+    mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line); assert(strstr(line, " test=110"));
+    esplus_close(); unsetenv("MLENGINE_HDR_SEI"); unsetenv("MLENGINE_HDR_COLOR"); }
+  ml_engine_set_hdr_test(0, 1, 1); assert(ml_engine_get_hdr_test() == 6);
   /* 1: close without any window (setup failed before set_window) must not shut down ecore */
   esplus_create_open(); esplus_close(); assert(ecore_cnt == 1 && wl2_cnt == 0);
   /* 2: success, then close */
@@ -571,7 +584,7 @@ int main(int argc, char **argv) {
     cb_prepared(1); esplus_prepare(); vsub(1); assert(hdr_calls == 1 && !strcmp(hdr_txt, "A"));
     vsub(2); esplus_set_color_info("A"); vsub(3); assert(hdr_calls == 1);
     esplus_set_color_info("B"); vsub(4); assert(hdr_calls == 2 && !strcmp(hdr_txt, "B"));
-    { char line[4096]; mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line); assert(strstr(line, " col=1/2 cs=ooo | player ")); }
+    { char line[4096]; mldiag_fail(-1, -1, NULL, 0, 0, 0, 0, 0, 0, 0, 0); mldiag_last(line, sizeof line); assert(strstr(line, " col=1/2 cs=ooo test=011 | player ")); }
     esplus_close();
     hdr_calls = 0; mldiag_reset(NULL);   /* a rebuild gives the new player the text again */
     start_ret = 0; esplus_create_open(); assert(esplus_set_window(1280, 720) == 0); esplus_add_video_info(&vi);
@@ -589,9 +602,9 @@ int main(int argc, char **argv) {
     assert(hdr_calls == 5);
     esplus_set_color_info("B"); vsub(500); assert(hdr_calls == 6);   /* a new text starts again */
     esplus_close(); hdr_ret = 1;
-    setenv("MLENGINE_HDR_COLOR", "0", 1); hdr_calls = 0;
+    ml_engine_set_hdr_test(-1, -1, 0);   /* the override wins over the env */ hdr_calls = 0;
     begin(); esplus_set_color_info("A"); vsub(1); vsub(2); assert(hdr_calls == 0); esplus_close();
-    unsetenv("MLENGINE_HDR_COLOR");
+    ml_engine_set_hdr_test(-1, -1, 1);
   }
   puts("ecore balance ok"); return 0;
 }

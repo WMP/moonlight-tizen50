@@ -64,7 +64,10 @@ void mldiag_hdr_sei_inserted(void);
    three step letters (adapter, handle, time; o ok, n null, u unreadable, m mismatch, - not reached). Last values and the call
    count are kept; shown as col=rc/count cs=steps (-99 = not tried, cs=---). */
 void mldiag_hdr_color(int rc, const char *steps);
-void mldiag_idr_retry(void);          /* one IDR request retry at the start (no video packet yet) */
+/* HDR test mode state (esplus_player.c, set on each ml_engine_set_hdr_test and at session start); engine lifetime, not
+   cleared by mldiag_reset. Shown as test=<force><sei><color> (three digits; --- = never set). */
+void mldiag_hdr_test(int force, int sei, int color);
+void mldiag_idr_retry(void);        /* one IDR request retry at the start (no video packet yet) */
 /* Build, store and print the line. extra values come from the caller; enc_* are the
    negotiated encryption features (supported by the host / requested by it / enabled). */
 void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_flags,

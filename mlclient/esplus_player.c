@@ -72,6 +72,10 @@ static int mlc_env_int(const char *name, int def) {
 static int s_env_unset;               /* MLENGINE_LATENCY_MODE was unset at load_cfg; "off" is the explicit off switch */
 static volatile int s_auto;           /* env mode unset AND the current stream is 60 fps: nudge is the default */
 
+/* HDR test mode (ml_engine_set_hdr_test): engine lifetime, never reset per session. sei/color: -1 = no override (env default). */
+static volatile int s_hdr_force, s_hdr_sei_ov = -1, s_hdr_col_ov = -1;
+int esplus_hdr_force(void) { return __atomic_load_n(&s_hdr_force, __ATOMIC_RELAXED); }
+
 static void load_cfg(void) {
   const char *m = getenv("MLENGINE_LATENCY_MODE");
   s_env_unset = !m;
@@ -92,6 +96,9 @@ static void load_cfg(void) {
   esplus_cfg.sps_patch = mlc_env_int("MLENGINE_SPS_PATCH", 1);   /* 0 = off */
   esplus_cfg.hdr_sei = mlc_env_int("MLENGINE_HDR_SEI", 1);   /* 0 = off */
   esplus_cfg.hdr_color = mlc_env_int("MLENGINE_HDR_COLOR", 1);   /* 0 = off */
+  if (s_hdr_sei_ov >= 0) esplus_cfg.hdr_sei = s_hdr_sei_ov;
+  if (s_hdr_col_ov >= 0) esplus_cfg.hdr_color = s_hdr_col_ov;
+  mldiag_hdr_test(s_hdr_force, esplus_cfg.hdr_sei != 0, esplus_cfg.hdr_color != 0);   /* the ML-ERROR line shows the state of this session */
   MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d sps_patch=%d hdr_sei=%d hdr_color=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
@@ -681,6 +688,25 @@ int ml_engine_set_target_depth_ms(int ms) {
 int ml_engine_get_target_depth_ms(void) {
   int t = __atomic_load_n(&s_target_set, __ATOMIC_RELAXED);
   return t >= 0 ? t : mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 100);
+}
+
+/* HDR test mode, lock-free like the target depth. Each argument: 0 off, 1 on, negative keep. Returns bits 1 force, 2 sei, 4 color.
+   sei/color also go into esplus_cfg at once: a running stream reads them at its next IDR (plain int stores). */
+int ml_engine_get_hdr_test(void) {
+  int s = __atomic_load_n(&s_hdr_sei_ov, __ATOMIC_RELAXED), c = __atomic_load_n(&s_hdr_col_ov, __ATOMIC_RELAXED);
+  if (s < 0) s = mlc_env_int("MLENGINE_HDR_SEI", 1);
+  if (c < 0) c = mlc_env_int("MLENGINE_HDR_COLOR", 1);
+  return (esplus_hdr_force() ? 1 : 0) | (s ? 2 : 0) | (c ? 4 : 0);
+}
+int ml_engine_set_hdr_test(int force, int sei, int color) {
+  if (force >= 0) __atomic_store_n(&s_hdr_force, force ? 1 : 0, __ATOMIC_RELAXED);
+  if (sei >= 0) { sei = sei ? 1 : 0; __atomic_store_n(&s_hdr_sei_ov, sei, __ATOMIC_RELAXED); esplus_cfg.hdr_sei = sei; }
+  if (color >= 0) { color = color ? 1 : 0; __atomic_store_n(&s_hdr_col_ov, color, __ATOMIC_RELAXED); esplus_cfg.hdr_color = color; }
+  int b = ml_engine_get_hdr_test();
+  mldiag_hdr_test(b & 1, (b >> 1) & 1, (b >> 2) & 1);
+  MLT("hdr test: force=%d sei=%d color=%d", b & 1, (b >> 1) & 1, (b >> 2) & 1);
+  PLOG("hdr test: force=%d sei=%d color=%d\n", b & 1, (b >> 1) & 1, (b >> 2) & 1);
+  return b;
 }
 
 /* called from video start; prepares on the first call, later calls do nothing. */

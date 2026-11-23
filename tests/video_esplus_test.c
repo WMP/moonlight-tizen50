@@ -132,6 +132,10 @@ static void sei_test(void) {
   { const uint8_t bad[] = {0,0,1,0x4e,1,0xff,0xff,0xff}; mask = 0; assert(hevc_sei_scan(bad, sizeof bad, &mask) == 1 && mask == 0); }
 }
 
+extern int ml_engine_set_hdr_test(int force, int sei, int color);
+extern int ml_engine_get_hdr_test(void);
+static int color_calls; static char color_txt[512];   /* the linker wraps esplus_set_color_info (build script) */
+void __wrap_esplus_set_color_info(const char *t) { color_calls++; snprintf(color_txt, sizeof color_txt, "%s", t); }
 static int hdr_on = 1, meta_ok = 1;
 bool LiGetCurrentHostDisplayHdrMode(void) { return hdr_on; }
 bool LiGetHdrMetadata(PSS_HDR_METADATA m) {
@@ -212,6 +216,33 @@ static void sei_insert_test(void) {
   setenv("MLENGINE_HDR_SEI", "0", 1); begin(NULL, NULL); mldiag_reset(NULL);   /* switch off */
   assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sizeof SLICE && ins_count() == 0);
   end(); unsetenv("MLENGINE_HDR_SEI");
+  /* HDR test mode (ml_engine_set_hdr_test): force = fixed HDR10 metadata when the host is not in HDR mode */
+  { uint8_t fix[HEVC_SEI_MAX], host[HEVC_SEI_MAX]; const uint16_t bt2020[6] = {35400, 14600, 8500, 39850, 6550, 2300};
+    size_t fn = hevc_sei_build(fix, sizeof fix, bt2020, 15635, 16450, 1000, 50, 1000, 400);
+    assert(fn > 0 && ml_engine_get_hdr_test() == 6);                       /* initial: force off, sei and color on */
+    hdr_on = 0; color_calls = 0;
+    begin(NULL, NULL); mldiag_reset(NULL);                                  /* force off: nothing */
+    assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sizeof SLICE && ins_count() == 0 && color_calls == 0);
+    end();
+    assert(ml_engine_set_hdr_test(1, -1, -1) == 7);
+    begin(NULL, NULL); mldiag_reset(NULL);                                  /* force on: SEI with the fixed values, colour text */
+    assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + fn + sizeof SLICE && !memcmp(last_pkt + pre, fix, fn));
+    assert(ins_count() == 1 && color_calls == 1 && strstr(color_txt, " range:"));
+    end();
+    assert(ml_engine_set_hdr_test(-1, 0, -1) == 5);                         /* sei off: colour only */
+    begin(NULL, NULL); mldiag_reset(NULL); color_calls = 0;
+    assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + sizeof SLICE && color_calls == 1);
+    end();
+    assert(ml_engine_set_hdr_test(-1, 1, 0) == 3);                          /* colour off: SEI only */
+    begin(NULL, NULL); mldiag_reset(NULL); color_calls = 0;
+    assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + fn + sizeof SLICE && color_calls == 0);
+    end();
+    hdr_on = 1; assert(ml_engine_set_hdr_test(-1, -1, 1) == 7);             /* the host reports HDR: its metadata wins */
+    size_t hn = hevc_sei_build(host, sizeof host, (const uint16_t[6]){34000, 16000, 13250, 34500, 7500, 3000}, 15635, 16450, 1000, 50, 800, 400);
+    begin(NULL, NULL); mldiag_reset(NULL); color_calls = 0;
+    assert(idr_hevc(SLICE, sizeof SLICE) == DR_OK && last_len == pre + hn + sizeof SLICE && !memcmp(last_pkt + pre, host, hn) && color_calls == 1);
+    end();
+    ml_engine_set_hdr_test(0, 1, 1); }
   vfmt = VIDEO_FORMAT_H264;
 }
 
