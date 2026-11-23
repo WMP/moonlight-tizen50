@@ -61,18 +61,9 @@ jobs:
           VER=$(printf '%s' "$VER" | tr -c 'A-Za-z0-9._-' '-')
           echo "VER=$VER" >> "$GITHUB_ENV"
           # package version (x.y.z) from the tag; other builds keep the manifests' version
-          APP_VERSION=$(echo "$VER" | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?' || true)   # v0.0.6-debug -> 0.0.6
-          case "$APP_VERSION" in *.*.*|'') ;; *) APP_VERSION="$APP_VERSION.0" ;; esac   # v1.0 -> 1.0.0 (Tizen wants x.y.z)
+          APP_VERSION=$(echo "$VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || true)   # v0.0.6-debug -> 0.0.6
           [ -z "$APP_VERSION" ] || echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "BUILD_COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          # hand-written release notes, if committed for this tag:
-          # line 1 '# <title>' is the release name, the rest is the body
-          NOTES=".github/release-notes/$TAG.md"
-          if [ -f "$NOTES" ]; then
-            echo "RELEASE_NAME=$(sed -n '1s/^# //p' "$NOTES")" >> "$GITHUB_ENV"
-            tail -n +2 "$NOTES" > "$RUNNER_TEMP/release-notes.md"
-            echo "RELEASE_NOTES=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
-          fi
 
       - name: Build packages (image, TV libraries, release + debug)
         if: steps.gate.outputs.have_libs == 'true'
@@ -101,7 +92,4 @@ jobs:
           # never overwrite a hand-written release body: only supply the
           # fallback when the release was just created and has no notes yet
           append_body: true
-          name: ${{ env.RELEASE_NAME }}   # empty: the tag
-          # body_path wins over body when set (.github/release-notes/<tag>.md)
-          body_path: ${{ env.RELEASE_NOTES }}
           body: "Pair: Moonlight-${{ env.VER }}.wgt (web UI) + org.moonlight.host-${{ env.VER }}.tpk (host). Install both with Apps2Samsung. The UI starts the host by itself. Debug (trace) builds: the -debug files."

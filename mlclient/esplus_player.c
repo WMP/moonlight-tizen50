@@ -16,6 +16,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esplus_hdr.h"
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 #include "mldiag.h"
@@ -52,6 +53,9 @@ static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile int s_prepared, s_prepare_ok, s_started;   /* s_started: start() succeeded */
 static int s_prepare_called;   /* prepare_async was started this session, under s_lock */
 static int s_start_tried;   /* start() is tried once per session, under s_lock */
+static char s_color[512];   /* HDR colour text from the video sink ("" = none), under s_lock */
+static int s_color_dirty;   /* the current player has not got s_color yet, under s_lock */
+static unsigned s_color_tries, s_color_next;   /* -3 retries for this text and player; next try at this s_vtries, under s_lock */
 
 esplus_stats_t esplus_stats;
 esplus_cfg_t esplus_cfg;
@@ -67,6 +71,10 @@ static int mlc_env_int(const char *name, int def) {
 
 static int s_env_unset;               /* MLENGINE_LATENCY_MODE was unset at load_cfg; "off" is the explicit off switch */
 static volatile int s_auto;           /* env mode unset AND the current stream is 60 fps: nudge is the default */
+
+/* HDR test mode (ml_engine_set_hdr_test): engine lifetime, never reset per session. sei/color: -1 = no override (env default). */
+static volatile int s_hdr_force, s_hdr_sei_ov = -1, s_hdr_col_ov = -1;
+int esplus_hdr_force(void) { return __atomic_load_n(&s_hdr_force, __ATOMIC_RELAXED); }
 
 static void load_cfg(void) {
   const char *m = getenv("MLENGINE_LATENCY_MODE");
@@ -86,10 +94,15 @@ static void load_cfg(void) {
   esplus_cfg.rebuild_max = mlc_env_int("MLENGINE_PLAYER_REBUILD_MAX", 1);   /* 0 = off */
   esplus_cfg.catchup_ms = mlc_env_int("MLENGINE_CATCHUP_MS", 150);   /* 0 = off */
   esplus_cfg.sps_patch = mlc_env_int("MLENGINE_SPS_PATCH", 1);   /* 0 = off */
-  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d sps_patch=%d",
+  esplus_cfg.hdr_sei = mlc_env_int("MLENGINE_HDR_SEI", 1);   /* 0 = off */
+  esplus_cfg.hdr_color = mlc_env_int("MLENGINE_HDR_COLOR", 1);   /* 0 = off */
+  if (s_hdr_sei_ov >= 0) esplus_cfg.hdr_sei = s_hdr_sei_ov;
+  if (s_hdr_col_ov >= 0) esplus_cfg.hdr_color = s_hdr_col_ov;
+  mldiag_hdr_test(s_hdr_force, esplus_cfg.hdr_sei != 0, esplus_cfg.hdr_color != 0);   /* the ML-ERROR line shows the state of this session */
+  MLT("cfg latency=%d target=%d nudge=%d drop_after=%d poll=%d stall=%d recover_max=%d back=%d start_timeout=%d fatal_stall=%d rebuild_max=%d catchup=%d sps_patch=%d hdr_sei=%d hdr_color=%d",
       esplus_cfg.latency_mode, esplus_cfg.target_depth_ms, esplus_cfg.nudge_max_ms_per_s, esplus_cfg.drop_after_ms,
       esplus_cfg.depth_poll_ms, esplus_cfg.stall_ms, esplus_cfg.recover_max, esplus_cfg.recover_back_ms,
-      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms, esplus_cfg.sps_patch);
+      esplus_cfg.start_timeout_ms, esplus_cfg.fatal_stall_ms, esplus_cfg.rebuild_max, esplus_cfg.catchup_ms, esplus_cfg.sps_patch, esplus_cfg.hdr_sei, esplus_cfg.hdr_color);
 }
 
 static uint64_t s_last_video_pts_ms;   /* under s_lock */
@@ -289,6 +302,7 @@ static void rebuild_begin(struct rb_job *j, const char *why) {
   s_stall_play = s_stall_t = 0; s_stall_sub = 0; s_stall_armed = 0; s_stall_vtries = s_vtries; s_start_t0 = 0;
   s_fps_t0 = 0; s_tick_prev_ms = 0; nudge_reset();
   s_catchup_done = s_catchup_hits = 0;   /* the new player builds a new backlog */
+  s_color_dirty = s_color[0] != 0; s_color_tries = 0; s_color_next = 0;   /* the new player needs the colour text again */
 }
 
 /* no lock held on entry */
@@ -676,6 +690,25 @@ int ml_engine_get_target_depth_ms(void) {
   return t >= 0 ? t : mlc_env_int("MLENGINE_TARGET_DEPTH_MS", 100);
 }
 
+/* HDR test mode, lock-free like the target depth. Each argument: 0 off, 1 on, negative keep. Returns bits 1 force, 2 sei, 4 color.
+   sei/color also go into esplus_cfg at once: a running stream reads them at its next IDR (plain int stores). */
+int ml_engine_get_hdr_test(void) {
+  int s = __atomic_load_n(&s_hdr_sei_ov, __ATOMIC_RELAXED), c = __atomic_load_n(&s_hdr_col_ov, __ATOMIC_RELAXED);
+  if (s < 0) s = mlc_env_int("MLENGINE_HDR_SEI", 1);
+  if (c < 0) c = mlc_env_int("MLENGINE_HDR_COLOR", 1);
+  return (esplus_hdr_force() ? 1 : 0) | (s ? 2 : 0) | (c ? 4 : 0);
+}
+int ml_engine_set_hdr_test(int force, int sei, int color) {
+  if (force >= 0) __atomic_store_n(&s_hdr_force, force ? 1 : 0, __ATOMIC_RELAXED);
+  if (sei >= 0) { sei = sei ? 1 : 0; __atomic_store_n(&s_hdr_sei_ov, sei, __ATOMIC_RELAXED); esplus_cfg.hdr_sei = sei; }
+  if (color >= 0) { color = color ? 1 : 0; __atomic_store_n(&s_hdr_col_ov, color, __ATOMIC_RELAXED); esplus_cfg.hdr_color = color; }
+  int b = ml_engine_get_hdr_test();
+  mldiag_hdr_test(b & 1, (b >> 1) & 1, (b >> 2) & 1);
+  MLT("hdr test: force=%d sei=%d color=%d", b & 1, (b >> 1) & 1, (b >> 2) & 1);
+  PLOG("hdr test: force=%d sei=%d color=%d\n", b & 1, (b >> 1) & 1, (b >> 2) & 1);
+  return b;
+}
+
 /* called from video start; prepares on the first call, later calls do nothing. */
 void esplus_prepare(void) {
   pthread_mutex_lock(&s_lock);
@@ -707,6 +740,14 @@ int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch) {
     int ok = esplusplayer_start(s_pl); s_started = ok ? 1 : 0;
     PLOG("start -> %d (prepare ok=%d)\n", ok, s_prepare_ok); MLT("esplus_start -> %d", ok); mldiag_player("start", ok);
   }
+  if (s_color_dirty && s_prepared && esplus_cfg.hdr_color && s_vtries >= s_color_next) {   /* the pipeline exists: the TV applies the text now */
+    s_color_dirty = 0;
+    esplus_hdr_diag hd;
+    int rc = esplus_hdr_apply(s_pl, s_color, &hd);   /* writes the one-line report */
+    mldiag_hdr_color(rc, hd.steps);
+    /* right after start() the playing time may not be readable yet: retry the chain check a few times, 30 video packets apart */
+    if (rc == -3 && ++s_color_tries < 5) { s_color_dirty = 1; s_color_next = s_vtries + 30; }
+  }
   int r = esplusplayer_submit_packet(s_pl, pkt);
   if (pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO) s_vtries++;
   mldiag_submit(pkt->type == ESPLUSPLAYER_STREAM_TYPE_VIDEO, r == ESPLUSPLAYER_SUBMIT_STATUS_SUCCESS, r, pkt->pts / 1000000);
@@ -729,6 +770,14 @@ int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch) {
 
 int esplus_submit(const esplusplayer_es_packet *pkt) { return esplus_submit_ep(pkt, esplus_epoch()); }
 
+/* From the video sink: the colour text for the stream. Applied by the next submit when it changed (or the player is new). */
+void esplus_set_color_info(const char *txt) {
+  esplus_hdr_load();   /* the one-time dlopen runs here, outside s_lock */
+  pthread_mutex_lock(&s_lock);
+  if (strlen(txt) < sizeof s_color && strcmp(txt, s_color)) { strcpy(s_color, txt); s_color_dirty = 1; s_color_tries = 0; s_color_next = 0; }
+  pthread_mutex_unlock(&s_lock);
+}
+
 void esplus_close(void) {
   MLT("esplus_close");
   sampler_stop();   /* joins the sampler: a rebuild on the sampler thread (rebuild_slow) cannot run in the middle of the close */
@@ -741,6 +790,7 @@ void esplus_close(void) {
   }
   s_gen++; s_rebuilds = 0; s_have_vinfo = 0;   /* a queued rebuild display step is now stale */
   s_prepared = s_prepare_ok = s_started = 0; s_start_tried = 0; s_prepare_called = 0;
+  s_color[0] = 0; s_color_dirty = 0; s_color_tries = 0; s_color_next = 0;
   s_last_video_pts_ms = 0; s_last_video_t = 0; s_fps_t0 = 0;
   nudge_reset(); s_tick_prev_ms = 0;
   __atomic_store_n(&s_auto, 0, __ATOMIC_RELAXED);
