@@ -203,6 +203,7 @@ int ml_engine_get_stats(ml_engine_stats *out) {
 }
 
 int ml_engine_last_error(char *buf, int len) { return mldiag_last(buf, len); }
+int ml_engine_full_range(void) { return g_sc.colorRange == COLOR_RANGE_FULL; }   /* engine-internal (video_esplus.c), not in mlengine.h */
 
 /* The player watchdog set a fatal code: report it and end the session (the host then reads the line). */
 static void check_player_fatal(void) {

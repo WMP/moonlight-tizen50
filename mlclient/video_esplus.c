@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "Limelight.h"
+#include "esplus_hdr.h"
 #include "esplus_stats.h"
 #include "esplusplayer_tv50.h"
 #include "h264_sps.h"
@@ -28,6 +29,8 @@ extern int esplus_add_video_info(const esplusplayer_video_stream_info *vi);
 extern int esplus_submit(const esplusplayer_es_packet *pkt);
 extern int esplus_submit_ep(const esplusplayer_es_packet *pkt, unsigned epoch);   /* NOT_PREPARED if the epoch is stale */
 extern void esplus_close(void);
+extern void esplus_set_color_info(const char *txt);   /* HDR colour text for the TV pipeline */
+extern int ml_engine_full_range(void);                /* engine_api.c: 1 when the session colour range is full */
 
 #define VLOG(...) fprintf(stderr, "[video] " __VA_ARGS__)
 
@@ -130,13 +133,21 @@ static int VidDecSubmit(PDECODE_UNIT du) {
       char hx[321]; size_t k = len < 160 ? len : 160;
       for (size_t j = 0; j < k; j++) snprintf(hx + 2 * j, 3, "%02x", src[j]);
       hx[2 * k] = 0; s_hevc_sps_logged = 1;
-      VLOG("hevc sps: %s\n", hx);
+      VLOG("hevc sps: %s\n", hx); MLT("hevc sps: %s", hx);
     }
     if (s_hevc && idr) {
       sei_n += hevc_sei_scan(src, len, &sei_mask);
       SS_HDR_METADATA m;
+      int first_pic = e->bufferType == BUFFER_TYPE_PICDATA && !pic_seen++;
+      if (first_pic && esplus_cfg.hdr_color && LiGetCurrentHostDisplayHdrMode() && LiGetHdrMetadata(&m) && m.maxDisplayLuminance > 0) {
+        uint16_t p[6] = {m.displayPrimaries[0].x, m.displayPrimaries[0].y, m.displayPrimaries[1].x, m.displayPrimaries[1].y,
+                         m.displayPrimaries[2].x, m.displayPrimaries[2].y};
+        char txt[512];
+        if (hdr_color_text(txt, sizeof txt, p, m.whitePoint.x, m.whitePoint.y, m.maxDisplayLuminance, m.minDisplayLuminance,
+                           m.maxContentLightLevel, m.maxFrameAverageLightLevel, ml_engine_full_range())) esplus_set_color_info(txt);
+      }
       /* the TV decoder only reads HDR metadata from the stream: add it before the slices when the host sent none */
-      if (e->bufferType == BUFFER_TYPE_PICDATA && !pic_seen++ && !(sei_mask & 1) && esplus_cfg.hdr_sei
+      if (first_pic && !(sei_mask & 1) && esplus_cfg.hdr_sei
           && LiGetCurrentHostDisplayHdrMode() && LiGetHdrMetadata(&m) && m.maxDisplayLuminance > 0) {
         uint16_t p[6] = {m.displayPrimaries[0].x, m.displayPrimaries[0].y, m.displayPrimaries[1].x, m.displayPrimaries[1].y,
                          m.displayPrimaries[2].x, m.displayPrimaries[2].y};
@@ -145,7 +156,8 @@ static int VidDecSubmit(PDECODE_UNIT du) {
         if (k) {
           off += k; mldiag_hdr_sei_inserted();
           if (!s_hdr_sei_logged) { s_hdr_sei_logged = 1;
-            VLOG("hevc hdr sei inserted bytes=%zu lum=%u/%u cll=%u/%u\n", k, m.maxDisplayLuminance, m.minDisplayLuminance, m.maxContentLightLevel, m.maxFrameAverageLightLevel); }
+            VLOG("hevc hdr sei inserted bytes=%zu lum=%u/%u cll=%u/%u\n", k, m.maxDisplayLuminance, m.minDisplayLuminance, m.maxContentLightLevel, m.maxFrameAverageLightLevel);
+            MLT("hevc hdr sei inserted bytes=%zu lum=%u/%u cll=%u/%u", k, m.maxDisplayLuminance, m.minDisplayLuminance, m.maxContentLightLevel, m.maxFrameAverageLightLevel); }
         }
       }
     }
@@ -154,7 +166,7 @@ static int VidDecSubmit(PDECODE_UNIT du) {
   }
   if (s_hevc && idr) {
     mldiag_hevc_sei(sei_n, sei_mask);
-    if (!s_hevc_idr_logged) { s_hevc_idr_logged = 1; VLOG("hevc idr sei=%d mask=0x%x\n", sei_n, sei_mask); }
+    if (!s_hevc_idr_logged) { s_hevc_idr_logged = 1; VLOG("hevc idr sei=%d mask=0x%x\n", sei_n, sei_mask); MLT("hevc idr sei=%d mask=0x%x", sei_n, sei_mask); }
   }
   if (!s_have_base) { s_base_pts_ms = du->presentationTimeMs; s_have_base = 1; }
   int64_t pts_ms;

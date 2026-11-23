@@ -365,6 +365,7 @@ is created (for example on the CLI harness command line; the .NET host sets none
 | `MLENGINE_CATCHUP_MS` | `150` (0 = off) | queue depth above which the one-time catch-up seek runs (two ticks in a row) |
 | `MLENGINE_SPS_PATCH` | `1` (0 = off) | add a missing `bitstream_restriction` (no frame reordering) to the H.264 SPS |
 | `MLENGINE_HDR_SEI` | `1` (0 = off) | in HDR mode, add an HEVC SEI (mastering display, content light level) to IDR frames that have none; `ins=` in the `ML-ERROR` line |
+| `MLENGINE_HDR_COLOR` | `1` (0 = off) | in HDR mode, give the TV video pipeline the HDR10 colour info (libtrackrenderer) once the player is prepared; `col=<rc>/<n> cs=<steps>` in the `ML-ERROR` line (rc 1 = ok, steps: adapter, handle, time as `o`/`n`/`u`/`m`/`-`), and one `[esplus] hdr color:` log line per apply |
 | `MLENGINE_PLAYER_REBUILD_MAX` | `1` (0 = off) | player rebuilds per session after a failed `start()` or an unreadable playing time |
 | `MLENGINE_FATAL_STALL_MS` | `10000` (0 = off) | fatal `-111`: playing time frozen this long while submitting |
 

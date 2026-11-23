@@ -48,6 +48,8 @@ static unsigned s_an_frames, s_an_under, s_an_over, s_an_drops;   /* native audi
 static int s_an_bufms;                    /* ring-buffer fill in ms at the last report */
 static int s_pad_rc;                      /* last failed pad call rc */
 static int s_sps_set, s_sps[9];           /* last H.264 SPS: state, profile, level, refs, poc, vui, restr, reorder, dec_buf; under s_mu */
+static char s_col_cs[8] = "---";
+static int s_col_rc = -99, s_col_n;   /* HDR colour apply: last rc, calls; under s_mu */
 static int s_hdr_host = -1, s_hdr_n, s_hdr_meta, s_hdr[4];   /* setHdrMode: last enabled, calls, metadata ok, lum max/min cll fall; under s_mu */
 static int s_sei_n = -1, s_sei_mask;      /* last HEVC IDR: SEI NAL count (-1 = no HEVC IDR yet), payload mask; under s_mu */
 static int s_ctl_iv = -1;                 /* last control-stream IV length, -1 = none */
@@ -138,6 +140,11 @@ void mldiag_hevc_sei(int sei_nals, int mask) {
   pthread_mutex_lock(&s_mu); s_sei_n = sei_nals; s_sei_mask = mask; pthread_mutex_unlock(&s_mu);
 }
 void mldiag_hdr_sei_inserted(void) { INC(C_HDRSEI); }
+void mldiag_hdr_color(int rc, const char *steps) {
+  pthread_mutex_lock(&s_mu); s_col_rc = rc; s_col_n++;
+  snprintf(s_col_cs, sizeof s_col_cs, "%s", steps ? steps : "---");
+  pthread_mutex_unlock(&s_mu);
+}
 void mldiag_idr_retry(void) { INC(C_IDRRETRY); }
 void mldiag_rebuild(void) { INC(C_REBUILD); }
 void mldiag_catchup(int depth_ms, int seek_ok) {
@@ -160,7 +167,7 @@ void mldiag_reset(const mldiag_cfg *cfg) {
   s_an_frames = s_an_under = s_an_over = s_an_drops = 0; s_an_bufms = 0;
   s_rb_open = s_rb_addv = s_rb_disp = s_rb_prep = -99;
   s_sps_set = 0;
-  s_hdr_host = -1; s_hdr_n = s_hdr_meta = 0; memset(s_hdr, 0, sizeof s_hdr); s_sei_n = -1; s_sei_mask = 0;
+  s_hdr_host = -1; s_hdr_n = s_hdr_meta = 0; memset(s_hdr, 0, sizeof s_hdr); s_sei_n = -1; s_sei_mask = 0; s_col_rc = -99; s_col_n = 0; strcpy(s_col_cs, "---");
   s_cu_n = 0; s_cu_depth = -1; s_cu_rc = -99; s_osd_win = 0;
   memset(s_first, 0, sizeof s_first); memset(s_last, 0, sizeof s_last);
   s_nlines = 0; s_out[0] = 0; s_code = 0;
@@ -334,7 +341,7 @@ void mldiag_fail(int code, int stage, const char *stage_name, int host_feature_f
   char hmS[48], seiS[24];
   if (s_hdr_meta) snprintf(hmS, sizeof hmS, "lum%d/%d.cll%d/%d", s_hdr[0], s_hdr[1], s_hdr[2], s_hdr[3]); else snprintf(hmS, sizeof hmS, "-");
   if (s_sei_n < 0) snprintf(seiS, sizeof seiS, "-"); else snprintf(seiS, sizeof seiS, "%d/0x%x", s_sei_n, s_sei_mask);
-  ADD(" | hdr host=%d n=%u meta=%s sei=%s ins=%u", s_hdr_host, (unsigned)s_hdr_n, hmS, seiS, GET(C_HDRSEI));
+  ADD(" | hdr host=%d n=%u meta=%s sei=%s ins=%u col=%d/%u cs=%s", s_hdr_host, (unsigned)s_hdr_n, hmS, seiS, GET(C_HDRSEI), s_col_rc, (unsigned)s_col_n, s_col_cs);
   ADD(" | player open=%d win=%d prep=%d pdone=%d start=%d state=%d rebuilds=%u rb=%d/%d/%d/%d vsub=%u asub=%u subfail=%u/%d vfail=%u/%d afail=%u/%d adec=%u adec_fail=%u/%d err=%u/%u", s_open, s_win, s_prep, s_pdone, s_start, s_state, GET(C_REBUILD), s_rb_open, s_rb_addv, s_rb_disp, s_rb_prep,
       GET(C_VSUB), GET(C_ASUB), GET(C_SUBFAIL), s_sub_last_bad, GET(C_VSUBFAIL), s_vfail_last, GET(C_ASUBFAIL), s_afail_last,
       GET(C_ADEC), GET(C_ADECFAIL), __atomic_load_n(&s_adec_err, __ATOMIC_RELAXED), player_errors, player_last_error);

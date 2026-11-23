@@ -215,6 +215,8 @@ static void sei_insert_test(void) {
   vfmt = VIDEO_FORMAT_H264;
 }
 
+int ml_engine_full_range(void) { return 0; }
+
 int main(void) {
   sei_test();
   sei_build_test();
